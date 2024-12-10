@@ -1,0 +1,64 @@
+Type            Num  Token Range  
+Special tokens  10   0 - 9        
+Particles       32   10 - 41      
+Materials       8    42 - 49      
+Energy bins     20   50 - 69      
+Eta bins        17   70 - 86      
+Theta bins      126  87 - 212     
+Phi bins        126  213 - 338    
+
+Special Token - Token Value
+padding - 0
+event_start - 1
+event_end - 2
+particle_start - 3
+particle_end - 4
+reserved_5 - 5
+reserved_6 - 6
+reserved_7 - 7
+reserved_8 - 8
+reserved_9 - 9
+
+Particle Name - Token Value
+pi+ - 10
+pi- - 11
+kaon- - 12
+kaon+ - 13
+kaon0L - 14
+kaon0S - 15
+proton - 16
+neutron - 17
+deuteron - 18
+triton - 19
+He3 - 20
+alpha - 21
+lambda - 22
+sigma- - 23
+sigma0 - 24
+sigma+ - 25
+xi- - 26
+xi0 - 27
+omega- - 28
+anti_proton - 29
+anti_neutron - 30
+anti_lambda - 31
+anti_sigma- - 32
+anti_sigma0 - 33
+anti_sigma+ - 34
+anti_xi- - 35
+anti_xi0 - 36
+anti_omega- - 37
+anti_deuteron - 38
+anti_triton - 39
+anti_He3 - 40
+anti_alpha - 41
+
+Material Name - Token Value
+G4_C - 42
+G4_Al - 43
+G4_Si - 44
+G4_Ar - 45
+G4_Fe - 46
+G4_Cu - 47
+G4_W - 48
+G4_Pb - 49

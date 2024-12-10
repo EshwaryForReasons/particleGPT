@@ -1,0 +1,5 @@
+trained_models/
+logs/
+__pycache__/
+data/*/__pycache__/
+data/*/outputs/
