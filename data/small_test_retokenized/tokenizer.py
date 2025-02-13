@@ -97,7 +97,7 @@ def untokenize_particle(particle):
     
     pdgid = particle_index_to_id(pdgid_idx)
     e = get_bin_median(ETypes.ENERGY, e_idx)
-    eta = get_bin_median(ETypes.ETA, eta_idx)
+    # eta = get_bin_median(ETypes.ETA, eta_idx)
     theta = get_bin_median(ETypes.THETA, theta_idx)
     phi = get_bin_median(ETypes.PHI, phi_idx)
     
@@ -110,8 +110,8 @@ def untokenize_particle(particle):
 
 # Input file is assumed to be filtered GPT output (already tokenized)
 def untokenize_data(in_filename, out_filename):
-    input_file = open(os.path.join(script_dir, in_filename), 'r')
-    output_file = open(os.path.join(script_dir, out_filename), 'w')
+    input_file = open(in_filename, 'r')
+    output_file = open(out_filename, 'w')
 
     for event in input_file:
         untokenized_sequence = np.array([], dtype=np.int32)

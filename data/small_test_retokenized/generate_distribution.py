@@ -1,11 +1,22 @@
 
 from tokenizer import untokenize_data
 import os
+import sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+dataset_storage_dir = sys.argv[1]
+filtered_sample_output_file = os.path.join(dataset_storage_dir, 'filtered_sample.txt')
+untokenized_sample_output_file = os.path.join(dataset_storage_dir, 'untokenized_sample.csv')
+sorted_sample_output_file = os.path.join(dataset_storage_dir, 'sorted_sample.csv')
+leading_particle_sample_output_file = os.path.join(dataset_storage_dir, 'sampled_leading_particle.csv')
+
+input_file = os.path.join(script_dir, 'data.csv')
+sorted_input_output_file = os.path.join(dataset_storage_dir, 'sorted_input.csv')
+leading_particle_input_output_file = os.path.join(dataset_storage_dir, 'input_leading_particle.csv')
+
 # Untokenize the filtered output
-untokenize_data(os.path.join(script_dir, 'outputs/filtered_outputs.txt'), os.path.join(script_dir, 'outputs/untokenized_output.csv'))
+untokenize_data(filtered_sample_output_file, untokenized_sample_output_file)
 
 # Reorder each event to keep input event first and sort the rest by energy
 def reorder_particles(input_filename, output_filename):
@@ -41,8 +52,8 @@ def extract_leading_particle(input_filename, output_filename):
                 result = [str(num_particles)] + [' '.join(largest_second_value_part)] 
                 outfile.write(' '.join(result) + '\n')
 
-reorder_particles('outputs/untokenized_output.csv', 'outputs/sorted_samples.csv')
-extract_leading_particle('outputs/sorted_samples.csv', 'outputs/sampled_leading_particle.csv')
+reorder_particles(untokenized_sample_output_file, sorted_sample_output_file)
+extract_leading_particle(sorted_sample_output_file, leading_particle_sample_output_file)
 
-reorder_particles('data.csv', 'outputs/sorted_data.csv')
-extract_leading_particle('outputs/sorted_data.csv', 'outputs/input_leading_particle.csv')
+reorder_particles(input_file, sorted_input_output_file)
+extract_leading_particle(sorted_input_output_file, leading_particle_input_output_file)

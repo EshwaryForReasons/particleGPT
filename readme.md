@@ -2,30 +2,44 @@
 
 GPT based on nanoGPT for generating particle collision data.
 
+```
+https://github.com/scikit-hep/particle used to PDGID conversions.
+https://hub.docker.com/repository/docker/eshym/docker_img_particlegpt/general docker image with correct dependencies.
+```
+
 ## Usage ##
 
-`control_panel.ipynb` includes all actions. Just run the appropriate cell. MAKE SURE TO RUN THE SETUP CELL FIRST!!!!
+The dataset should be in `data/dataset_name/data.csv`. The `*.py` and `dictionary.json` files will always be the same so just copy/paste from a different dataset. The `particles_id` and `particles_index` objects in `dictionary.json` will be updated in the preparation phase when training the model. This is to ensure only relevant particles (those present in the dataset) are included in the vocabulary. The data is only prepared once. Subsequent training will just use the preprepared data.
+
+If the dataset, any of the python files, or the dictionary are changed (for example to change the tokenization) then be sure to delete `outputs/meta.pkl` in the dataset directory to trigger repreparation as otherwise the dataset will not be reprepared and the old tokenized files will be reused.
+
+Using the docker image `eshym/docker_img_particlegpt` is necessary for the correct python dependencies.
+```
+shifterimg -v pull docker:eshym/docker_img_particlegpt:v2
+shifter --image=docker:eshym/docker_img_particlegpt:v2 /bin/bash
+
+# Training:
+python train.py config/dataset_to_train.json
+
+# Sampling:
+python sample.py config/dataset_to_sample.json
+
+# Generate distributions:
+python generate_distributions.py config/dataset_to_use.json
+```
+
+Trained models are stored in `trained_models/dataset_name`. Generated samples are stored in `generated_samples/dataset_name/generation_time`.
+
+`analysis.ipynb` includes all graphing. By default all cells will use the latest generated_samples. Make sure to run `generate_distributions.py` on the relevant dataset first.
 
 ## Notes ##
 
 - Make sure converting spherical to cartesian coordinates is done correctly
 
-## TODO ##
+```
+# Running interactive job:
+srun -C "gpu" -q interactive -N 1 -G 1 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 
-VERY IMPORTANT: A LOT OF TOKENS ARE HARDCODED, FIX THAT!!!!
-
-For now:
-- [ ] Redo distributions and fix them
-  - [ ] Increase granularity of bins
-  - [ ] Play with hyperparameters
-- [ ] Finish logging script
-- [ ] Switch to jupiter notebook as it is better for visualizing data, especially in an ssh session
-- [ ] Figure out why training takes so long on Perlmutter but not on my laptop
-- [ ] Streamline the training and sample generation
-  - [x] Create a `control_panel.ipynb` which can handle:
-    - [ ] Training (outputs plots and final loss, val)
-    - [ ] Sampling (filters immediately after and outputs filtering info)
-    - [ ] Distribution generation (histograms for particle count, pdgid, e, px, py, pz for sampled and input data)
-
-For later:
-- [ ] Maybe treat bins as gaussian distribution for untokenized data
+# Running batch job:
+bash job_scripts/sjob_name.sh
+```

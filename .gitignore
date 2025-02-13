@@ -1,5 +1,9 @@
+__pycache__/
+.ipynb_checkpoints/
 trained_models/
 logs/
-__pycache__/
+generated_samples/
 data/*/__pycache__/
 data/*/outputs/
+sjob_*.*
+slurm-*.*

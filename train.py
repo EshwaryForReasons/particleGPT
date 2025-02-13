@@ -50,6 +50,7 @@ always_save_checkpoint = True # if True, always save a checkpoint after each eva
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # data
 dataset = ''
+output_dir_name = dataset
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
@@ -84,7 +85,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # Ensure the output directory exists
-out_dir = os.path.join(script_dir, "trained_models", dataset)
+out_dir = os.path.join(script_dir, "trained_models", output_dir_name)
 os.makedirs(out_dir, exist_ok=True)
 
 # various inits, derived attributes, I/O setup
@@ -120,7 +121,7 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # Prepare the data before loading it
-res = subprocess.run([sys.executable, os.path.join('data', dataset, 'prepare.py')], capture_output=True, text=True)
+res = subprocess.run([sys.executable, os.path.join('data', dataset, 'prepare_training.py')], capture_output=True, text=True)
 print(res.stderr, res.stdout)
 
 # poor man's data loader
@@ -155,7 +156,9 @@ if os.path.exists(meta_path):
     meta_vocab_size = meta['vocab_size']
     
 pLogging.info(logger_idx, "Training info", {
+    "config_file_path": config_file_path,
     "dataset": dataset,
+    "output_dir_name": output_dir_name,
     "tokens_per_iter": tokens_per_iter,
     "ddp": ddp,
     "ddp_world_size": ddp_world_size,
@@ -163,7 +166,32 @@ pLogging.info(logger_idx, "Training info", {
     "dtype": dtype,
     "compile": compile,
     "meta_vocab_size": meta_vocab_size,
-    "meta_path": meta_path
+    "meta_path": meta_path,
+    "eval_interval": eval_interval,
+    "log_interval": log_interval,
+    "eval_iters": eval_iters,
+    "eval_only": eval_only,
+    "always_save_checkpoint": always_save_checkpoint,
+    "init_from": init_from,
+    "gradient_accumulation_steps": gradient_accumulation_steps,
+    "block_size": block_size,
+    "n_layer": n_layer,
+    "n_head": n_head,
+    "n_embd": n_embd,
+    "dropout": dropout,
+    "bias": bias,
+    "learning_rate": learning_rate,
+    "max_iters": max_iters,
+    "weight_decay": weight_decay,
+    "beta1": beta1,
+    "beta2": beta2,
+    "grad_clip": grad_clip,
+    "decay_lr": decay_lr,
+    "warmup_iters": warmup_iters,
+    "lr_decay_iters": lr_decay_iters,
+    "min_lr": min_lr,
+    "backend": backend,
+    "device_type": device_type
 })
 
 # model init; start with model_args from command line
@@ -269,7 +297,7 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
-        pLogging.info(logger_idx, "Training progress", {"step": iter_num, "train_loss": losses['train'], "val_loss": losses['val']})
+        pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {"step": iter_num, "train_loss": losses['train'].item(), "val_loss": losses['val'].item()})
         
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -324,7 +352,9 @@ while True:
         if local_iter_num >= 5: # Let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-        pLogging.info(logger_idx, "Training progress", {"iter": iter_num, "loss": lossf, "time": dt * 1000, "mfu": running_mfu})
+            
+        losses = estimate_loss()
+        pLogging.info(logger_idx, "Training progress", {"iter": iter_num, "loss": lossf, "train_loss": losses['train'].item(), "val_loss": losses['val'].item(), "time": dt * 1000, "mfu": running_mfu})
         
     iter_num += 1
     local_iter_num += 1

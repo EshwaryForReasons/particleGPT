@@ -1,0 +1,1 @@
+Some training required more than the 4 hours allowed by interactive jobs. This folder stores the slurm job scripts for batch jobs.

@@ -27,8 +27,11 @@ if logger_idx == -1:
     
 pLogging.info(logger_idx, "Started filtering generated samples.")
 
-output_file = os.path.join(script_dir, 'outputs/outputs.txt')
-filtered_output_file = os.path.join(script_dir, 'outputs/filtered_outputs.txt')
+dataset_storage_dir = sys.argv[1]
+output_file = os.path.join(dataset_storage_dir, 'generated_sample.txt')
+filtered_output_file = os.path.join(dataset_storage_dir, 'filtered_sample.txt')
+# output_file = os.path.join(script_dir, 'outputs/outputs.txt')
+# filtered_output_file = os.path.join(script_dir, 'outputs/filtered_outputs.txt')
 
 # Array containing all events
 generated_events = []
