@@ -63,6 +63,7 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
+max_num_failed_checkpoint_checks = 4 # number of failed checkpoint checks before ending training
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -121,7 +122,7 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # Prepare the data before loading it
-res = subprocess.run([sys.executable, os.path.join('data', dataset, 'prepare_training.py')], capture_output=True, text=True)
+res = subprocess.run([sys.executable, os.path.join('data', 'prepare_training.py'), dataset], capture_output=True, text=True)
 print(res.stderr, res.stdout)
 
 # poor man's data loader
@@ -146,6 +147,7 @@ def get_batch(split):
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
 best_val_loss = 1e9
+num_failed_checkpoint_checks = 0
 
 # attempt to derive vocab_size from the dataset
 meta_path = os.path.join(data_dir, 'meta.pkl')
@@ -312,6 +314,11 @@ while True:
                 }
                 pLogging.info(logger_idx, f"Training progress: saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+        else:
+            # On the max_num_failed_checkpoint_checks failure, we end training
+            num_failed_checkpoint_checks += 1
+            if max_num_failed_checkpoint_checks >= 4:
+                break
 
     if iter_num == 0 and eval_only:
         break

@@ -34,8 +34,6 @@ Trained models are stored in `trained_models/dataset_name`. Generated samples ar
 
 ## Notes ##
 
-- Make sure converting spherical to cartesian coordinates is done correctly
-
 ```
 # Running interactive job:
 srun -C "gpu" -q interactive -N 1 -G 1 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l

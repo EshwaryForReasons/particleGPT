@@ -5,5 +5,7 @@ logs/
 generated_samples/
 data/*/__pycache__/
 data/*/outputs/
+data/*/data.csv
+current_jobs.md
 sjob_*.*
 slurm-*.*

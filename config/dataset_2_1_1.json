@@ -4,7 +4,7 @@
     "eval_iters": 200,
     "log_interval": 10,
     "always_save_checkpoint": false,
-    "dataset": "dataset_1_2",
+    "dataset": "dataset_2_1",
     "gradient_accumulation_steps": 40,
     "batch_size": 64,
     "block_size": 256,
@@ -14,7 +14,7 @@
     "dropout": 0.2,
     "learning_rate": 0.000001,
     "max_iters": 100000,
-    "lr_decay_iters": 10000,
+    "lr_decay_iters": 100000,
     "min_lr": 0.0000001,
     "beta2": 0.99,
     "warmup_iters": 100

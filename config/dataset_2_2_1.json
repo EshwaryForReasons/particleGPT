@@ -5,7 +5,6 @@
     "log_interval": 10,
     "always_save_checkpoint": false,
     "dataset": "dataset_2_2",
-    "output_dir_name": "dataset_2_2_1",
     "gradient_accumulation_steps": 40,
     "batch_size": 64,
     "block_size": 256,
@@ -21,8 +20,6 @@
     "warmup_iters": 100
   },
   "sampling_config": {
-    "start": "1 3 11 243 253 333 461 4",
-    "num_samples": 10000,
     "max_new_tokens": 500,
     "temperature": 0.8,
     "top_k": 200,

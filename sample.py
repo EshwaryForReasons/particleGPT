@@ -40,7 +40,7 @@ samples_leading_input_filename = os.path.join('data', dataset, 'outputs', 'temp_
 samples_output_filename = os.path.join(script_dir, "generated_samples", output_dir_name, now, 'generated_samples.txt')
 
 # Prepare the data before sampling it
-res = subprocess.run([sys.executable, os.path.join('data', dataset, 'prepare_sampling.py')], capture_output=True, text=True)
+res = subprocess.run([sys.executable, os.path.join('data', 'prepare_sampling.py'), dataset], capture_output=True, text=True)
 print(res.stderr, res.stdout)
 
 if not os.path.exists(model_path):
