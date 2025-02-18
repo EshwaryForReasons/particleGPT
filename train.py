@@ -317,7 +317,7 @@ while True:
         else:
             # On the max_num_failed_checkpoint_checks failure, we end training
             num_failed_checkpoint_checks += 1
-            if max_num_failed_checkpoint_checks >= 4:
+            if num_failed_checkpoint_checks >= max_num_failed_checkpoint_checks:
                 break
 
     if iter_num == 0 and eval_only:
