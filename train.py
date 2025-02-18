@@ -302,6 +302,7 @@ while True:
         pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {"step": iter_num, "train_loss": losses['train'].item(), "val_loss": losses['val'].item()})
         
         if losses['val'] < best_val_loss or always_save_checkpoint:
+            num_failed_checkpoint_checks = 0
             best_val_loss = losses['val']
             if iter_num > 0:
                 checkpoint = {
