@@ -23,8 +23,8 @@ import pickle
 from contextlib import nullcontext
 import subprocess
 import sys
-
 import numpy as np
+
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -32,12 +32,9 @@ from torch.distributed import init_process_group, destroy_process_group
 import model
 from model import GPTConfig, GPT
 import pLogging
+import data.prepare as prepare
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-
-logger_idx = pLogging.create_logger('train')
-model.set_logger(logger_idx)
-pLogging.info(logger_idx, 'Training started.')
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -85,9 +82,13 @@ exec(open('configurator.py').read()) # overrides from command line or config fil
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
-# Ensure the output directory exists
+# Ensure the output directory exists. Need to do this before creating the logger.
 out_dir = os.path.join(script_dir, "trained_models", output_dir_name)
 os.makedirs(out_dir, exist_ok=True)
+
+logger_idx = pLogging.create_training_logger(output_dir_name)
+model.set_logger(logger_idx)
+pLogging.info(logger_idx, 'Training started.')
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -122,8 +123,7 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # Prepare the data before loading it
-res = subprocess.run([sys.executable, os.path.join('data', 'prepare_training.py'), dataset], capture_output=True, text=True)
-print(res.stderr, res.stdout)
+prepare.prepare_training()
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset, 'outputs')
@@ -199,14 +199,14 @@ pLogging.info(logger_idx, "Training info", {
 # model init; start with model_args from command line
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,bias=bias, vocab_size=None, dropout=dropout)
 if init_from == 'scratch':
-    # init a new model from scratch
+    # Init a new model from scratch
     pLogging.info(logger_idx, "Training progress", {"info": "Initializing a new model from scratch"})
     model_args['vocab_size'] = meta_vocab_size
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
 elif init_from == 'resume':
+    # Resume training from a checkpoint
     pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {out_dir}"})
-    # resume training from a checkpoint.
     ckpt_path = os.path.join(out_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
@@ -290,7 +290,6 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 while True:
-
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:

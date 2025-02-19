@@ -7,8 +7,10 @@ from enum import Enum
 import os
 import sys
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import configurator
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
-output_dir_name = sys.argv[1]
 
 class ETypes(Enum):
     SPECIAL_TOKENS = 0
@@ -19,7 +21,7 @@ class ETypes(Enum):
     THETA = 5
     PHI = 6
     
-with open(os.path.join(script_dir, output_dir_name, 'dictionary.json'), 'r') as f:
+with open(os.path.join(script_dir, configurator.dataset, 'dictionary.json'), 'r') as f:
     data = json.load(f)
 
 # Function to evaluate radian expressions in the dictionary

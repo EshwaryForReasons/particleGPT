@@ -90,13 +90,13 @@ def file_only(self, message, *args, **kwargs):
     if self.isEnabledFor(FILE_ONLY_LEVEL):
         self._log(FILE_ONLY_LEVEL, message, args, **kwargs)
         
-def update_config(log_filename):
+def update_config(log_filename, log_directory='logs'):
     config = json.load(open(pathlib.Path(os.path.join(script_dir, "log_config.json"))))
     
     # Update all handlers to have absolute paths
     for handler_name, handler in config['handlers'].items():
         if 'filename' in handler:
-            handler['filename'] = os.path.join(script_dir, "logs/" + log_filename if log_filename != None else handler['filename'])
+            handler['filename'] = os.path.join(script_dir, f'{log_directory}/{log_filename}' if log_filename != None else handler['filename'])
     
     logging.config.dictConfig(config)
         
@@ -112,10 +112,26 @@ def setup_logging():
     
 def create_logger(phase):
     now = dt.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
-    logger_name = phase + '_' + now
+    logger_name = f'{phase}_{now}'
     new_logger = logging.getLogger(logger_name)
     existing_loggers.append(new_logger)
-    update_config(logger_name + '.jsonl')
+    update_config(f'{logger_name}.jsonl')
+    return len(existing_loggers) - 1
+
+# Sampling id is to signify which sampling run this is
+def create_sampling_logger(out_dataset_name, samping_id):
+    logger_name = f'sampling_log_{samping_id}'
+    new_logger = logging.getLogger(logger_name)
+    existing_loggers.append(new_logger)
+    update_config(f'{logger_name}.jsonl', f'generated_samples/{out_dataset_name}/sampling_{samping_id}')
+    return len(existing_loggers) - 1
+
+# Training count is for when the model uses 'resume' training
+def create_training_logger(out_dataset_name, training_count):
+    logger_name = f'train_log_{training_count}'
+    new_logger = logging.getLogger(logger_name)
+    existing_loggers.append(new_logger)
+    update_config(f'{logger_name}.jsonl', f'trained_models/{out_dataset_name}')
     return len(existing_loggers) - 1
 
 def info(logger_index, message, extra=None):

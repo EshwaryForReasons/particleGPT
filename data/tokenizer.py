@@ -5,22 +5,24 @@ import math
 import os
 import sys
 
-from dictionary import ETypes
-import dictionary
+from data.dictionary import ETypes
+import data.dictionary as dictionary
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import configurator
 
 # PDGID's found here: https://pdg.lbl.gov/2007/reviews/montecarlorpp.pdf
 # We only consider the interval [-4, 4] for pseudorapidity
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-output_dir_name = sys.argv[1]
 
 # Adds event_start and event_end tokens and padding placeholders
 def preprocess_data(in_filename, out_filename):
-    with open(os.path.join(script_dir, output_dir_name, in_filename), 'r') as file:
+    with open(os.path.join(script_dir, configurator.output_dir_name, in_filename), 'r') as file:
         max_generations = max(len(line.strip().split(';')) for line in file)
     
     padding_placeholder = "PADDING"
-    with open(os.path.join(script_dir, output_dir_name, in_filename), 'r') as file, open(os.path.join(script_dir, output_dir_name, out_filename), 'w') as output_file:
+    with open(os.path.join(script_dir, configurator.output_dir_name, in_filename), 'r') as file, open(os.path.join(script_dir, configurator.output_dir_name, out_filename), 'w') as output_file:
         for line in file:
             generations = line.strip().split(';') + ["EVENT_END"] + [padding_placeholder] * (max_generations - len(line.strip().split(';')))
             output_file.write("EVENT_START;" + ';'.join(generations) + "\n")
@@ -61,8 +63,8 @@ def tokenize_particle(particle):
 
 # Input file is expected to be preprocessed
 def tokenize_data(in_filename, out_filename):
-    input_file = open(os.path.join(script_dir, output_dir_name, in_filename), 'r')
-    output_file = open(os.path.join(script_dir, output_dir_name, out_filename), 'w')
+    input_file = open(os.path.join(script_dir, configurator.output_dir_name, in_filename), 'r')
+    output_file = open(os.path.join(script_dir, configurator.output_dir_name, out_filename), 'w')
 
     for event in input_file:
         tokenized_sequence = np.array([], dtype=np.int32)

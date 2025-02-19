@@ -1,8 +1,27 @@
 import json
 import sys
 import os
+import torch
 
 config_file_path = sys.argv[1]
+
+# Common
+
+dataset = ''
+output_dir_name = ''
+
+# Sampling variables
+
+samples_storage_dir = ''
+max_new_tokens = 500
+temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
+top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability
+seed = 1337
+device = 'cuda'
+dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
+compile = True
+
+# Configurator
     
 print("FILE LOCATED: ", config_file_path)
 with open(config_file_path, 'r') as f:
