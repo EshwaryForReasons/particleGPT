@@ -3,7 +3,7 @@ __pycache__/
 trained_models/
 logs/
 generated_samples/
-job_scripts/temp/
+job_scripts/temp/*
 data/*/__pycache__/
 data/*/outputs/
 data/*/data.csv
