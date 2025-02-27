@@ -5,11 +5,54 @@ import json
 import logging
 import logging.config
 import logging.handlers
-import pathlib
 import datetime as dt
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+
+config = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {
+            "format": "%(levelname)s: %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%S%z"
+        },
+        "json": {
+            "()": "pLogging.pLoggingJSONFormatter",
+            "fmt_keys": {
+                "message": "message",
+                "timestamp": "timestamp",
+                "logger": "name"
+            }
+        }
+    },
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "level": "AllOutput",
+            "formatter": "simple",
+            "stream": "ext://sys.stderr"
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "FileOnly",
+            "formatter": "json",
+            "filename": "logs/particleGPT.jsonl",
+            "maxBytes": 10485760,
+            "backupCount": 10485760
+        }
+    },
+    "loggers": {
+        "root": {
+            "level": "DEBUG",
+            "handlers": [
+                "file",
+                "stdout"
+            ]
+        }
+    }
+}
 
 LOG_RECORD_BUILTIN_ATTRS = {
     "args",
@@ -91,7 +134,6 @@ def file_only(self, message, *args, **kwargs):
         self._log(FILE_ONLY_LEVEL, message, args, **kwargs)
         
 def update_config(log_filename, log_directory='logs'):
-    config = json.load(open(pathlib.Path(os.path.join(script_dir, "log_config.json"))))
     
     # Update all handlers to have absolute paths
     for handler_name, handler in config['handlers'].items():
@@ -135,6 +177,10 @@ def create_training_logger(out_dataset_name, training_count):
     return len(existing_loggers) - 1
 
 def info(logger_index, message, extra=None):
+    # The -1 case is for ddp since only the master process should log
+    if logger_index == -1:
+        return
+    
     if extra is None:
         existing_loggers[logger_index].all_output(message, extra=extra)
     else:

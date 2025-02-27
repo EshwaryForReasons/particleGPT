@@ -21,12 +21,26 @@ device = 'cuda'
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
 compile = True
 
+# Job submission variables
+
+nodes = 1
+time = "00:10:00"
+constraint = "gpu"
+gpus = 1
+cpus_per_task = 32
+ntasks_per_node = 1
+account = ""
+quality_of_service = "debug"
+use_shifter = False
+shifter_image = ""
+command = ""
+
 # Configurator
     
 print("FILE LOCATED: ", config_file_path)
 with open(config_file_path, 'r') as f:
     config = json.load(f)
-    
+
 globals()['config_file_path'] = config_file_path
 
 for key, value in config.items():

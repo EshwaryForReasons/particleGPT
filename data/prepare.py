@@ -56,7 +56,7 @@ def prepare_training():
     with open(meta_filename, 'wb') as f:
         meta = {
             'vocab_size': dictionary.get_vocab_size(),
-            'tital_events': num_events,
+            'total_events': num_events,
             'num_train_events': num_train_events,
             'num_val_events': num_val_events,
             'already_prepared': True

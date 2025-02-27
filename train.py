@@ -21,8 +21,6 @@ import time
 import math
 import pickle
 from contextlib import nullcontext
-import subprocess
-import sys
 import numpy as np
 
 import torch
@@ -86,7 +84,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 out_dir = os.path.join(script_dir, "trained_models", output_dir_name)
 os.makedirs(out_dir, exist_ok=True)
 
-logger_idx = pLogging.create_training_logger(output_dir_name)
+logger_idx = pLogging.create_training_logger(output_dir_name, 1)
 model.set_logger(logger_idx)
 pLogging.info(logger_idx, 'Training started.')
 
@@ -100,6 +98,8 @@ if ddp:
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+    if not master_process:
+        logger_idx = -1 # disable logging for non-master processes
     seed_offset = ddp_rank # each process gets a different seed
     # world_size number of processes will be training simultaneously, so we can scale
     # down the desired gradient accumulation iterations per process proportionally
@@ -123,7 +123,9 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # Prepare the data before loading it
+pLogging.info(logger_idx, "Starting preparing data")
 prepare.prepare_training()
+pLogging.info(logger_idx, "Finished preparing data")
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset, 'outputs')
@@ -157,7 +159,7 @@ if os.path.exists(meta_path):
         meta = pickle.load(f)
     meta_vocab_size = meta['vocab_size']
     
-pLogging.info(logger_idx, "Training info", {
+pLogging.info(logger_idx, "Training configuration", {
     "config_file_path": config_file_path,
     "dataset": dataset,
     "output_dir_name": output_dir_name,

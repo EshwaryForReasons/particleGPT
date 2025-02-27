@@ -19,7 +19,8 @@ shifterimg -v pull docker:eshym/docker_img_particlegpt:v2
 shifter --image=docker:eshym/docker_img_particlegpt:v2 /bin/bash
 
 # Training:
-python train.py config/dataset_to_train.json
+python train.py config/dataset_to_train.json # Single node, single GPU
+torchrun --standalone --nproc_per_node=4 train.py config/dataset_5_1_1.json # Single node, multiple GPU (4 here)
 
 # Sampling:
 python sample.py config/dataset_to_sample.json
@@ -28,16 +29,19 @@ python sample.py config/dataset_to_sample.json
 python generate_distributions.py config/dataset_to_use.json
 ```
 
-Trained models are stored in `trained_models/dataset_name`. Generated samples are stored in `generated_samples/dataset_name/generation_time`.
+Trained models are stored in `trained_models/dataset_name`. Generated samples are stored in `generated_samples/dataset_name/sampling_index`.
 
-`analysis.ipynb` includes all graphing. By default all cells will use the latest generated_samples. Make sure to run `generate_distributions.py` on the relevant dataset first.
+`analysis.ipynb` includes all graphing. By default all cells will use the latest generated sample. Make sure to run `generate_distributions.py` on the relevant dataset first.
 
 ## Notes ##
 
 ```
 # Running interactive job:
 srun -C "gpu" -q interactive -N 1 -G 1 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
+srun -C "gpu" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 
 # Running batch job:
-bash job_scripts/sjob_name.sh
+python submit_job.py job_scripts/job_config_to_use.json
 ```
+
+Submitting batch jobs will add it to `current_jobs.md` automatically.

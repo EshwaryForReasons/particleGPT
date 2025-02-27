@@ -3,8 +3,6 @@ Sample from a trained model
 """
 import os
 import torch
-import subprocess
-import sys
 import pUtil
 from contextlib import nullcontext
 from timeit import default_timer as timer
@@ -26,7 +24,7 @@ samples_leading_input_file = os.path.join(pUtil.get_dataset_dir(configurator.dat
 samples_output_file = os.path.join(pUtil.get_sampling_dir(configurator.output_dir_name), f'sampling_{sampling_id}', 'generated_samples.txt')
 
 # Prepare the data before sampling it
-prepare.prepare_sampling
+prepare.prepare_sampling()
 
 # Ensure the output directory of the samples exists. This needs to be done before the logger is created.
 os.makedirs(os.path.dirname(os.path.join(script_dir, samples_output_file)), exist_ok=True)
@@ -46,8 +44,6 @@ pLogging.info(logger_idx, "Sampling info", {
     "dataset": configurator.dataset,
     "model_path": model_path,
     "samples_output_filename": samples_output_file,
-    "start": configurator.start,
-    "num_samples": configurator.num_samples,
     "max_new_tokens": configurator.max_new_tokens,
     "temperature": configurator.temperature,
     "top_k": configurator.top_k,

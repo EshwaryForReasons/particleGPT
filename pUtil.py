@@ -34,10 +34,3 @@ def get_latest_sampling_id(in_dataset):
 def get_latest_sampling_dir(in_dataset):
     latest_sampling_id = get_latest_sampling_id(in_dataset)
     return os.path.join(get_sampling_dir(in_dataset), f'sampling_{latest_sampling_id}')
-
-# Other
-
-def run_preliminary(script, print_output=True):
-    res = subprocess.run([sys.executable, os.path.join('data', 'prepare_sampling.py'), dataset], capture_output=print_output, text=True)
-    if print_output:
-        print(res.stderr, res.stdout)
