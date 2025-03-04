@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import sys
+import subprocess
 
 import data.tokenizer as tokenizer
 import data.dictionary as dictionary
@@ -34,8 +35,12 @@ def prepare_training():
 
     dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
     dictionary.output_humanized_dictionary(humanized_dictionary_filename)
-    tokenizer.preprocess_data(input_data_filename, preprocessed_data_filename)
-    tokenizer.tokenize_data(preprocessed_data_filename, tokenized_data_filename)
+    
+    res = subprocess.run([os.path.join(script_dir, 'pTokenizer'), os.path.join(script_dir, configurator.dataset)], capture_output=True, text=True)
+    print("Tokenizer returned", res.returncode, res.stdout, res.stderr)
+    
+    # tokenizer.preprocess_data(input_data_filename, preprocessed_data_filename)
+    # tokenizer.tokenize_data(preprocessed_data_filename, tokenized_data_filename)
 
     # create the train and test splits
     input_file_pd = pd.read_csv(os.path.join(script_dir, configurator.dataset, tokenized_data_filename), sep=' ', dtype=np.uint16)

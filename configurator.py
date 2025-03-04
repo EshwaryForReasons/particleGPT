@@ -24,7 +24,7 @@ compile = True
 # Job submission variables
 
 nodes = 1
-time = "00:10:00"
+time_duration = "00:10:00"
 constraint = "gpu"
 gpus = 1
 cpus_per_task = 32

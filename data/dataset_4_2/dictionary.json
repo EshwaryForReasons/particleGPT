@@ -156,21 +156,21 @@
   "e_bin_data": {
     "min": 0,
     "max": 35000,
-    "step_size": 1000
+    "step_size": 250
   },
   "eta_bin_data": {
     "min": -4,
     "max": 4.499,
-    "step_size": 0.01
+    "step_size": 0.001
   },
   "theta_bin_data": {
     "min": "-2pi",
     "max": "2pi",
-    "step_size": 0.01
+    "step_size": 0.001
   },
   "phi_bin_data": {
     "min": "-2pi",
     "max": "2pi",
-    "step_size": 0.01
+    "step_size": 0.001
   }
 }

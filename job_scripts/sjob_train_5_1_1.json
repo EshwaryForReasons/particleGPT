@@ -1,6 +1,6 @@
 {
     "nodes": 1,
-    "time": "24:00:00",
+    "time_duration": "24:00:00",
     "constraint": "gpu",
     "gpus": 4,
     "cpus_per_task": 32,

@@ -53,12 +53,11 @@ def tokenize_particle(particle):
         return 'IGNORE'
 
     # -1 to convert to 0-based indexing (the superior kind)
-    pdgid_idx   = dictionary.particle_id_to_index(pdgid) + dictionary.get_offsets(ETypes.PDGID) - 1
-    e_idx       = np.digitize(e, dictionary.get_bins(ETypes.ENERGY)) + dictionary.get_offsets(ETypes.ENERGY) - 1
-    eta_idx     = np.digitize(eta, dictionary.get_bins(ETypes.ETA)) + dictionary.get_offsets(ETypes.ETA) - 1
-    theta_idx   = np.digitize(theta, dictionary.get_bins(ETypes.THETA)) + dictionary.get_offsets(ETypes.THETA) - 1
-    phi_idx     = np.digitize(phi, dictionary.get_bins(ETypes.PHI)) + dictionary.get_offsets(ETypes.PHI) - 1
-
+    pdgid_idx   = dictionary.particle_id_to_index(pdgid) + dictionary.get_offsets(ETypes.PDGID)
+    e_idx       = np.digitize(e, dictionary.get_bins(ETypes.ENERGY)) + dictionary.get_offsets(ETypes.ENERGY)
+    eta_idx     = np.digitize(eta, dictionary.get_bins(ETypes.ETA)) + dictionary.get_offsets(ETypes.ETA)
+    theta_idx   = np.digitize(theta, dictionary.get_bins(ETypes.THETA)) + dictionary.get_offsets(ETypes.THETA)
+    phi_idx     = np.digitize(phi, dictionary.get_bins(ETypes.PHI)) + dictionary.get_offsets(ETypes.PHI)
     return [dictionary.get_special_tokens()['particle_start'], pdgid_idx, e_idx, eta_idx, theta_idx, phi_idx, dictionary.get_special_tokens()['particle_end']]
 
 # Input file is expected to be preprocessed

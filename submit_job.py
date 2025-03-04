@@ -15,7 +15,7 @@ job_config_file_name = os.path.splitext(os.path.basename(job_config_file_path))[
 
 definition_script =f"""#!/bin/bash
 #SBATCH --nodes={configurator.nodes}
-#SBATCH --time={configurator.time}
+#SBATCH --time={configurator.time_duration}
 #SBATCH --constraint={configurator.constraint}
 #SBATCH --gpus={configurator.gpus}
 #SBATCH --cpus-per-task={configurator.cpus_per_task}
@@ -27,7 +27,7 @@ srun -n 1 bash temp_sjob_script_{job_config_file_name}.sh
 """
 
 job_script = f"""
-cd {script_dir}
+cd {script_dir}/job_scripts/temp
 {f"shifter --image={configurator.shifter_image} /bin/bash" if configurator.use_shifter else ""}
 {configurator.command}
 """

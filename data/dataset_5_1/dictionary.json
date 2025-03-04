@@ -168,7 +168,7 @@
   },
   "eta_bin_data": {
     "min": -4,
-    "max": 4.5,
+    "max": 4.499,
     "step_size": 0.001
   },
   "theta_bin_data": {

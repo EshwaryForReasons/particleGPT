@@ -169,12 +169,12 @@ def output_humanized_dictionary(output_file_path):
         # Print particles and their corresponding token values
         output_file.write("Particle Name - Token Value\n")
         for particle_name, token_value in data['particles_index'].items():
-            output_file.write(f"{particle_name} - {token_value + PDGID_OFFSET - 1}\n")
+            output_file.write(f"{particle_name} - {token_value + PDGID_OFFSET}\n")
 
         # Print materials and their corresponding token values
         output_file.write("\nMaterial Name - Token Value\n")
         for material_name, token_value in data['materials_named'].items():
-            output_file.write(f"{material_name} - {token_value + MATERIAL_OFFSET - 1}\n")
+            output_file.write(f"{material_name} - {token_value + MATERIAL_OFFSET}\n")
 
 # Updates the particles list in dictionary.json based on the input data
 def update_dictionary_particle_list(input_data_filename, dictionary_filename):

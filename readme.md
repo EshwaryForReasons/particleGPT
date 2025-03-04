@@ -42,6 +42,13 @@ srun -C "gpu" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash
 
 # Running batch job:
 python submit_job.py job_scripts/job_config_to_use.json
+
+# Profiling scripts using cProfile:
+python -m cProfile -o output_file_name.profile script_to_profile.py
+
+# Visualizing profiling using snakeviz:
+# Make sure to use the port that ssh tunnels
+snakeviz output_file_name.profile -p 8080 -s
 ```
 
 Submitting batch jobs will add it to `current_jobs.md` automatically.
