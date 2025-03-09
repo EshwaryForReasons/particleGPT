@@ -1,0 +1,12 @@
+[submodule "extern/pybind11"]
+	path = extern/pybind11
+	url = ../../pybind/pybind11
+	branch = stable
+[submodule "dependencies/pybind11"]
+	path = dependencies/pybind11
+	url = ../../pybind/pybind11
+	branch = stable
+[submodule "pTokenizer/pybind11"]
+	path = pTokenizer/pybind11
+	url = ../../pybind/pybind11
+	branch = stable

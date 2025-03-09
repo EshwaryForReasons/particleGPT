@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
 set( CMAKE_CXX_STANDARD 23 )
-set(CMAKE_CXX_FLAGS "-O3")
+set( CMAKE_CXX_FLAGS "-O3 --std=c++23" )
 
-project(pTokenizer)
+project(pTokenizerModule)
 
-add_executable(pTokenizer main.cpp)
-target_include_directories(pTokenizer PUBLIC)
-target_link_libraries(pTokenizer PUBLIC)
+add_subdirectory(pybind11)
+
+pybind11_add_module(pTokenizerModule main.cpp dictionary.cpp tokenizer.cpp untokenizer.cpp)
+target_include_directories(pTokenizerModule PUBLIC . pybind11/include)

@@ -144,33 +144,33 @@
     "1000040060": "Be6"
   },
   "materials_named": {
-    "G4_C": 1,
-    "G4_Al": 2,
-    "G4_Si": 3,
-    "G4_Ar": 4,
-    "G4_Fe": 5,
-    "G4_Cu": 6,
-    "G4_W": 7,
-    "G4_Pb": 8
+    "G4_C": 0,
+    "G4_Al": 1,
+    "G4_Si": 2,
+    "G4_Ar": 3,
+    "G4_Fe": 4,
+    "G4_Cu": 5,
+    "G4_W": 6,
+    "G4_Pb": 7
   },
   "e_bin_data": {
     "min": 0,
     "max": 35000,
-    "step_size": 1000
+    "step_size": 250
   },
   "eta_bin_data": {
     "min": -4,
     "max": 4.499,
-    "step_size": 0.01
+    "step_size": 0.001
   },
   "theta_bin_data": {
     "min": "-2pi",
     "max": "2pi",
-    "step_size": 0.01
+    "step_size": 0.001
   },
   "phi_bin_data": {
     "min": "-2pi",
     "max": "2pi",
-    "step_size": 0.01
+    "step_size": 0.001
   }
 }

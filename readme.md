@@ -13,6 +13,18 @@ The dataset should be in `data/dataset_name/data.csv`. The `*.py` and `dictionar
 
 If the dataset, any of the python files, or the dictionary are changed (for example to change the tokenization) then be sure to delete `outputs/meta.pkl` in the dataset directory to trigger repreparation as otherwise the dataset will not be reprepared and the old tokenized files will be reused.
 
+```
+# For first usage we need to ensure pTokenizerModule is built and works
+cd pTokenizer
+mkdir build
+cd build
+cmake ..
+make
+cd ..
+python setup.py bdist_wheel
+pip install dist/*.whl
+```
+
 Using the docker image `eshym/docker_img_particlegpt` is necessary for the correct python dependencies.
 ```
 shifterimg -v pull docker:eshym/docker_img_particlegpt:v2
@@ -39,6 +51,7 @@ Trained models are stored in `trained_models/dataset_name`. Generated samples ar
 # Running interactive job:
 srun -C "gpu" -q interactive -N 1 -G 1 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 srun -C "gpu" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
+srun -C "gpu&hbm80g" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 
 # Running batch job:
 python submit_job.py job_scripts/job_config_to_use.json
@@ -51,4 +64,16 @@ python -m cProfile -o output_file_name.profile script_to_profile.py
 snakeviz output_file_name.profile -p 8080 -s
 ```
 
+dataset_1 has 10,000 events
+dataset_2 has 100,000 events
+dataset_3 has 10,000 events
+dataset_4 had 1,000,000 events
+dataset_5 has 10,000,000 events
+dataset_6 has 10,000 events
+
 Submitting batch jobs will add it to `current_jobs.md` automatically.
+
+pTokenizer/build/
+pTokenizer/dist/
+pTokenizer/pTokenizer.egg-info/
+pTokenizer/pybind11

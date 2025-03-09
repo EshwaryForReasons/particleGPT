@@ -6,8 +6,8 @@ generated_samples/
 job_scripts/temp/
 data/*/__pycache__/
 data/*/outputs/
-data/*/data.csv
-pTokenizer/build/
+data/*/*.csv
+pTokenizer/
 current_jobs.md
 sjob_*.out
 slurm-*.out

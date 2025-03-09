@@ -1,8 +1,6 @@
 
 import glob
 import os
-import sys
-import subprocess
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 

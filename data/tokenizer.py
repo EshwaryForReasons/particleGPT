@@ -87,11 +87,19 @@ def tokenize_data(in_filename, out_filename):
 
 # Particle here is an array of five numbers
 def untokenize_particle(particle):
+    # Ignore padding particles in case we use that tokenization scheme
+    if int(particle[0]) == 0 and int(particle[1]) == 0 and int(particle[2]) == 0 and int(particle[3]) == 0 and int(particle[4]) == 0:
+        return "0 0 0 0 0"
+    
+    # print(particle)
+    
     pdgid_idx   = int(particle[0]) - dictionary.get_offsets(ETypes.PDGID) + 1
     e_idx       = int(particle[1]) - dictionary.get_offsets(ETypes.ENERGY) + 1
     eta_idx     = int(particle[2]) - dictionary.get_offsets(ETypes.ETA) + 1
     theta_idx   = int(particle[3]) - dictionary.get_offsets(ETypes.THETA) + 1
     phi_idx     = int(particle[4]) - dictionary.get_offsets(ETypes.PHI) + 1
+    
+    # print(pdgid_idx, e_idx, eta_idx, theta_idx, phi_idx)
     
     pdgid = dictionary.particle_index_to_id(pdgid_idx)
     e = dictionary.get_bin_median(ETypes.ENERGY, e_idx)
@@ -112,6 +120,7 @@ def untokenize_data(in_filename, out_filename):
     output_file = open(out_filename, 'w')
 
     for event in input_file:
+        # print(event)
         untokenized_sequence = np.array([], dtype=np.int32)
         particles = event.split()
         particles = [particles[i:i+5] for i in range(0, len(particles), 5)]
