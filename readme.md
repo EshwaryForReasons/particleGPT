@@ -72,8 +72,3 @@ dataset_5 has 10,000,000 events
 dataset_6 has 10,000 events
 
 Submitting batch jobs will add it to `current_jobs.md` automatically.
-
-pTokenizer/build/
-pTokenizer/dist/
-pTokenizer/pTokenizer.egg-info/
-pTokenizer/pybind11
