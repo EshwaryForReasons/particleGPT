@@ -14,8 +14,7 @@ data/*/*.csv
 pTokenizer/build/
 pTokenizer/dist/
 pTokenizer/pTokenizer.egg-info/
-pTokenizer/pybind11
 
 current_jobs.md
 sjob_*.out
-slurm-*.out
+slurm-*.outz
