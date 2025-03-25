@@ -17,7 +17,7 @@
 void Untokenizer::untokenize_particles(const std::size_t start_idx, const std::size_t end_idx)
 {
     std::size_t current_idx = 0;
-    for (auto& event : input_data | std::views::drop(start_idx) | std::views::take(end_idx - start_idx + 1))
+    for (auto& event : data_manager->tokenized_data | std::views::drop(start_idx) | std::views::take(end_idx - start_idx + 1))
     {
         std::vector<double> untokenized_event;
         for (int i = 0; i < event.size(); i += 5)
@@ -53,50 +53,34 @@ void Untokenizer::untokenize_particles(const std::size_t start_idx, const std::s
             untokenized_event.push_back(pz);
         }
 
-        untokenized_data[start_idx + current_idx] = untokenized_event;
+        data_manager->raw_data[start_idx + current_idx] = untokenized_event;
         ++current_idx;
     }
 }
 
-void Untokenizer::untokenize_data(const std::string& input_data_path, const std::string& output_data_path)
+void Untokenizer::untokenize_data(const std::string& output_data_path)
 {
-    //input_data_path is expected to be the generated samples (which are tokenized)
+    std::printf("----------------------------------------\n");
 
-    //Load data
-
-    std::printf("pTokenizer: Began loading data.\n");
-    std::ifstream input_data_file(input_data_path);
-    std::string event;
-    int event_counter = 0;
-    while (std::getline(input_data_file, event))
+    if (data_manager->tokenized_data.size() == 0)
     {
-        input_data.push_back(std::vector<int>());
-        std::stringstream particle_stream(event);
-        std::string token;
-        while (std::getline(particle_stream, token, ' '))
-        {
-            int value = std::stoi(token);
-            input_data[event_counter].push_back(value);
-        }
-
-        event_counter++;
+        throw std::runtime_error("pTokenizer: untokenizer: Tokenized data not loaded.");
     }
-    std::printf("pTokenizer: Finished loading data.\n");
 
     //Unokenize data
 
-    std::printf("pTokenizer: Began untokenizing data.\n");
-    untokenized_data.resize(input_data.size());
+    std::printf("pTokenizer: untokenizer: Began untokenizing data.\n");
+    data_manager->raw_data.resize(data_manager->tokenized_data.size());
     //Profiling shows no reason to multithread this one (more threads was actually slower?)
-    untokenize_particles(0, input_data.size() - 1);
-    std::printf("pTokenizer: Finished untokenizing data.\n");
+    untokenize_particles(0, data_manager->tokenized_data.size() - 1);
+    std::printf("pTokenizer: untokenizer: Finished untokenizing data.\n");
 
     //Output untokenized data
 
-    std::printf("pTokenizer: Began outputting untokenizing data.\n");
+    std::printf("pTokenizer: untokenizer: Began outputting untokenized data.\n");
 
     std::ofstream output_file(output_data_path);
-    for (auto event : untokenized_data)
+    for (auto event : data_manager->raw_data)
     {
         for (int i = 0; i < event.size(); i += 5)
         {
@@ -105,5 +89,6 @@ void Untokenizer::untokenize_data(const std::string& input_data_path, const std:
         output_file << "\n";
     }
 
-    std::printf("pTokenizer: Finished outputting untokenizing data.\n");
+    std::printf("pTokenizer: untokenizer: Finished outputting untokenized data.\n");
+    std::printf("----------------------------------------\n");
 }

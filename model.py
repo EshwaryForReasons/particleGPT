@@ -16,6 +16,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import pLogging
+import dictionary
 
 # Model will never be used on its own. It will be accessed by the training or generation script.
 # Therefore, we inherit the logger from the accessing script.
@@ -279,7 +280,7 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
             
             # If we hit EVENT_END token, we stop generating
-            if idx_next[0][0] == 2:
+            if idx_next[0][0] == dictionary.get_special_tokens()['event_end']:
                 break
 
         return idx

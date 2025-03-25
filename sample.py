@@ -1,49 +1,47 @@
 """
 Sample from a trained model
 """
-import os
+from pathlib import Path
 import torch
-import pUtil
+import numpy as np
+import pickle
 from contextlib import nullcontext
 from timeit import default_timer as timer
 
 import pLogging
+import pUtil
 import configurator
 import model
 from model import GPTConfig, GPT
-import data.prepare as prepare
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-
-# exec(open('configurator.py').read())
+script_dir = Path(__file__).resolve().parent
 
 # sampling_ids are consecutive so we need to determine the next one (for us)
 sampling_id = pUtil.get_latest_sampling_id(configurator.output_dir_name) + 1
-model_path = os.path.join(pUtil.get_training_dir(configurator.output_dir_name), 'ckpt.pt')
-samples_leading_input_file = os.path.join(pUtil.get_dataset_dir(configurator.dataset), 'outputs', 'temp_sampling_lead.csv')
-samples_output_file = os.path.join(pUtil.get_sampling_dir(configurator.output_dir_name), f'sampling_{sampling_id}', 'generated_samples.txt')
 
-# Prepare the data before sampling it
-prepare.prepare_sampling()
+model_filename = Path(pUtil.get_training_dir(configurator.output_dir_name), 'ckpt.pt')
+test_bin_filename = Path(script_dir, 'data', configurator.dataset, 'outputs', 'test.bin')
+meta_filename = Path(script_dir, 'data', configurator.dataset, 'outputs', 'meta.pkl')
+samples_output_filename = Path(pUtil.get_sampling_dir(configurator.output_dir_name), f'sampling_{sampling_id}', 'generated_samples.csv')
 
 # Ensure the output directory of the samples exists. This needs to be done before the logger is created.
-os.makedirs(os.path.dirname(os.path.join(script_dir, samples_output_file)), exist_ok=True)
+Path(samples_output_filename).parent.mkdir(parents=True, exist_ok=True)
 
 logger_idx = pLogging.create_sampling_logger(configurator.output_dir_name, sampling_id)
 model.set_logger(logger_idx)
 pLogging.info(logger_idx, 'Sample generation started.')
 
-if not os.path.exists(model_path):
-    pLogging.info(logger_idx, "Could not find trained model!")
+if not meta_filename.exists():
+    pLogging.info(logger_idx, "Data not prepared!")
     exit()
-if not os.path.exists(samples_leading_input_file):
-    pLogging.info(logger_idx, "Could not find leading tokens!")
+if not model_filename.exists():
+    pLogging.info(logger_idx, "Could not find trained model!")
     exit()
     
 pLogging.info(logger_idx, "Sampling info", {
     "dataset": configurator.dataset,
-    "model_path": model_path,
-    "samples_output_filename": samples_output_file,
+    "model_path": model_filename,
+    "samples_output_filename": samples_output_filename,
     "max_new_tokens": configurator.max_new_tokens,
     "temperature": configurator.temperature,
     "top_k": configurator.top_k,
@@ -63,7 +61,7 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 # model
 # init from a model saved in a specific directory
-checkpoint = torch.load(model_path, map_location=configurator.device)
+checkpoint = torch.load(model_filename, map_location=configurator.device)
 gptconf = GPTConfig(**checkpoint['model_args'])
 model = GPT(gptconf)
 state_dict = checkpoint['model']
@@ -79,16 +77,21 @@ if compile:
     model = torch.compile(model)
 
 # Generate samples
-with torch.no_grad(), ctx, open(samples_output_file, 'a') as out_file, open(samples_leading_input_file, 'r') as in_file:
+with torch.no_grad(), ctx, open(samples_output_filename, 'a') as out_file, open(meta_filename, 'rb') as meta_file:
+    meta = pickle.load(meta_file)
+    max_sequence_len = meta['max_sequence_length']
+    
+    test_data = np.memmap(test_bin_filename, dtype=np.uint16, mode='r')
+    test_data = test_data.reshape(-1, max_sequence_len)
+    sampling_starters = [event[:8] for event in test_data]
+    
     pLogging.info(logger_idx, 'Generating samples.')
     
     start = timer()
-    for sample_lead in in_file:
-        # encode the beginning of the prompt
-        start_ids = [int(x) for x in sample_lead.split()]
-        x = (torch.tensor(start_ids, dtype=torch.long, device=configurator.device)[None, ...])
-        y = model.generate(x, configurator.max_new_tokens, temperature=configurator.temperature, top_k=configurator.top_k)
-        out_file.write(str(y[0].tolist()).strip('[]').replace(',', '') + '\n')
+    for starting_tokens in sampling_starters:
+        x = (torch.tensor(starting_tokens.tolist(), dtype=torch.long, device=configurator.device)[None, ...])
+        y = model.generate(x, max_sequence_len, temperature=configurator.temperature, top_k=configurator.top_k)
+        out_file.write(" ".join(map(str, y[0].tolist())) + "\n")
     end = timer()
     
     pLogging.info(logger_idx, f'Sample generation finished in {end - start} seconds.')

@@ -1,20 +1,13 @@
 __pycache__/
 .ipynb_checkpoints/
 
-trained_models/
 logs/
+trained_models/
 generated_samples/
 
-job_scripts/temp/
-
-data/*/__pycache__/
 data/*/outputs/
 data/*/*.csv
 
 pTokenizer/build/
 pTokenizer/dist/
 pTokenizer/pTokenizer.egg-info/
-
-current_jobs.md
-sjob_*.out
-slurm-*.outz

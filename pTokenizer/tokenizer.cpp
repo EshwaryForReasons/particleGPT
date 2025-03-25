@@ -15,7 +15,7 @@
 void Tokenizer::tokenize_particles(const std::size_t start_idx, const std::size_t end_idx)
 {
     std::size_t current_idx = 0;
-    for (auto& event : input_data | std::views::drop(start_idx) | std::views::take(end_idx - start_idx + 1))
+    for (auto& event : data_manager->raw_data | std::views::drop(start_idx) | std::views::take(end_idx - start_idx + 1))
     {
         std::vector<int> tokenized_event = { dictionary->special_tokens.event_start };
         bool b_use_event = true;
@@ -71,54 +71,44 @@ void Tokenizer::tokenize_particles(const std::size_t start_idx, const std::size_
             tokenized_event.push_back(dictionary->special_tokens.particle_end);
         }
 
+        //In the case that this is the longest event this will have not padding which means the event end token will have never been added
+        if (b_tokenizing_secondaries)
+        {
+            tokenized_event.push_back(dictionary->special_tokens.event_end);
+        }
 
         if (b_use_event)
-            tokenized_data[start_idx + current_idx] = tokenized_event;
+            data_manager->tokenized_data[start_idx + current_idx] = tokenized_event;
 
         ++current_idx;
     }
 }
 
-void Tokenizer::tokenize_data(const std::string& input_data_path, const std::string& output_data_path)
+void Tokenizer::tokenize_data(const std::string& output_data_path)
 {
-    //input_data_path is expected to be raw data from MCGenerators
+    std::printf("----------------------------------------\n");
 
-    //Load data
-
-    std::ifstream input_data_file(input_data_path);
-    std::string event;
-    int event_counter = 0;
-    while (std::getline(input_data_file, event))
+    if (data_manager->raw_data.size() == 0)
     {
-        input_data.push_back(std::vector<double>());
-        std::stringstream particle_stream(event);
-        std::string particle;
-        while (std::getline(particle_stream, particle, ';'))
-        {
-            std::stringstream token_stream(particle);
-            std::string token;
-            while (std::getline(token_stream, token, ' '))
-            {
-                double value = std::stod(token);
-                input_data[event_counter].push_back(value);
-            }
-        }
-
-        event_counter++;
+        throw std::runtime_error("pTokenizer: tokenizer: Raw data not loaded.");
     }
 
     //Add padding
 
-    std::size_t num_tokens_in_largest_event = std::ranges::max(input_data, {}, &std::vector<double>::size).size();
-    for (auto& v : input_data)
+    std::printf("pTokenizer: tokenizer: Began padding data.\n");
+    std::size_t num_tokens_in_largest_event = std::ranges::max(data_manager->raw_data, {}, &std::vector<double>::size).size();
+    for (auto& v : data_manager->raw_data)
         v.resize(num_tokens_in_largest_event, -1);
+    std::printf("pTokenizer: tokenizer: Finished padding data.\n");
 
     //Tokenize data
 
-    tokenized_data.resize(input_data.size());
+    std::printf("pTokenizer: tokenizer: Began tokenizing data.\n");
+
+    data_manager->tokenized_data.resize(data_manager->raw_data.size());
 
     std::size_t num_threads = std::thread::hardware_concurrency();
-    std::size_t events_per_thread = input_data.size() / num_threads;
+    std::size_t events_per_thread = data_manager->raw_data.size() / num_threads;
 
     std::printf("Number of threads: %zu\n", num_threads);
     std::printf("Events per thread: %zu\n", events_per_thread);
@@ -130,10 +120,10 @@ void Tokenizer::tokenize_data(const std::string& input_data_path, const std::str
         std::size_t end_idx = ((i + 1) * events_per_thread) - 1;
         if (i == num_threads - 1)
         {
-            end_idx = input_data.size() - 1;
+            end_idx = data_manager->raw_data.size() - 1;
         }
 
-        threads.push_back(std::thread(&Tokenizer::tokenize_particles, this, start_idx, end_idx));
+        threads.push_back(std::thread(&Tokenizer::tokenize_particles, start_idx, end_idx));
     }
 
     for (auto& thread : threads)
@@ -141,17 +131,31 @@ void Tokenizer::tokenize_data(const std::string& input_data_path, const std::str
         thread.join();
     }
 
+    std::printf("pTokenizer: tokenizer: Finished tokenizing data.\n");
+
+    //Remove empty events (those that we ignore and thus do not bother tokenizing)
+
+    auto is_vec_empty = [](const std::vector<int>& v) {return v.empty();};
+    data_manager->tokenized_data.erase(std::remove_if(data_manager->tokenized_data.begin(), data_manager->tokenized_data.end(), is_vec_empty), data_manager->tokenized_data.end());
+
     //Output tokenized data
 
+    std::printf("pTokenizer: tokenizer: Began outputting data.\n");
     std::ofstream output_file(output_data_path);
-    for (auto event : tokenized_data | std::views::filter([](const auto& v) { return v.size() > 0; }))
+    for (int i = 0; i < data_manager->tokenized_data.size(); ++i)
     {
-        for (int i = 0; i < event.size(); ++i)
+        auto event = data_manager->tokenized_data[i];
+        for (int j = 0; j < event.size(); ++j)
         {
-            output_file << event[i];
-            if (i != event.size() - 1)
+            output_file << event[j];
+            if (j != event.size() - 1)
                 output_file << " ";
         }
-        output_file << "\n";
+
+        if (i != data_manager->tokenized_data.size() - 1)
+            output_file << "\n";
     }
+
+    std::printf("pTokenizer: tokenizer: Finished outputting data.\n");
+    std::printf("----------------------------------------\n");
 }

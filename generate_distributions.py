@@ -1,61 +1,62 @@
 
-import os
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import json
+from pathlib import Path
 import pUtil
-import data.filter_output as filter_output
-import data.tokenizer as tokenizer
 import configurator
 
 import pTokenizerModule as pTokenizer
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
+script_dir = Path(__file__).resolve().parent
 
 latest_sampling_dir = pUtil.get_latest_sampling_dir(configurator.output_dir_name)
 configurator.samples_storage_dir = latest_sampling_dir
 
-filtered_samples_file = os.path.join(configurator.samples_storage_dir, 'filtered_samples.csv')
-untokenized_samples_file = os.path.join(configurator.samples_storage_dir, 'untokenized_samples.csv')
-sorted_samples_file = os.path.join(configurator.samples_storage_dir, 'sorted_samples.csv')
-sampled_leading_particles_file = os.path.join(configurator.samples_storage_dir, 'sampled_leading_particles.csv')
+generated_samples_filename = Path(configurator.samples_storage_dir, 'generated_samples.csv')
+filtered_samples_filename = Path(configurator.samples_storage_dir, 'filtered_samples.csv')
+untokenized_samples_filename = Path(configurator.samples_storage_dir, 'untokenized_samples.csv')
+sampled_leading_particles_filename = Path(configurator.samples_storage_dir, 'sampled_leading_particles.csv')
+real_leading_test_particles_data_filename = Path('data', configurator.dataset, 'outputs', 'real_leading_test_particles.csv')
+dictionary_filename = Path('data', configurator.dataset, 'dictionary.json')
 
-input_file = os.path.join('data', configurator.dataset, 'data.csv')
-dictionary_file = os.path.join('data', configurator.dataset, 'dictionary.json')
-sorted_inputs_file = os.path.join(configurator.samples_storage_dir, 'sorted_inputs.csv')
-input_leading_particles_file = os.path.join(configurator.samples_storage_dir, 'input_leading_particles.csv')
+pTokenizer.load_dictionary(dictionary_filename.as_posix())
+pTokenizer.load_tokenized_data(generated_samples_filename.as_posix())
+pTokenizer.filter_data(filtered_samples_filename.as_posix())
+pTokenizer.untokenize_data(untokenized_samples_filename.as_posix())
+pTokenizer.output_generated_leading_particle_information(sampled_leading_particles_filename.as_posix())
 
-# First we filter the generated_samples 
-filter_output.init_data()
-filter_output.ensure_event_borders()
-filter_output.remove_malformed_events()
-filter_output.ensure_valid_token_ranges()
-filter_output.write_to_file()
-
-# Next we untokenize the filtered_samples and extract the leading particles
-pTokenizer.untokenize_data(dictionary_file, filtered_samples_file, untokenized_samples_file)
-filter_output.extract_leading_particle(untokenized_samples_file, sampled_leading_particles_file)
-filter_output.extract_leading_particle(input_file, input_leading_particles_file)
-
-# # Now we output the data into the correct folder
-input_dist_path = f'{latest_sampling_dir}/input_leading_particles.csv'
-sample_dist_path = f'{latest_sampling_dir}/sampled_leading_particles.csv'
+with open(dictionary_filename) as dictionary_file:
+    dictionary = json.load(dictionary_file)
 
 columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "eta", "theta", "phi"]
 bin_settings = {
     "num_particles": {"min": 0, "max": 50, "bins": 50},
     # "pdgid": {"min": -300, "max": 0, "bins": 10, "ymin": 0, "ymax": 10000},
-    "e": {"min": 0, "max": 35000, "bins": 35},
-    "px": {"min": 0, "max": 35000, "bins": 35},
-    "py": {"min": 0, "max": 35000, "bins": 35},
-    "pz": {"min": 0, "max": 35000, "bins": 35},
-    "eta": {"min": -4, "max": 4, "bins": 81},
-    "theta": {"min": -2 * np.pi, "max": 2 * np.pi, "bins": 125},
-    "phi": {"min": -2 * np.pi, "max": 2 * np.pi, "bins": 125},
+    "e": {"min": dictionary["e_bin_data"]["min"], "max": dictionary["e_bin_data"]["max"], "bins": int((dictionary["e_bin_data"]["max"] - dictionary["e_bin_data"]["min"]) // dictionary["e_bin_data"]["step_size"])},
+    "px": {"min": dictionary["e_bin_data"]["min"], "max": dictionary["e_bin_data"]["max"], "bins": int((dictionary["e_bin_data"]["max"] - dictionary["e_bin_data"]["min"]) // 1000)},
+    "py": {"min": dictionary["e_bin_data"]["min"], "max": dictionary["e_bin_data"]["max"], "bins": int((dictionary["e_bin_data"]["max"] - dictionary["e_bin_data"]["min"]) // 1000)},
+    "pz": {"min": dictionary["e_bin_data"]["min"], "max": dictionary["e_bin_data"]["max"], "bins": int((dictionary["e_bin_data"]["max"] - dictionary["e_bin_data"]["min"]) // 1000)},
+    "eta": {"min": dictionary["eta_bin_data"]["min"], "max": dictionary["eta_bin_data"]["max"], "bins": int((dictionary["eta_bin_data"]["max"] - dictionary["eta_bin_data"]["min"]) // dictionary["eta_bin_data"]["step_size"])},
+    "theta": {"min": -2 * np.pi, "max": 2 * np.pi, "bins": int((4 * np.pi) // dictionary["theta_bin_data"]["step_size"])},
+    "phi": {"min": -2 * np.pi, "max": 2 * np.pi, "bins": int((4 * np.pi) // dictionary["phi_bin_data"]["step_size"])},
 }
 
-df1 = pd.read_csv(input_dist_path, sep=" ", names=columns, engine="python")
-df2 = pd.read_csv(sample_dist_path, sep=" ", names=columns, engine="python")
+# bin_settings = {
+#     "num_particles": {"min": 0, "max": 50, "bins": 50},
+#     # "pdgid": {"min": -300, "max": 0, "bins": 10, "ymin": 0, "ymax": 10000},
+#     "e": {"min": 0, "max": 35000, "bins": 35},
+#     "px": {"min": 0, "max": 35000, "bins": 35},
+#     "py": {"min": 0, "max": 35000, "bins": 35},
+#     "pz": {"min": 0, "max": 35000, "bins": 35},
+#     "eta": {"min": -4, "max": 4, "bins": 81},
+#     "theta": {"min": -2 * np.pi, "max": 2 * np.pi, "bins": 125},
+#     "phi": {"min": -2 * np.pi, "max": 2 * np.pi, "bins": 125},
+# }
+
+df1 = pd.read_csv(real_leading_test_particles_data_filename, sep=" ", names=columns, engine="python", header=None)
+df2 = pd.read_csv(sampled_leading_particles_filename, sep=" ", names=columns, engine="python", header=None)
 
 for column, settings in bin_settings.items():
     min_val = settings["min"]

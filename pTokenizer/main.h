@@ -4,36 +4,36 @@
 #include <vector>
 #include <string>
 
-class Tokenizer
+//We do not want to constantly load the data so this exists to keep data persistently loaded
+class DataManager
 {
 public:
 
-    std::vector<std::vector<double>> input_data;
+    std::vector<std::vector<double>> raw_data;
     std::vector<std::vector<int>> tokenized_data;
 
+    std::size_t num_train_tokens = 0;
+    std::size_t num_val_tokens = 0;
+    std::size_t num_test_tokens = 0;
+};
+
+namespace Tokenizer
+{
     void tokenize_particles(const std::size_t start_idx, const std::size_t end_idx);
-    void tokenize_data(const std::string& input_data_path, const std::string& output_data_path);
+    void tokenize_data(const std::string& output_data_path);
 };
 
-class Untokenizer
+namespace Untokenizer
 {
-public:
-
-    std::vector<std::vector<int>> input_data;
-    std::vector<std::vector<double>> untokenized_data;
-
     void untokenize_particles(const std::size_t start_idx, const std::size_t end_idx);
-    void untokenize_data(const std::string& input_data_path, const std::string& output_data_path);
+    void untokenize_data(const std::string& output_data_path);
 };
 
-class Filter
+namespace Filter
 {
-public:
-
-    std::vector<std::vector<int>> input_data;
-    std::vector<std::vector<int>> filtered_data;
-
-    void filter_data(const std::string& input_data_path, const std::string& output_data_path) {}
+    void filter_particles(const std::size_t start_idx, const std::size_t end_idx);
+    void filter_data(const std::string& output_data_path);
 };
 
 extern class Dictionary* dictionary;
+extern class DataManager* data_manager;

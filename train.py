@@ -20,6 +20,7 @@ import os
 import time
 import math
 import pickle
+from pathlib import Path
 from contextlib import nullcontext
 import numpy as np
 
@@ -30,7 +31,7 @@ from torch.distributed import init_process_group, destroy_process_group
 import model
 from model import GPTConfig, GPT
 import pLogging
-import data.prepare as prepare
+import prepare
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -48,7 +49,8 @@ dataset = ''
 output_dir_name = dataset
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 1024
+block_size = -1
+context_particles = 1 # Use this instead of block_size. This updates the block_size to be context_particles * max_sequence_length from the meta file
 # model
 n_layer = 12
 n_head = 12
@@ -74,6 +76,7 @@ backend = 'nccl' # 'nccl', 'gloo', etc.
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
+iterations_per_epoch = 0 # This is needed to calculate epochs trained
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -87,6 +90,25 @@ os.makedirs(out_dir, exist_ok=True)
 logger_idx = pLogging.create_training_logger(output_dir_name, 1)
 model.set_logger(logger_idx)
 pLogging.info(logger_idx, 'Training started.')
+
+data_dir = Path('data', dataset, 'outputs')
+meta_path = Path(data_dir, 'meta.pkl')
+
+# Prepare the data before loading it
+prepare.prepare_dataset()
+
+if not meta_path.exists():
+    pLogging.info(logger_idx, "No meta file found, ensure data is prepared!")
+    
+# attempt to derive vocab_size from the dataset
+meta_vocab_size = None
+with open(meta_path, 'rb') as f:
+    meta = pickle.load(f)
+meta_vocab_size = meta['vocab_size']
+
+# If block_size is not set, then use context_particles to set it
+if block_size == -1 and context_particles != -1:
+    block_size = context_particles * meta['max_sequence_length']
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -122,18 +144,17 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-# Prepare the data before loading it
-pLogging.info(logger_idx, "Starting preparing data")
-prepare.prepare_training()
-pLogging.info(logger_idx, "Finished preparing data")
-
 # poor man's data loader
-data_dir = os.path.join('data', dataset, 'outputs')
 def get_batch(split):
+    global iterations_per_epoch
+    
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        num_train_samples = len(data)
+        iterations_per_epoch = num_train_samples // (batch_size * block_size)
+        # pLogging.info(logger_idx, f'Iterations per epoch is now {iterations_per_epoch}')
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
     ix = torch.randint(len(data) - block_size, (batch_size,))
@@ -150,14 +171,6 @@ def get_batch(split):
 iter_num = 0
 best_val_loss = 1e9
 num_failed_checkpoint_checks = 0
-
-# attempt to derive vocab_size from the dataset
-meta_path = os.path.join(data_dir, 'meta.pkl')
-meta_vocab_size = None
-if os.path.exists(meta_path):
-    with open(meta_path, 'rb') as f:
-        meta = pickle.load(f)
-    meta_vocab_size = meta['vocab_size']
     
 pLogging.info(logger_idx, "Training configuration", {
     "config_file_path": config_file_path,
@@ -198,6 +211,9 @@ pLogging.info(logger_idx, "Training configuration", {
     "device_type": device_type
 })
 
+best_ckpt_path = Path(out_dir, 'ckpt.pt')
+running_ckpt_path = Path(out_dir, 'ckpt_running.pt')
+
 # model init; start with model_args from command line
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,bias=bias, vocab_size=None, dropout=dropout)
 if init_from == 'scratch':
@@ -209,8 +225,7 @@ if init_from == 'scratch':
 elif init_from == 'resume':
     # Resume training from a checkpoint
     pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {out_dir}"})
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(running_ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
@@ -277,9 +292,12 @@ def get_lr(it):
     if it < warmup_iters:
         return learning_rate * it / warmup_iters
     # 2) if it > lr_decay_iters, return min learning rate
-    if it > lr_decay_iters:
+    if it >= lr_decay_iters:
         return min_lr
     # 3) in between, use cosine decay down to min learning rate
+    # Edge case: if lr_decay_iters == warmup_iters we get a division by zero error
+    # I have patched this so far changing the second if to it >= lr_decay_iters (opposed so it < lr_decay_iters)
+    # That not being the case was probably a bug anyway, but I'll keep track of notable changes to that.
     decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
@@ -289,20 +307,28 @@ def get_lr(it):
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
+trained_epochs = 0 # number of epochs trained in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 while True:
-    # determine and set the learning rate for this iteration
+    # Determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-    # evaluate the loss on train/val sets and write checkpoints
+    # Evaluate the loss on train/val sets and write checkpoints
+    # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
+    # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
     if iter_num % eval_interval == 0 and master_process:
+        checkpoint = {}
         losses = estimate_loss()
-        pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {"step": iter_num, "train_loss": losses['train'].item(), "val_loss": losses['val'].item()})
+        pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {
+            "step": iter_num,
+            "train_loss": losses['train'].item(),
+            "val_loss": losses['val'].item()
+        })
         
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+        if losses['val'] < best_val_loss:
             num_failed_checkpoint_checks = 0
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -314,13 +340,16 @@ while True:
                     'best_val_loss': best_val_loss,
                     'config': config,
                 }
-                pLogging.info(logger_idx, f"Training progress: saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                pLogging.info(logger_idx, f"Training progress: saving best checkpoint @ val_loss {losses['val'].item()}")
+                torch.save(checkpoint, best_ckpt_path)
         else:
             # On the max_num_failed_checkpoint_checks failure, we end training
             num_failed_checkpoint_checks += 1
             if num_failed_checkpoint_checks >= max_num_failed_checkpoint_checks:
                 break
+        
+        pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
+        torch.save(checkpoint, running_ckpt_path)
 
     if iter_num == 0 and eval_only:
         break
@@ -363,10 +392,21 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
             
         losses = estimate_loss()
-        pLogging.info(logger_idx, "Training progress", {"iter": iter_num, "loss": lossf, "train_loss": losses['train'].item(), "val_loss": losses['val'].item(), "time": dt * 1000, "mfu": running_mfu})
+        pLogging.info(logger_idx, "Training progress", {
+            "iter": iter_num,
+            "loss": lossf,
+            "train_loss": losses['train'].item(),
+            "val_loss": losses['val'].item(),
+            "time": dt * 1000,
+            "mfu": running_mfu
+        })
         
     iter_num += 1
     local_iter_num += 1
+    
+    if iter_num % iterations_per_epoch == 0:
+        trained_epochs += 1
+        pLogging.info(logger_idx, f"Training progress: Finished training epoch", {"epochs_trained": trained_epochs})
 
     # termination conditions
     if iter_num > max_iters:

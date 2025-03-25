@@ -6,11 +6,16 @@ import json
 from enum import Enum
 import os
 import sys
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import configurator
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+
+dictionary_filename = Path(script_dir, 'data', configurator.dataset, 'dictionary.json')
+with open(dictionary_filename, 'r') as f:
+    data = json.load(f)
 
 class ETypes(Enum):
     SPECIAL_TOKENS = 0
@@ -20,9 +25,6 @@ class ETypes(Enum):
     ETA = 4
     THETA = 5
     PHI = 6
-    
-with open(os.path.join(script_dir, configurator.dataset, 'dictionary.json'), 'r') as f:
-    data = json.load(f)
 
 # Function to evaluate radian expressions in the dictionary
 def eval_rad(expression):
@@ -53,88 +55,11 @@ PHI_OFFSET = THETA_OFFSET + len(theta_bins)
 particles_index = data['particles_index']
 particles_id = data['particles_id']
 
-def particle_id_to_index(particle_id):  
-    particle_name = particles_id.get(str(particle_id))
-    # -2 return will become -3 after 0 based indexing shift
-    if particle_name:
-        return particles_index.get(particle_name, -1)
-    else:
-        raise Exception(f"Particle ID {particle_id} not found in dictionary")
-
-def particle_index_to_id(particle_index):
-    # particles_index_list = list(data['particles_index'])
-    particle_name = list(data['particles_index'])[particle_index - 1]
-    particle_id = None
-    for key, value in data['particles_id'].items():
-        if value == particle_name:
-            particle_id = key
-            break
-    return particle_id
-
-def get_bins(type):
-    if type == ETypes.ENERGY:
-        return e_bins
-    elif type == ETypes.ETA:
-        return eta_bins
-    elif type == ETypes.THETA:
-        return theta_bins
-    elif type == ETypes.PHI:
-        return phi_bins
-    
-def get_num_tokens(type):
-    if type == ETypes.SPECIAL_TOKENS:
-        return num_special_tokens
-    elif type == ETypes.PDGID:
-        return num_particles
-    elif type == ETypes.MATERIAL:
-        return num_materials
-    elif type == ETypes.ENERGY:
-        return len(e_bins)
-    elif type == ETypes.ETA:
-        return len(eta_bins)
-    elif type == ETypes.THETA:
-        return len(theta_bins)
-    elif type == ETypes.PHI:
-        return len(phi_bins)
-
-def get_offsets(type):
-    if type == ETypes.SPECIAL_TOKENS:
-        return SPECIAL_TOKENS_OFFSET
-    elif type == ETypes.PDGID:
-        return PDGID_OFFSET
-    elif type == ETypes.MATERIAL:
-        return MATERIAL_OFFSET
-    elif type == ETypes.ENERGY:
-        return ENERGY_OFFSET
-    elif type == ETypes.ETA:
-        return ETA_OFFSET
-    elif type == ETypes.THETA:
-        return THETA_OFFSET
-    elif type == ETypes.PHI:
-        return PHI_OFFSET
-
 def get_vocab_size():
     return vocab_size
 
 def get_special_tokens():
     return data['special_tokens']
-
-def get_bin_median(bin_type, bin_index):
-    if bin_type == ETypes.ENERGY:
-        bins = e_bins
-    elif bin_type == ETypes.ETA:
-        bins = eta_bins
-    elif bin_type == ETypes.THETA:
-        bins = theta_bins
-    elif bin_type == ETypes.PHI:
-        bins = phi_bins
-        
-    if bin_index < 0 or bin_index > len(bins):
-        raise ValueError(f"Invalid bin index {bin_index} for bin type {bin_type}")
-    
-    bin_start = bins[bin_index - 2]
-    bin_end = bins[bin_index - 1]
-    return (bin_start + bin_end) / 2
 
 table_data = [
     ["Type",            "Num",              "Token Range",                                                                      "Min",                          "Max",                          "Step Size"],
