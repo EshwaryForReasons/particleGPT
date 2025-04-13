@@ -31,7 +31,7 @@ from torch.distributed import init_process_group, destroy_process_group
 import model
 from model import GPTConfig, GPT
 import pLogging
-import prepare
+# import prepare
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -95,7 +95,7 @@ data_dir = Path('data', dataset, 'outputs')
 meta_path = Path(data_dir, 'meta.pkl')
 
 # Prepare the data before loading it
-prepare.prepare_dataset()
+# prepare.prepare_dataset()
 
 if not meta_path.exists():
     pLogging.info(logger_idx, "No meta file found, ensure data is prepared!")
@@ -305,6 +305,8 @@ def get_lr(it):
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
+pLogging.info(logger_idx, f'Iterations per epoch is {iterations_per_epoch}')
+pLogging.info(logger_idx, 'iterations_per_epoch', {"iterations_per_epoch": iterations_per_epoch})
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 trained_epochs = 0 # number of epochs trained in the lifetime of this process

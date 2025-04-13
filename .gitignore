@@ -6,6 +6,7 @@ trained_models/
 generated_samples/
 
 data/*/outputs/
+data/*/temp/
 data/*/*.csv
 
 pTokenizer/build/

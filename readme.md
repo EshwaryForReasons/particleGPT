@@ -4,7 +4,9 @@ GPT based on nanoGPT for generating particle collision data.
 
 ## Dependencies ##
 
+https://github.com/karpathy/nanoGPT is the base project.
 https://github.com/scikit-hep/particle used for PDGID conversions.
+https://github.com/pybind/pybind11 used to C++ to python bindinds for pTokenizer.
 
 ## Usage ##
 
@@ -87,4 +89,6 @@ dataset_3 has 10,000 events
 dataset_4 had 1,000,000 events
 dataset_5 has 10,000,000 events
 dataset_6 has 10,000 events
+dataset_7 has 100,000,000 events
+dataset_8 has 1,000,000,000 events
 ```
