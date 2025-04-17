@@ -1,17 +1,16 @@
 import pickle
-import sys
 import csv
 import numpy as np
 from pathlib import Path
 from file_read_backwards import FileReadBackwards
 
-import dictionary
+from dictionary import Dictionary
 import pTokenizerModule as pTokenizer
-
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 import configurator
+import pUtil
 
 script_dir = Path(__file__).resolve().parent
+dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
 
 num_events_total = -1
 num_train_events = -1
@@ -19,54 +18,71 @@ num_val_events = -1
 num_test_events = -1
 max_sequence_length = -1
 
-def count_lines(csv_filename):
-    # This takes about a minute to run on 100M events. Fastest way I can think of.
-    with open(csv_filename, 'rb') as f:
-        return sum(buf.count(b'\n') for buf in iter(lambda: f.read(1024 * 1024), b''))
-    
-def determine_max_sequence_length(csv_filename):
-    # Since the csv is uniform, simply t first line can provide the max sequence length
-    with open(csv_filename, 'r') as f:
-        reader = csv.reader(f)
-        first_line = next(reader)
-        return len(first_line[0].split())
+num_tokens_per_particle = -1
+num_features_per_particle = -1
 
-def concat_tokenized_batches():
-    # All the tokenized batches will be uniform so we only need to concatenate them.
-    temp_data_dir = script_dir / 'data' / configurator.dataset / 'temp'
-    tokenized_data_filename = script_dir / 'data' / configurator.dataset / 'tokenized_data.csv'
-    
-    tokenized_csv_files = sorted(
-        [f for f in temp_data_dir.iterdir() if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")],
-        key=lambda x: int(x.stem.split('_')[-1])
-    )
-    
-    with open(tokenized_data_filename, "w", newline='', encoding="utf-8") as outfile:
-        writer = csv.writer(outfile)
+# A raw particle will always be pdgid, e, px, py, pz.
+num_features_in_raw_particle = 5
 
-        for file in tokenized_csv_files:
-            file_path = Path(temp_data_dir, file)
-            print(f"Processing {file_path}...")
+# Much faster, but required a lot of memory.
+def fast_bin(num_train_events, num_val_events, num_test_events):
+    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
+    train_bin_filename = script_dir / 'data' / configurator.preparation_name / 'train.bin'
+    val_bin_filename = script_dir / 'data' / configurator.preparation_name / 'val.bin'
+    test_tokenized_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_tokenized.bin'
+    
+    print(f'Starting fast bin over {num_train_events + num_val_events + num_test_events} events.')
+    
+    # Step 1: Read the entire data file into memory as a 2D array
+    data = np.loadtxt(tokenized_data_filename, dtype=np.uint16)
 
-            with open(file_path, "r", encoding="utf-8") as infile:
-                reader = csv.reader(infile)
-                writer.writerows(reader)
+    # Step 2: Calculate the number of rows for each split
+    train_data = data[:num_train_events]
+    val_data = data[num_train_events:num_train_events + num_val_events]
+    test_data = data[num_train_events + num_val_events:]
+
+    # Step 3: Write each section to the corresponding binary file
+    with open(train_bin_filename, 'wb') as train_out, open(val_bin_filename, 'wb') as val_out, open(test_tokenized_bin_filename, 'wb') as test_tokenized_out:
+        train_data.tofile(train_out)
+        val_data.tofile(val_out)
+        test_data.tofile(test_tokenized_out)
+    
+    print('Finished fast binning.')
+
+# Bins in place so doesn't require much memory, but is much slower.
+def in_place_bin(num_train_events, num_val_events, num_test_events):
+    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
+    train_bin_filename = script_dir / 'data' / configurator.preparation_name / 'train.bin'
+    val_bin_filename = script_dir / 'data' / configurator.preparation_name / 'val.bin'
+    test_tokenized_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_tokenized.bin'
+    
+    print(f'Starting in-place bin over {num_train_events + num_val_events + num_test_events} events.')
+    with open(tokenized_data_filename, 'r') as f, open(train_bin_filename, 'wb') as train_out, open(val_bin_filename, 'wb') as val_out, open(test_tokenized_bin_filename, 'wb') as test_tokenized_out:
+        for i, line in enumerate(f):
+            arr = np.fromstring(line, sep=' ', dtype=np.uint16)
+            
+            if i <= num_train_events:
+                arr.tofile(train_out)
+            elif i <= num_train_events + num_val_events:
+                arr.tofile(val_out)
+            else:
+                arr.tofile(test_tokenized_out)
+    print('Finished in-place binning.')
 
 def bin_data():
     global num_events_total
     global num_train_events
     global num_val_events
     global num_test_events
+    global num_tokens_per_particle
+    global num_features_per_particle
+    global num_features_in_raw_particle
     
-    temp_data_dir = script_dir / 'data' / configurator.dataset / 'temp'
-    input_data_filename = script_dir / 'data' / configurator.dataset / 'data.csv'
-    tokenized_data_filename = script_dir / 'data' / configurator.dataset / 'tokenized_data.csv'
-    train_bin_filename = script_dir / 'data' / configurator.dataset / 'outputs' / 'train.bin'
-    val_bin_filename = script_dir / 'data' / configurator.dataset / 'outputs' / 'val.bin'
-    test_tokenized_bin_filename = script_dir / 'data' / configurator.dataset / 'outputs' / 'test_tokenized.bin'
-    test_real_bin_filename = script_dir / 'data' / configurator.dataset / 'outputs' / 'test_real.bin'
+    input_data_filename = script_dir / 'data' / configurator.dataset
+    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
+    test_real_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_real.bin'
     
-    num_events_total = count_lines(tokenized_data_filename)
+    num_events_total = pUtil.count_rows(tokenized_data_filename)
     # create the train, val, and test splits
     # The test split should be 10% or 100k events, whichever is smaller
     num_test_events = min(int(num_events_total * 0.1), 100000)
@@ -75,17 +91,7 @@ def bin_data():
     num_train_events = int(num_events_unreserved * 0.9)
     num_val_events = num_events_unreserved - num_train_events
     
-    with open(tokenized_data_filename, 'r') as f, open(train_bin_filename, 'wb') as train_out, open(val_bin_filename, 'wb') as val_out, open(test_tokenized_bin_filename, 'wb') as test_tokenized_out:
-        for i, line in enumerate(f):
-            values = [int(x) for x in line.strip().split()]
-            arr = np.array(values, dtype=np.uint16)
-            
-            if i <= num_train_events:
-                arr.tofile(train_out)
-            elif i <= num_train_events + num_val_events:
-                arr.tofile(val_out)
-            else:
-                arr.tofile(test_tokenized_out)
+    fast_bin(num_train_events, num_val_events, num_test_events)
     
     with FileReadBackwards(input_data_filename) as f, open(test_real_bin_filename, 'wb') as test_real_out:
         accumulated_data = []
@@ -114,12 +120,12 @@ def bin_data():
             if not b_ignore_this_event:
                 accumulated_data.append(arr)
             
-            # This is a risky way of being this, but it works
+            # This is a risky way of doing this, but it works
             if len(accumulated_data) >= num_test_events:
                 break
         
-        max_sequence_length = determine_max_sequence_length(Path(temp_data_dir, "tokenized_batch_0.csv"))
-        max_num_particles = int((max_sequence_length - 2) / 7)
+        max_sequence_length = pUtil.count_columns(tokenized_data_filename)
+        max_num_particles = int((max_sequence_length - 2) / num_tokens_per_particle)
         
         # Pad data because np.array requires uniform length
         padded_accumulated_data = [row + [0] * ((max_num_particles * 5) - len(row)) for row in accumulated_data]
@@ -127,13 +133,14 @@ def bin_data():
         padded_accumulated_data_np.flatten().tofile(test_real_bin_filename)
 
 def generate_leading_particle_information():
+    global num_features_in_raw_particle
+
     # Output will be num_particles, pdgid, e, px, py, pz, eta, theta, phi
-    temp_data_dir = script_dir / 'data' / configurator.dataset / 'temp'
-    tokenized_data_filename = script_dir / 'data' / configurator.dataset / 'tokenized_data.csv'
-    test_real_bin_filename = script_dir / 'data' / configurator.dataset / 'outputs' / 'test_real.bin'
-    real_leading_test_particles_filename = Path(script_dir, 'data', configurator.dataset, 'outputs', 'real_leading_test_particles.csv')
+    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
+    test_real_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_real.bin'
+    real_leading_test_particles_filename = script_dir / 'data' / configurator.preparation_name / 'real_leading_test_particles.csv'
     
-    num_events_total = count_lines(tokenized_data_filename)
+    num_events_total = pUtil.count_rows(tokenized_data_filename)
     # create the train, val, and test splits
     # The test split should be 10% or 100k events, whichever is smaller
     num_test_events = min(int(num_events_total * 0.1), 100000)
@@ -142,14 +149,13 @@ def generate_leading_particle_information():
     num_train_events = int(num_events_unreserved * 0.9)
     num_val_events = num_events_unreserved - num_train_events
     
-    max_sequence_length = determine_max_sequence_length(Path(temp_data_dir, "tokenized_batch_0.csv"))
-    max_num_particles = int((max_sequence_length - 2) / 7)
+    max_sequence_length = pUtil.count_columns(tokenized_data_filename)
+    max_num_particles = int((max_sequence_length - 2) / num_tokens_per_particle)
     
-    real_bin_data = np.memmap(test_real_bin_filename, dtype=float, mode='r', shape=(num_test_events, max_num_particles * 5))
-    
+    real_bin_data = np.memmap(test_real_bin_filename, dtype=float, mode='r', shape=(num_test_events, max_num_particles * num_features_in_raw_particle))
     with open(real_leading_test_particles_filename, 'w') as out_file:
         for event in real_bin_data:
-            particles = event.reshape((max_num_particles, 5))
+            particles = event.reshape((max_num_particles, num_features_in_raw_particle))
             secondaries = particles[1:]
             # Find index of particle with the highest energy
             leading_particle_idx = np.argmax(secondaries[:, 1])
@@ -171,18 +177,32 @@ def generate_leading_particle_information():
 
 def prepare_dataset():
     global max_sequence_length
+    global num_tokens_per_particle
+    global num_features_per_particle
+    
+    scheme = configurator.scheme
+    if scheme == 'standard':
+        num_features_per_particle = 5
+        num_tokens_per_particle = num_features_per_particle + 2
+    elif scheme == 'no_eta':
+        num_features_per_particle = 4
+        num_tokens_per_particle = num_features_per_particle + 2
+    elif scheme == 'no_particle_boundaries':
+        num_features_per_particle = 5
+        num_tokens_per_particle = num_features_per_particle
     
     # Ensure the outputs directory exists
-    input_data_filename = Path(script_dir, 'data', configurator.dataset, 'data.csv')
-    dictionary_filename = Path(script_dir, 'data', configurator.dataset, 'dictionary.json')
-    temp_data_dir = script_dir / 'data' / configurator.dataset / 'temp'
-    temp_data_dir_as_filename = Path(script_dir, 'data', configurator.dataset, 'temp', 'something.csv')
-    humanized_dictionary_filename = Path(script_dir, 'data', configurator.dataset, 'humanized_dictionary.txt')
-    meta_filename = Path(script_dir, 'data', configurator.dataset, 'outputs', 'meta.pkl')
+    input_data_filename            = script_dir / 'data' / configurator.dataset
+    meta_filename                  = script_dir / 'data' / configurator.preparation_name / 'meta.pkl'
+    dictionary_filename            = script_dir / 'data' / configurator.preparation_name / 'dictionary.json'
+    tokenized_data_filename        = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
+    humanized_dictionary_filename  = script_dir / 'data' / configurator.preparation_name / 'humanized_dictionary.txt'
+    temp_data_dir                  = script_dir / 'data' / configurator.preparation_name / 'temp'
+    temp_data_dir_as_filename      = script_dir / 'data' / configurator.preparation_name / 'temp' / 'something.csv'
     Path(meta_filename).parent.mkdir(parents=True, exist_ok=True)
     Path(temp_data_dir).mkdir(parents=True, exist_ok=True)
-
-    # Only prepare if we haven't already prepared the data
+    
+    # # Only prepare if we haven't already prepared the data
     if meta_filename.exists():
         meta = None
         with open(meta_filename, 'rb') as f:
@@ -191,12 +211,27 @@ def prepare_dataset():
                 print("Data already prepared")
                 return
 
-    dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
-    dictionary.output_humanized_dictionary(humanized_dictionary_filename)
-    pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
-    
+    # dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
+    # dictionary.output_humanized_dictionary(humanized_dictionary_filename)
+    if scheme == 'standard':
+        pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
+    elif scheme == 'no_eta':
+        pTokenizer.tokenize_data_scheme_no_eta(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
+    elif scheme == 'no_particle_boundaries':
+        pTokenizer.tokenize_data_scheme_no_particle_boundaries(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
+        
     # The tokenizer generates a bunch of files which need to be concatenated
-    concat_tokenized_batches()
+    print('Started concatenating tokenized files.')
+    tokenized_csv_files = sorted(
+        [
+            Path(temp_data_dir, f.name)
+            for f in temp_data_dir.iterdir()
+            if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
+        ],
+        key=lambda x: int(x.stem.split('_')[-1])
+    )
+    pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
+    print('Finished concatenating tokenized files.')
     
     # Then we go through and bin the concatenated file
     bin_data()
@@ -204,7 +239,7 @@ def prepare_dataset():
     # Generate leading particle information here since this is needed per dataset, not per config
     generate_leading_particle_information()
     
-    max_sequence_length = determine_max_sequence_length(Path(temp_data_dir, "tokenized_batch_0.csv"))
+    max_sequence_length = pUtil.count_columns(tokenized_data_filename)
     
     print("----------------------------------------")
     print("Data information:")
@@ -216,7 +251,7 @@ def prepare_dataset():
     print(f"Val has: {(num_val_events * max_sequence_length):,} tokens")
     print(f"Test has: {num_test_events:,} events")
     print(f"Test has: {(num_test_events * max_sequence_length):,} tokens")
-    print(f"Particles per event: {int((max_sequence_length - 2) / 7)} particles")
+    print(f"Particles per event: {int((max_sequence_length - 2) / num_tokens_per_particle)} particles")
     print(f"Max sequence length: {max_sequence_length} tokens")
     print("----------------------------------------")
 
@@ -230,7 +265,7 @@ def prepare_dataset():
             'num_val_tokens': num_val_events * max_sequence_length,
             'num_test_events': num_test_events,
             'num_test_tokens': num_test_events * max_sequence_length,
-            'num_particles_per_event': int((max_sequence_length - 2) / 7),
+            'num_particles_per_event': int((max_sequence_length - 2) / num_tokens_per_particle),
             'max_sequence_length': max_sequence_length,
             'already_prepared': True
         }

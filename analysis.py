@@ -7,26 +7,28 @@ import matplotlib.pyplot as plt
 import concurrent.futures
 from pathlib import Path
 
-import jetnet
+# import jetnet
 
 import configurator
-import dictionary
+from dictionary import Dictionary
 import pUtil
 import pTokenizerModule as pTokenizer
 
 script_dir = Path(__file__).resolve().parent
+dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
 
 class Analyzer:
-    def __init__(self, dataset, output_dir_name):
-        self.dataset = dataset
-        self.output_dir_name = output_dir_name
+    def __init__(self, preparation, model_name, scheme):
+        self.preparation = preparation
+        self.model_name = model_name
+        self.scheme = scheme
         
-        self.latest_sampling_dir = pUtil.get_latest_sampling_dir(output_dir_name)
+        self.latest_sampling_dir = pUtil.get_latest_sampling_dir(model_name)
 
-        self.dictionary_filename                  = script_dir / 'data' / dataset / 'dictionary.json'
-        self.meta_filename                        = script_dir / 'data' / dataset / 'outputs' / 'meta.pkl'
-        self.test_real_bin_filename               = script_dir / 'data' / dataset / 'outputs' / 'test_real.bin'
-        self.real_leading_test_particles_filename = script_dir / 'data' / dataset / 'outputs' / 'real_leading_test_particles.csv'
+        self.dictionary_filename                  = script_dir / 'data' / preparation / 'dictionary.json'
+        self.meta_filename                        = script_dir / 'data' / preparation / 'meta.pkl'
+        self.test_real_bin_filename               = script_dir / 'data' / preparation / 'test_real.bin'
+        self.real_leading_test_particles_filename = script_dir / 'data' / preparation / 'real_leading_test_particles.csv'
         self.generated_samples_filename           = self.latest_sampling_dir / 'generated_samples.csv'
         self.filtered_samples_filename            = self.latest_sampling_dir / 'filtered_samples.csv'
         self.sampled_leading_particles_filename   = self.latest_sampling_dir / 'sampled_leading_particles.csv'
@@ -162,16 +164,82 @@ class Analyzer:
                 event = ' '.join(event)
                 filtered_file.write(event + '\n')
     
+    def filter_data_scheme_no_eta(self):
+        # Load data
+        tokenized_data = []
+        with open(self.generated_samples_filename) as gen_samples_file:
+            for event in gen_samples_file:
+                event = [int(x) for x in event.strip().split()]
+                tokenized_data.append(event)
+                
+        filtered_data = []
+        
+        # Ensure valid borders
+        tokenized_data = [e for e in tokenized_data if e[0] == 1 and e[-1] == 2]
+        
+        # Remove special tokens
+        tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4]] for e in tokenized_data]
+            
+        # Ensure events are well formed
+        tokenized_data = [e for e in tokenized_data if len(e) > 4 and len(e) % 4 == 0]
+        
+        # Ensure valid token ranges
+        pdgid_offset_min = dictionary.PDGID_OFFSET
+        pdgid_offset_max = dictionary.PDGID_OFFSET + len(dictionary.particles_index)
+        energy_offset_min = dictionary.ENERGY_OFFSET
+        energy_offset_max = dictionary.ENERGY_OFFSET + len(dictionary.e_bins)
+        theta_offset_min = dictionary.THETA_OFFSET
+        theta_offset_max = dictionary.THETA_OFFSET + len(dictionary.theta_bins)
+        phi_offset_min = dictionary.PHI_OFFSET
+        phi_offset_max = dictionary.PHI_OFFSET + len(dictionary.phi_bins)
+        
+        for event in tokenized_data:
+            b_keep_event = True
+            for i, token in enumerate(event):
+                token_type_id = i % 4
+                if token_type_id == 0:
+                    if token < pdgid_offset_min or token >= pdgid_offset_max:
+                        b_keep_event = False
+                        break
+                elif token_type_id == 1:
+                    if token < energy_offset_min or token >= energy_offset_max:
+                        b_keep_event = False
+                        break
+                elif token_type_id == 2:
+                    if token < theta_offset_min or token >= theta_offset_max:
+                        b_keep_event = False
+                        break
+                elif token_type_id == 3:
+                    if token < phi_offset_min or token >= phi_offset_max:
+                        b_keep_event = False
+                        break
+            
+            if b_keep_event:
+                filtered_data.append(event)
+        
+        # Output data
+        with open(self.filtered_samples_filename, 'w') as filtered_file:
+            for event in filtered_data:
+                event = [str(x) for x in event]
+                event = ' '.join(event)
+                filtered_file.write(event + '\n')
+    
     def generate_distributions(self):
-        self.filter_data()
-        # pTokenizer.filter_data(self.dictionary_filename.as_posix(), self.generated_samples_filename.as_posix(), self.filtered_samples_filename.as_posix())
-        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        if self.scheme == 'standard':
+            self.filter_data()
+            pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        elif self.scheme == 'no_eta':
+            self.filter_data_scheme_no_eta()
+            pTokenizer.untokenize_data_scheme_no_eta(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         self.generate_leading_particle_information()
 
         df1 = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
         df2 = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
 
         for column, settings in self.bin_settings.items():
+            if self.scheme == 'no_eta' and column == 'eta':
+                continue                
+            
             min_val = settings["min"]
             max_val = settings["max"]
             bins = settings["bins"]
@@ -181,8 +249,9 @@ class Analyzer:
 
             plt.figure(figsize=(21, 6))
             plt.subplot(1, 2, 1)
-            plt.hist(df1[column], bins=bins, weights=df1_weights, range=(min_val, max_val), edgecolor="black", alpha=0.7, color="blue", label="Input")
-            plt.hist(df2[column], bins=bins, weights=df2_weights, range=(min_val, max_val), edgecolor="black", alpha=0.7, color="orange", label="Sampled")
+            plt.xlim([min_val, max_val])
+            plt.hist(df1[column], bins=bins, weights=df1_weights, range=(min_val, max_val), alpha=0.7, color="blue", label="Input")
+            plt.hist(df2[column], bins=bins, weights=df2_weights, range=(min_val, max_val), alpha=0.7, color="orange", label="Sampled")
             plt.title(f"Histogram of {column}")
             plt.xlabel(column)
             plt.ylabel("Frequency")
@@ -375,8 +444,8 @@ if __name__ == "__main__":
         
         print("Distributions and metrics generated successfully for all datasets.")
     else:
-        print(f'Generating distributions and metrics for dataset {configurator.dataset}.')
-        dataset_analyzer = Analyzer(configurator.dataset, configurator.output_dir_name)
+        print(f'Generating distributions and metrics for dataset {configurator.preparation_name}.')
+        dataset_analyzer = Analyzer(configurator.preparation_name, configurator.model_name, configurator.scheme)
         dataset_analyzer.generate_distributions()
-        dataset_analyzer.calculate_metrics()
+        # dataset_analyzer.calculate_metrics()
         print("Distributions and metrics generated successfully.")

@@ -1,10 +1,11 @@
 """
 Sample from a trained model
 """
-from pathlib import Path
+import json
 import torch
-import numpy as np
 import pickle
+import numpy as np
+from pathlib import Path
 from contextlib import nullcontext
 from timeit import default_timer as timer
 
@@ -17,17 +18,18 @@ from model import GPTConfig, GPT
 script_dir = Path(__file__).resolve().parent
 
 # sampling_ids are consecutive so we need to determine the next one (for us)
-sampling_id = pUtil.get_latest_sampling_id(configurator.output_dir_name) + 1
+sampling_id = pUtil.get_latest_sampling_id(configurator.model_name) + 1
 
-model_filename = Path(pUtil.get_training_dir(configurator.output_dir_name), 'ckpt.pt')
-test_bin_filename = Path(script_dir, 'data', configurator.dataset, 'outputs', 'test.bin')
-meta_filename = Path(script_dir, 'data', configurator.dataset, 'outputs', 'meta.pkl')
-samples_output_filename = Path(pUtil.get_sampling_dir(configurator.output_dir_name), f'sampling_{sampling_id}', 'generated_samples.csv')
+model_filename = pUtil.get_training_dir(configurator.model_name) / 'ckpt.pt'
+test_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_tokenized.bin'
+meta_filename = script_dir / 'data' / configurator.preparation_name / 'meta.pkl'
+samples_output_filename = pUtil.get_sampling_dir(configurator.model_name) / f'sampling_{sampling_id}' / 'generated_samples.csv'
+sampling_info_filename = pUtil.get_sampling_dir(configurator.model_name) / f'sampling_{sampling_id}' / 'sampling_info.json'
 
 # Ensure the output directory of the samples exists. This needs to be done before the logger is created.
 Path(samples_output_filename).parent.mkdir(parents=True, exist_ok=True)
 
-logger_idx = pLogging.create_sampling_logger(configurator.output_dir_name, sampling_id)
+logger_idx = pLogging.create_sampling_logger(configurator.model_name, sampling_id)
 model.set_logger(logger_idx)
 pLogging.info(logger_idx, 'Sample generation started.')
 
@@ -39,7 +41,7 @@ if not model_filename.exists():
     exit()
     
 pLogging.info(logger_idx, "Sampling info", {
-    "dataset": configurator.dataset,
+    "preparation": configurator.preparation_name,
     "model_path": model_filename,
     "samples_output_filename": samples_output_filename,
     "max_new_tokens": configurator.max_new_tokens,
@@ -75,6 +77,13 @@ model.eval()
 model.to(configurator.device)
 if compile:
     model = torch.compile(model)
+
+# Write sampling info to file
+with open(sampling_info_filename, 'w') as out_file:
+    sampling_info_data = {
+        "dataset": configurator.preparation_name
+    }
+    out_file.write(json.dumps(sampling_info_data, indent=4))
 
 # Generate samples
 with torch.no_grad(), ctx, open(samples_output_filename, 'a') as out_file, open(meta_filename, 'rb') as meta_file:

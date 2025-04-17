@@ -2,12 +2,15 @@ __pycache__/
 .ipynb_checkpoints/
 
 logs/
+temp/
 trained_models/
 generated_samples/
 
-data/*/outputs/
 data/*/temp/
 data/*/*.csv
+data/*/*.bin
+data/*/*.pkl
+data/*.csv
 
 pTokenizer/build/
 pTokenizer/dist/

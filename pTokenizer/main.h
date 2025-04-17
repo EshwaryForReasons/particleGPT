@@ -52,11 +52,30 @@ public:
     void update_particle_list(const std::string& input_data_path);
 };
 
-namespace DataManager
+namespace StandardScheme
 {
     void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
     void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
-    void filter_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+};
+
+//Scheme no_eta does not include eta.
+namespace SchemeNoEta
+{
+    void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+    void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+};
+
+//Scheme no_particle_boundaries does not the particle_start and particle_end tokens.
+namespace SchemeNoParticleBoundaries
+{
+    void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+    void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+};
+
+namespace DataManager
+{
+    // void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+    // void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
     const Dictionary load_dictionary(std::string dictionary_path);
     const std::vector<std::vector<int>> load_tokenized_data(std::string input_data_path);
     void output_tokenized_data(std::string output_file_path, const std::vector<std::vector<int>>& tokenized_data);

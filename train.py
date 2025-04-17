@@ -45,8 +45,9 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # data
+preparation_name = ''
 dataset = ''
-output_dir_name = dataset
+model_name = ""
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = -1
@@ -84,18 +85,15 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # Ensure the output directory exists. Need to do this before creating the logger.
-out_dir = os.path.join(script_dir, "trained_models", output_dir_name)
+out_dir = os.path.join(script_dir, "trained_models", model_name)
 os.makedirs(out_dir, exist_ok=True)
 
-logger_idx = pLogging.create_training_logger(output_dir_name, 1)
+logger_idx = pLogging.create_training_logger(model_name, 1)
 model.set_logger(logger_idx)
 pLogging.info(logger_idx, 'Training started.')
 
-data_dir = Path('data', dataset, 'outputs')
+data_dir = Path('data', preparation_name)
 meta_path = Path(data_dir, 'meta.pkl')
-
-# Prepare the data before loading it
-# prepare.prepare_dataset()
 
 if not meta_path.exists():
     pLogging.info(logger_idx, "No meta file found, ensure data is prepared!")
@@ -174,8 +172,8 @@ num_failed_checkpoint_checks = 0
     
 pLogging.info(logger_idx, "Training configuration", {
     "config_file_path": config_file_path,
-    "dataset": dataset,
-    "output_dir_name": output_dir_name,
+    "preparation": preparation_name,
+    "model_name": model_name,
     "tokens_per_iter": tokens_per_iter,
     "ddp": ddp,
     "ddp_world_size": ddp_world_size,
@@ -191,6 +189,7 @@ pLogging.info(logger_idx, "Training configuration", {
     "always_save_checkpoint": always_save_checkpoint,
     "init_from": init_from,
     "gradient_accumulation_steps": gradient_accumulation_steps,
+    "batch_size": batch_size,
     "block_size": block_size,
     "n_layer": n_layer,
     "n_head": n_head,
@@ -322,7 +321,14 @@ while True:
     # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
     # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
     if iter_num % eval_interval == 0 and master_process:
-        checkpoint = {}
+        checkpoint = {
+            'model': raw_model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'model_args': model_args,
+            'iter_num': iter_num,
+            'best_val_loss': best_val_loss,
+            'config': config,
+        }
         losses = estimate_loss()
         pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {
             "step": iter_num,

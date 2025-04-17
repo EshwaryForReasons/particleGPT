@@ -7,8 +7,10 @@ config_file_path = sys.argv[1]
 
 # Common
 
+preparation_name = ''
+model_name = ''
 dataset = ''
-output_dir_name = ''
+scheme = 'standard'
 
 # Sampling variables
 
@@ -53,12 +55,13 @@ def perform_configuration():
             
     # If no output_dir_name is set, then use the config file name.
     # This saves a lot of pain with accidentally overwriting files.
-    if (globals()['output_dir_name'] == ''):
+    if (globals()['model_name'] == ''):
         config_file_name = os.path.basename(config_file_path)
         config_file_name_stripped = os.path.splitext(config_file_name)
-        globals()['output_dir_name'] = config_file_name_stripped[0]
+        globals()['model_name'] = config_file_name_stripped[0]
 
 # Configurator should only run if a config file is provided as an argument.
 # All expected exceptions will be handled here.
-if len(sys.argv) > 1 and sys.argv[1] != 'all' and sys.argv[1] != 'single_threaded':
+arg_one_exceptions = [ '--help', '-h', 'all', 'single_threaded']
+if len(sys.argv) > 1 and sys.argv[1] not in arg_one_exceptions:
     perform_configuration()

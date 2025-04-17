@@ -1,0 +1,30 @@
+{
+  "training_config": {
+    "eval_interval": 250,
+    "eval_iters": 200,
+    "log_interval": 10,
+    "gradient_accumulation_steps": 40,
+    "batch_size": 12,
+    "context_events": 2,
+    "n_layer": 6,
+    "n_head": 8,
+    "n_embd": 512,
+    "dropout": 0.1,
+    "learning_rate": 1e-05,
+    "max_iters": 1000000,
+    "lr_decay_iters": 1000,
+    "min_lr": 1e-08,
+    "beta2": 0.95,
+    "warmup_iters": 500,
+    "max_num_failed_checkpoint_checks": 5000,
+    "preparation_name": "preparation_5_3",
+    "dataset": "dataset_5.csv"
+  },
+  "sampling_config": {
+    "temperature": 0.8,
+    "top_k": 200,
+    "seed": 1337,
+    "device": "cuda",
+    "compile": true
+  }
+}

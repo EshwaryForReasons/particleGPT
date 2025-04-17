@@ -17,8 +17,8 @@ def extract_numbers(folder_name):
 # Conventionally, `dataset` is used for the dataset, i.e. dataset_5_2, and `dataset_out_dir` is used for the output directory, i.e. dataset_5_2_1.
 # Here, I am differentiating between the two by using `dataset_name` for the output directory, so `dataset` can retain the original meaning.
 
-trained_models_path = script_dir / 'trained_models'
-generated_samples_path = script_dir / 'generated_samples'
+trained_models_path = script_dir / pUtil.TRAINED_MODELS_DIR_NAME
+generated_samples_path = script_dir / pUtil.GENERATED_SAMPLES_DIR_NAME
 dataset_names_in_trained_models = [folder.name for folder in trained_models_path.iterdir() if folder.is_dir()]
 dataset_names_in_generated_samples = [folder.name for folder in generated_samples_path.iterdir() if folder.is_dir()]
 # Take the intersection of the two lists
@@ -88,7 +88,7 @@ for dataset_name in dataset_names:
     
     # dataset is retrieved from the training log file since that is the most reliable way to do so in case
     # we ever stop following our naming scheme.
-    meta_file = Path('data', dataset, 'outputs', 'meta.pkl')
+    meta_file = Path('data', dataset, 'meta.pkl')
     with open(meta_file, 'rb') as f:
         meta = pickle.load(f)
         vocab_size = meta['vocab_size']
@@ -156,7 +156,7 @@ for dataset_name in dataset_names:
 
 # Output collected_information as a .csv file
 
-csv_filename = Path(script_dir, 'mega_table.csv')
+csv_filename = Path(script_dir, 'temp', 'mega_table.csv')
 with open(csv_filename, 'w') as out_file:
     first_key = next(iter(collected_information))
     param_names = ['dataset'] + [key for key in collected_information[first_key].keys()]
@@ -217,4 +217,4 @@ for i, col in enumerate(df.columns):
 table.auto_set_font_size(False)
 table.set_fontsize(10)
 table.scale(4, 1.5)
-plt.savefig('mega_table.png', bbox_inches='tight', dpi=300) 
+plt.savefig('temp/mega_table.png', bbox_inches='tight', dpi=300) 

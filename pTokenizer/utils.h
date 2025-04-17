@@ -53,6 +53,7 @@ namespace pMath
     //Replica of numpy.digitize
     inline int digitize(double value, const std::vector<double>& bins)
     {
+        //Fit it in the middle
         for (int i = 1; i <= bins.size(); ++i)
         {
             if (value >= bins[i - 1] && value < bins[i])
@@ -61,7 +62,15 @@ namespace pMath
             }
         }
 
-        return -4;
+        //Figure out if it is on the lower or upper edge
+        if (value < bins[0])
+            return 0;
+        //We return the last bin if it is greater than the last bin.
+        //Numpy returns one more than this (bins.size() instead of bins.size() - 1)
+        else if (value >= bins[bins.size() - 1])
+            return bins.size() - 1;
+
+        throw std::runtime_error("Value is not in any bin");
     }
 
     inline double get_bin_median(const std::vector<double>& bins, int bin_idx)

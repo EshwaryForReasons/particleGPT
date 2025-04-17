@@ -58,13 +58,13 @@ Dictionary::Dictionary(const std::string& _dictionary_path)
     double eta_step = dictionary_json["eta_bin_data"]["step_size"];
     eta_bins = pMath::arange(eta_min, eta_max, eta_step);
 
-    double theta_min = -2 * M_PI;
-    double theta_max = 2 * M_PI;
+    double theta_min = 0;
+    double theta_max = M_PI;
     double theta_step = dictionary_json["theta_bin_data"]["step_size"];
     theta_bins = pMath::arange(theta_min, theta_max, theta_step);
 
-    double phi_min = -2 * M_PI;
-    double phi_max = 2 * M_PI;
+    double phi_min = -M_PI;
+    double phi_max = M_PI;
     double phi_step = dictionary_json["phi_bin_data"]["step_size"];
     phi_bins = pMath::arange(phi_min, phi_max, phi_step);
 
@@ -174,7 +174,10 @@ void output_raw_data(std::string output_file_path, const std::vector<std::vector
 PYBIND11_MODULE(pTokenizerModule, m)
 {
     m.doc() = "Backend for tokenization and untokenization of data.";
-    m.def("tokenize_data", &DataManager::tokenize_data);
-    m.def("untokenize_data", &DataManager::untokenize_data);
-    m.def("filter_data", &DataManager::filter_data);
+    m.def("tokenize_data", &StandardScheme::tokenize_data);
+    m.def("tokenize_data_scheme_no_eta", &SchemeNoEta::tokenize_data);
+    m.def("tokenize_data_scheme_no_particle_boundaries", &SchemeNoParticleBoundaries::tokenize_data);
+    m.def("untokenize_data", &StandardScheme::untokenize_data);
+    m.def("untokenize_data_scheme_no_eta", &SchemeNoEta::untokenize_data);
+    m.def("untokenize_data_scheme_no_particle_boundaries", &SchemeNoParticleBoundaries::untokenize_data);
 }

@@ -7,5 +7,5 @@ project(pTokenizerModule)
 
 add_subdirectory(pybind11)
 
-pybind11_add_module(pTokenizerModule main.cpp tokenizer.cpp untokenizer.cpp filter.cpp)
+pybind11_add_module(pTokenizerModule main.cpp tokenizer.cpp untokenizer.cpp)
 target_include_directories(pTokenizerModule PUBLIC . pybind11/include)

@@ -9,6 +9,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 
 import math
 import inspect
+from pathlib import Path
 from dataclasses import dataclass
 
 import torch
@@ -16,11 +17,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import pLogging
-import dictionary
+import configurator
+from dictionary import Dictionary
+
+script_dir = Path(__file__).resolve().parent
+dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
 
 # Model will never be used on its own. It will be accessed by the training or generation script.
 # Therefore, we inherit the logger from the accessing script.
-
 def set_logger(in_logger_idx):
     global logger_idx
     logger_idx = in_logger_idx
