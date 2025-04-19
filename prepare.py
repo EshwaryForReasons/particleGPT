@@ -190,6 +190,9 @@ def prepare_dataset():
     elif scheme == 'no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
+    elif scheme == 'paddingv2':
+        num_features_per_particle = 5
+        num_tokens_per_particle = num_features_per_particle + 2
     
     # Ensure the outputs directory exists
     input_data_filename            = script_dir / 'data' / configurator.dataset
@@ -212,13 +215,15 @@ def prepare_dataset():
                 return
 
     # dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
-    # dictionary.output_humanized_dictionary(humanized_dictionary_filename)
+    dictionary.output_humanized_dictionary(humanized_dictionary_filename)
     if scheme == 'standard':
         pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
     elif scheme == 'no_eta':
         pTokenizer.tokenize_data_scheme_no_eta(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
     elif scheme == 'no_particle_boundaries':
         pTokenizer.tokenize_data_scheme_no_particle_boundaries(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
+    elif scheme == 'paddingv2':
+        pTokenizer.tokenize_data_scheme_paddingv2(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
         
     # The tokenizer generates a bunch of files which need to be concatenated
     print('Started concatenating tokenized files.')

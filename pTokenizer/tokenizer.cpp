@@ -113,29 +113,13 @@ const std::vector<int> tokenize_event(const std::vector<double>& event)
             }
         }
 
-        int a = pMath::digitize(energy, dictionary.e_bins);
-        int b = pMath::digitize(eta, dictionary.eta_bins);
-        int c = pMath::digitize(theta, dictionary.theta_bins);
-        int d = pMath::digitize(phi, dictionary.phi_bins);
-
-        int ao = dictionary.offsets.energy_offset;
-        int bo = dictionary.offsets.eta_offset;
-        int co = dictionary.offsets.theta_offset;
-        int doo = dictionary.offsets.phi_offset;
-
         tokenized_event.push_back(dictionary.special_tokens.particle_start);
         tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(a + ao);
-        tokenized_event.push_back(b + bo);
-        tokenized_event.push_back(c + co);
-        tokenized_event.push_back(d + doo);
+        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
+        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
+        tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
+        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
         tokenized_event.push_back(dictionary.special_tokens.particle_end);
-
-        if (d + doo == 2182)
-        {
-            std::cout << d << std::endl;
-            std::cout << doo << std::endl;
-        }
     }
 
     if (!b_use_event)
@@ -604,6 +588,214 @@ void tokenize_events_in_range(const std::string& input_data_path, const std::str
             const std::size_t required_delta = num_particles_max - num_particles;
             for (std::size_t i = 0; i < required_delta; ++i)
             {
+                tokenized_event.push_back(0);
+                tokenized_event.push_back(0);
+                tokenized_event.push_back(0);
+                tokenized_event.push_back(0);
+                tokenized_event.push_back(0);
+            }
+        }
+        else if (tokenized_event.size() > max_sequence_length)
+        {
+            throw std::runtime_error("pTokenizer: Tokenized event is larger than max sequence length.");
+        }
+    }
+
+    //Output data
+
+    std::filesystem::path output_data_filename = std::filesystem::path(output_data_path).parent_path() / std::format("tokenized_batch_{}.csv", idx);
+    std::ofstream output_data_file(output_data_filename.c_str());
+    for (const auto& tokenized_event : tokenized_events)
+    {
+        for (std::size_t i = 0; i < tokenized_event.size(); ++i)
+        {
+            output_data_file << tokenized_event[i];
+            if (i != tokenized_event.size() - 1)
+                output_data_file << " ";
+        }
+        output_data_file << "\n";
+    }
+    //std::printf("Outputted tokenized events to filename: %s\n", output_data_filename.c_str());
+}
+
+void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
+{
+    std::printf("----------------------------------------\n");
+
+    dictionary = DataManager::load_dictionary(dictionary_path);
+
+    //This code probably wont work if num_events < num_threads.
+    const std::size_t four_gigs = (std::size_t)4 * 1024 * 1024 * 1024;
+    const std::size_t ninety_six_gigs = (std::size_t)96 * 1024 * 1024 * 1024;
+    const std::size_t available_memory = std::min(get_free_memory_size() - four_gigs, ninety_six_gigs);
+
+    //Step one is to determine the number of events in the data
+    const auto [total_num_events, num_particles_max] = analyze_dataset(input_data_path);
+
+    //We want to use all possible threads and allocate events such that we do not exceed the available memory
+    const std::size_t num_threads = std::thread::hardware_concurrency();
+    //Rough calculation, but it should handle all cases
+    const std::size_t memory_usage_per_event = (num_particles_max * 7) * (sizeof(double) + sizeof(int));
+    //Assume we use num_threads
+    const std::size_t max_events_per_thread = available_memory / (memory_usage_per_event * num_threads);
+
+    const std::size_t required_threads = std::ceil(static_cast<double>(total_num_events) / static_cast<double>(max_events_per_thread));
+    const std::size_t events_per_thread = std::min<std::size_t>(
+        max_events_per_thread,
+        std::ceil(static_cast<double>(total_num_events) / static_cast<double>(required_threads))
+    );
+
+    //Tokenize data
+
+    std::printf("pTokenizer: tokenizer: Began tokenizing data.\n");
+    std::printf("Input data file path: %s\n", input_data_path.c_str());
+    std::printf("Available memory: %zu\n", available_memory);
+    std::printf("Number of hardware threads: %zu\n", num_threads);
+    std::printf("Number of required threads: %zu\n", required_threads);
+    std::printf("Events per thread: %zu\n", events_per_thread);
+
+    std::vector<std::thread> threads;
+    for (std::size_t i = 0; i < required_threads; ++i)
+    {
+        std::size_t start_idx = i * events_per_thread;
+        std::size_t end_idx = ((i + 1) * events_per_thread) - 1;
+        if (i == required_threads - 1)
+        {
+            end_idx = total_num_events - 1;
+        }
+        threads.push_back(std::thread(&tokenize_events_in_range, input_data_path, output_data_path, num_particles_max, start_idx, end_idx, i));
+
+        const std::size_t running_threads = threads.size();
+        //TODO: ideally we would handle this on a thread by thread basis.
+        //The wait can't be too bad but still should implement some sort of thread by thread thing.
+        if (running_threads >= num_threads)
+        {
+            for (auto& thread : threads)
+                thread.join();
+            threads.clear();
+        }
+    }
+
+    //Wait for remaining threads
+    for (auto& thread : threads)
+        thread.join();
+
+    std::printf("pTokenizer: tokenizer: Finished tokenizing data.\n");
+
+    std::printf("----------------------------------------\n");
+}
+}
+
+namespace SchemePaddingV2
+{
+const std::vector<int> tokenize_event(const std::vector<double>& event)
+{
+    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
+    bool b_use_event = true;
+    // As opposed to padding
+    bool b_tokenizing_secondaries = true;
+
+    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
+    {
+        double pdgid = event[particle_idx * 5];
+        if (pdgid == -1)
+        {
+            if (b_tokenizing_secondaries)
+            {
+                tokenized_event.push_back(dictionary.special_tokens.event_end);
+                b_tokenizing_secondaries = false;
+            }
+            tokenized_event.insert(tokenized_event.end(), { 0, 0, 0, 0, 0, 0, 0 });
+            continue;
+        }
+
+        double energy = event[particle_idx * 5 + 1];
+        double px = event[particle_idx * 5 + 2];
+        double py = event[particle_idx * 5 + 3];
+        double pz = event[particle_idx * 5 + 4];
+
+        double r = std::sqrt(px * px + py * py + pz * pz);
+        double theta = std::acos(pz / r);
+        double phi = std::atan2(py, px);
+        double eta = -std::log(std::tan(theta / 2));
+
+        if (std::abs(eta) > 4)
+        {
+            b_use_event = false;
+            break;
+        }
+
+        int particle_index = 0;
+        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
+        {
+            if (i_pdgid == pdgid)
+            {
+                particle_index = i_index;
+                break;
+            }
+        }
+
+        tokenized_event.push_back(dictionary.special_tokens.particle_start);
+        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
+        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
+        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
+        tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
+        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
+        tokenized_event.push_back(dictionary.special_tokens.particle_end);
+    }
+
+    if (!b_use_event)
+        return {};
+
+    //In the case that this is the longest event this will have not padding which means the event end token will have never been added
+    if (b_tokenizing_secondaries)
+        tokenized_event.push_back(dictionary.special_tokens.event_end);
+
+    return tokenized_event;
+}
+
+void tokenize_events_in_range(const std::string& input_data_path, const std::string& output_data_path, const std::size_t num_particles_max, const std::size_t start_idx, const std::size_t end_idx, const std::size_t idx)
+{
+    std::ifstream input_data_file(input_data_path);
+
+    //Tokenize data
+
+    std::vector<std::vector<int>> tokenized_events;
+    std::string event;
+    std::vector<double> input_events;
+    for (std::size_t i = 0; i <= end_idx; ++i)
+    {
+        std::getline(input_data_file, event);
+
+        //Skip to start_idx
+        if (i < start_idx)
+            continue;
+
+        std::replace(event.begin(), event.end(), ';', ' ');
+        const std::vector<std::string_view> event_split_str = Utils::split(event, ' ');
+        std::vector<double> event_split;
+        for (auto event_split_single : event_split_str)
+            event_split.push_back(std::stod(event_split_single.data()));
+        
+        const std::vector<int> tokenized_event = tokenize_event(event_split);
+        if (!tokenized_event.empty())
+            tokenized_events.push_back(tokenized_event);
+    }
+
+    //Pad data
+
+    const std::size_t max_sequence_length = num_particles_max * 7 + 2;
+    for (auto& tokenized_event : tokenized_events)
+    {
+        if (tokenized_event.size() < max_sequence_length)
+        {
+            const std::size_t num_tokens_per_particle = 7;
+            const std::size_t num_particles = (tokenized_event.size() - 2) / num_tokens_per_particle;
+            const std::size_t required_delta = num_particles_max - num_particles;
+            for (std::size_t i = 0; i < required_delta; ++i)
+            {
+                tokenized_event.push_back(0);
+                tokenized_event.push_back(0);
                 tokenized_event.push_back(0);
                 tokenized_event.push_back(0);
                 tokenized_event.push_back(0);

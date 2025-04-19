@@ -224,6 +224,15 @@ class Analyzer:
                 event = ' '.join(event)
                 filtered_file.write(event + '\n')
     
+    
+        
+        # Output data
+        with open(self.filtered_samples_filename, 'w') as filtered_file:
+            for event in filtered_data:
+                event = [str(x) for x in event]
+                event = ' '.join(event)
+                filtered_file.write(event + '\n')
+    
     def generate_distributions(self):
         if self.scheme == 'standard':
             self.filter_data()
@@ -231,6 +240,12 @@ class Analyzer:
         elif self.scheme == 'no_eta':
             self.filter_data_scheme_no_eta()
             pTokenizer.untokenize_data_scheme_no_eta(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        elif self.scheme == 'no_particle_boundaries':
+            self.filter_data()
+            pTokenizer.untokenize_data_scheme_no_particle_boundaries(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        elif self.scheme == 'paddingv2':
+            self.filter_data()
+            pTokenizer.untokenize_data_scheme_paddingv2(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         self.generate_leading_particle_information()
 
         df1 = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
@@ -381,17 +396,17 @@ class Analyzer:
         # Wasserstein Distances 
         # -------------------------------------------------------------------------------
 
-        # Wasserstein distances between Energy Flow Polynomials
-        avg_w1_scores_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
-        # print(avg_w1_scores_efp)
+        # # Wasserstein distances between Energy Flow Polynomials
+        # avg_w1_scores_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
+        # # print(avg_w1_scores_efp)
 
-        # Wasserstein distance between masses of jets1 and jets2
-        w1_mass_score = jetnet.evaluation.w1m(real_jets, generated_jets)
-        # print(w1_mass_score)
+        # # Wasserstein distance between masses of jets1 and jets2
+        # w1_mass_score = jetnet.evaluation.w1m(real_jets, generated_jets)
+        # # print(w1_mass_score)
 
-        # Wasserstein distances between particle features of jets1 and jets2
-        avg_w1_scores_features = jetnet.evaluation.w1p(real_jets, generated_jets)
-        # print(avg_w1_scores_features)
+        # # Wasserstein distances between particle features of jets1 and jets2
+        # avg_w1_scores_features = jetnet.evaluation.w1p(real_jets, generated_jets)
+        # # print(avg_w1_scores_features)
 
         metrics_results_dict = {
             "coverage": cov,

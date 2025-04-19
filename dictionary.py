@@ -78,6 +78,9 @@ class Dictionary():
 
     def get_special_tokens(self):
         return self.dictionary_data['special_tokens']
+    
+    def get_padding_token(self):
+        return self.dictionary_data['special_tokens']['padding']
 
     def output_humanized_dictionary(self, output_file_path):
         # Define column widths for formatting

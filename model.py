@@ -123,6 +123,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    num_token_types: int = 7 # padding, special, pdgid, e, eta, theta, phi
 
 class GPT(nn.Module):
 
@@ -135,6 +136,7 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
+            type_emb = nn.Embedding(config.num_token_types, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
@@ -155,6 +157,18 @@ class GPT(nn.Module):
 
         # report number of parameters
         pLogging.info(logger_idx, "Model info", {"num_params": str(self.get_num_params() / 1e6) + "M" })
+    
+    def get_token_type_ids(self, idx):
+        # Map token id ranges to type ids
+        type_ids = torch.zeros_like(idx)
+        type_ids[(idx == 0)]                                                                                                               = 0 # padding
+        type_ids[(idx >= dictionary.SPECIAL_TOKENS_OFFSET + 1) & (idx < dictionary.SPECIAL_TOKENS_OFFSET + dictionary.num_special_tokens)] = 1 # special
+        type_ids[(idx >= dictionary.PDGID_OFFSET)              & (idx < dictionary.PDGID_OFFSET + dictionary.num_particles)]               = 2 # pdgid
+        type_ids[(idx >= dictionary.ENERGY_OFFSET)             & (idx < dictionary.ENERGY_OFFSET + len(dictionary.e_bins))]                = 3 # e
+        type_ids[(idx >= dictionary.ETA_OFFSET)                & (idx < dictionary.ETA_OFFSET + len(dictionary.eta_bins))]                 = 4 # eta
+        type_ids[(idx >= dictionary.THETA_OFFSET)              & (idx < dictionary.THETA_OFFSET + len(dictionary.theta_bins))]             = 5 # theta
+        type_ids[(idx >= dictionary.PHI_OFFSET)                & (idx < dictionary.PHI_OFFSET + len(dictionary.phi_bins))]                 = 6 # phi
+        return type_ids
 
     def get_num_params(self, non_embedding=True):
         """
@@ -185,7 +199,13 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        
+        # Type embedding because it might help in our case
+        type_ids = self.get_token_type_ids(idx)
+        type_emb = self.transformer.type_emb(type_ids)
+
+        # x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(tok_emb + pos_emb + type_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
@@ -193,7 +213,8 @@ class GPT(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=dictionary.get_padding_token())
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

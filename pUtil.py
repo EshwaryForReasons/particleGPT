@@ -56,6 +56,14 @@ def get_model_preparation_dir(model_name):
     preparation_dir = script_dir / DATASETS_DIR_NAME / preparation_dirname
     return preparation_dir
 
+def get_all_model_names():
+    atlas_filename = script_dir / 'atlas.json'
+    with open(atlas_filename, 'r') as f:
+        atlas = json.load(f)
+    
+    model_names = list(atlas['models'].keys())
+    return model_names
+
 # Sampling
 
 def get_latest_sampling_id(model_name):

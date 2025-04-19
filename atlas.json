@@ -106,7 +106,8 @@
                         "model_5_3_18",
                         "model_5_3_19",
                         "model_5_3_20",
-                        "model_5_3_21"
+                        "model_5_3_21",
+                        "model_5_3_22"
                     ]
                 },
                 "preparation_5_4": {
@@ -118,7 +119,18 @@
                     "associated_models": [
                         "model_5_5_1",
                         "model_5_5_2",
-                        "model_5_5_3"
+                        "model_5_5_3",
+                        "model_5_5_4",
+                        "model_5_5_5",
+                        "model_5_5_6"
+                    ]
+                },
+                "preparation_5_6": {
+                    "associated_models": [
+                        "model_5_6_1",
+                        "model_5_6_2",
+                        "model_5_6_3",
+                        "model_5_6_4"
                     ]
                 }
             }
@@ -429,6 +441,11 @@
             "dataset_name": "dataset_5",
             "preparation_name": "preparation_5_3"
         },
+        "model_5_3_22": {
+            "config_file": "model_5_3_22.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_3"
+        },
         "model_5_4_1": {
             "config_file": "model_5_4_1.json",
             "dataset_name": "dataset_5",
@@ -448,6 +465,41 @@
             "config_file": "model_5_5_3.json",
             "dataset_name": "dataset_5",
             "preparation_name": "preparation_5_5"
+        },
+        "model_5_5_4": {
+            "config_file": "model_5_5_4.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_5"
+        },
+        "model_5_5_5": {
+            "config_file": "model_5_5_5.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_5"
+        },
+        "model_5_5_6": {
+            "config_file": "model_5_5_6.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_5"
+        },
+        "model_5_6_1": {
+            "config_file": "model_5_6_1.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_6"
+        },
+        "model_5_6_2": {
+            "config_file": "model_5_6_2.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_6"
+        },
+        "model_5_6_3": {
+            "config_file": "model_5_6_3.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_6"
+        },
+        "model_5_6_4": {
+            "config_file": "model_5_6_4.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_6"
         },
         "model_5c1_1_1": {
             "config_file": "model_5c1_1_1.json",

@@ -1,0 +1,100 @@
+Type             |  Num   |  Token Range   |  Min     |  Max     |  Step Size   |  
+Special tokens   |  10    |  0 - 9         |  N/A     |  N/A     |  N/A         |  
+Particles        |  68    |  10 - 77       |  N/A     |  N/A     |  N/A         |  
+Materials        |  8     |  78 - 85       |  N/A     |  N/A     |  N/A         |  
+Energy bins      |  350   |  86 - 435      |  0       |  35000   |  100         |  
+Eta bins         |  802   |  436 - 1237    |  -4      |  4.01    |  0.01        |  
+Theta bins       |  316   |  1238 - 1553   |  0       |  3.15    |  0.01        |  
+Phi bins         |  631   |  1554 - 2184   |  -3.15   |  3.15    |  0.01        |  
+
+Special Token - Token Value
+padding - 0
+event_start - 1
+event_end - 2
+particle_start - 3
+particle_end - 4
+reserved_5 - 5
+reserved_6 - 6
+reserved_7 - 7
+reserved_8 - 8
+reserved_9 - 9
+
+Particle Name - Token Value
+Li8 - 10
+K(L)0 - 11
+Be7 - 12
+Xi~0 - 13
+Omega- - 14
+Li9 - 15
+e- - 16
+Sigma0 - 17
+Be8 - 18
+Xi~+ - 19
+Li10 - 20
+gamma - 21
+Sigma+ - 22
+B7 - 23
+Be9 - 24
+B8 - 25
+p - 26
+D2 - 27
+Be10 - 28
+Sigma- - 29
+B9 - 30
+pi- - 31
+T3 - 32
+Be11 - 33
+C8 - 34
+Lambda - 35
+B10 - 36
+K(S)0 - 37
+H4 - 38
+C9 - 39
+He3 - 40
+K- - 41
+n - 42
+K+ - 43
+n~ - 44
+B11 - 45
+C10 - 46
+H5 - 47
+He4 - 48
+B12 - 49
+eta'(958) - 50
+H6 - 51
+C11 - 52
+Lambda~ - 53
+He5 - 54
+pi+ - 55
+N10 - 56
+Li4 - 57
+C12 - 58
+Sigma~+ - 59
+p~ - 60
+eta - 61
+He6 - 62
+Omega~+ - 63
+N11 - 64
+Li5 - 65
+He7 - 66
+N12 - 67
+Sigma~- - 68
+Li6 - 69
+pi0 - 70
+Xi- - 71
+He8 - 72
+Be5 - 73
+Sigma~0 - 74
+Li7 - 75
+Xi0 - 76
+Be6 - 77
+
+Material Name - Token Value
+G4_C - 78
+G4_Al - 79
+G4_Si - 80
+G4_Ar - 81
+G4_Fe - 82
+G4_Cu - 83
+G4_W - 84
+G4_Pb - 85
