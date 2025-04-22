@@ -16,7 +16,7 @@ install_dependencies() {
         torch_geometric
         particle
         file_read_backwards
-        torch==2.4+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+        # torch==2.4+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
     )
 
     pip install "${required_libraries[@]}"

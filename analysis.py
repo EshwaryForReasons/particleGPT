@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import concurrent.futures
 from pathlib import Path
 
-# import jetnet
+import jetnet
 
 import configurator
 from dictionary import Dictionary
@@ -15,20 +15,19 @@ import pUtil
 import pTokenizerModule as pTokenizer
 
 script_dir = Path(__file__).resolve().parent
-dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
 
 class Analyzer:
-    def __init__(self, preparation, model_name, scheme):
-        self.preparation = preparation
+    def __init__(self, model_name, preparation_name, scheme):
+        self.preparation = preparation_name
         self.model_name = model_name
         self.scheme = scheme
         
         self.latest_sampling_dir = pUtil.get_latest_sampling_dir(model_name)
 
-        self.dictionary_filename                  = script_dir / 'data' / preparation / 'dictionary.json'
-        self.meta_filename                        = script_dir / 'data' / preparation / 'meta.pkl'
-        self.test_real_bin_filename               = script_dir / 'data' / preparation / 'test_real.bin'
-        self.real_leading_test_particles_filename = script_dir / 'data' / preparation / 'real_leading_test_particles.csv'
+        self.dictionary_filename                  = script_dir / 'data' / preparation_name / 'dictionary.json'
+        self.meta_filename                        = script_dir / 'data' / preparation_name / 'meta.pkl'
+        self.test_real_bin_filename               = script_dir / 'data' / preparation_name / 'test_real.bin'
+        self.real_leading_test_particles_filename = script_dir / 'data' / preparation_name / 'real_leading_test_particles.csv'
         self.generated_samples_filename           = self.latest_sampling_dir / 'generated_samples.csv'
         self.filtered_samples_filename            = self.latest_sampling_dir / 'filtered_samples.csv'
         self.sampled_leading_particles_filename   = self.latest_sampling_dir / 'sampled_leading_particles.csv'
@@ -39,24 +38,23 @@ class Analyzer:
             print("Data has not been prepared! Please prepare data first!")
             exit()
             
-        with open(self.dictionary_filename) as dictionary_file:
-            dictionary = json.load(dictionary_file)
+        self.dictionary = Dictionary(self.dictionary_filename.as_posix())
 
         # Convenience dictionary definitions
-        p_bin_count = (dictionary["e_bin_data"]["max"] - dictionary["e_bin_data"]["min"]) // 1000
-        e_bin_count = (dictionary["e_bin_data"]["max"] - dictionary["e_bin_data"]["min"]) // dictionary["e_bin_data"]["step_size"]
-        eta_bin_count = int((dictionary["eta_bin_data"]["max"] - dictionary["eta_bin_data"]["min"]) // dictionary["eta_bin_data"]["step_size"])
+        p_bin_count = int(self.dictionary.token_range('e') // 1000)
+        e_bin_count = int(self.dictionary.token_range('e') // self.dictionary.token_step_size('e'))
+        eta_bin_count = int(self.dictionary.token_range('eta') // self.dictionary.token_step_size('eta'))
 
         self.columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "eta", "theta", "phi"]
         self.bin_settings = {
-            "num_particles": { "min": 0,                                 "max": 50,                                "bins": 50 },
-            "e":             { "min": dictionary["e_bin_data"]["min"],   "max": dictionary["e_bin_data"]["max"],   "bins": e_bin_count },
-            "px":            { "min": dictionary["e_bin_data"]["min"],   "max": dictionary["e_bin_data"]["max"],   "bins": p_bin_count },
-            "py":            { "min": dictionary["e_bin_data"]["min"],   "max": dictionary["e_bin_data"]["max"],   "bins": p_bin_count },
-            "pz":            { "min": dictionary["e_bin_data"]["min"],   "max": dictionary["e_bin_data"]["max"],   "bins": p_bin_count },
-            "eta":           { "min": dictionary["eta_bin_data"]["min"], "max": dictionary["eta_bin_data"]["max"], "bins": eta_bin_count },
-            "theta":         { "min": -2 * np.pi,                        "max": 2 * np.pi,                         "bins": int((4 * np.pi) // dictionary["theta_bin_data"]["step_size"]) },
-            "phi":           { "min": -2 * np.pi,                        "max": 2 * np.pi,                         "bins": int((4 * np.pi) // dictionary["phi_bin_data"]["step_size"]) },
+            "num_particles": { "min": 0,                                  "max": 50,                                 "bins": 50 },
+            "e":             { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": e_bin_count },
+            "px":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
+            "py":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
+            "pz":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
+            "eta":           { "min": self.dictionary.token_min('eta'),   "max": self.dictionary.token_max('eta'),   "bins": eta_bin_count },
+            "theta":         { "min": self.dictionary.token_min('theta'), "max": self.dictionary.token_max('theta'), "bins": int(self.dictionary.token_range('theta') // self.dictionary.token_step_size('theta')) },
+            "phi":           { "min": self.dictionary.token_min('phi'),   "max": self.dictionary.token_max('phi'),   "bins": int(self.dictionary.token_range('phi') // self.dictionary.token_step_size('theta')) },
         }
     
     def generate_leading_particle_information(self):
@@ -118,16 +116,16 @@ class Analyzer:
         tokenized_data = [e for e in tokenized_data if len(e) > 5 and len(e) % 5 == 0]
         
         # Ensure valid token ranges
-        pdgid_offset_min = dictionary.PDGID_OFFSET
-        pdgid_offset_max = dictionary.PDGID_OFFSET + len(dictionary.particles_index)
-        energy_offset_min = dictionary.ENERGY_OFFSET
-        energy_offset_max = dictionary.ENERGY_OFFSET + len(dictionary.e_bins)
-        eta_offset_min = dictionary.ETA_OFFSET
-        eta_offset_max = dictionary.ETA_OFFSET + len(dictionary.eta_bins)
-        theta_offset_min = dictionary.THETA_OFFSET
-        theta_offset_max = dictionary.THETA_OFFSET + len(dictionary.theta_bins)
-        phi_offset_min = dictionary.PHI_OFFSET
-        phi_offset_max = dictionary.PHI_OFFSET + len(dictionary.phi_bins)
+        pdgid_offset_min = self.dictionary.PDGID_OFFSET
+        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.particles_index)
+        energy_offset_min = self.dictionary.ENERGY_OFFSET
+        energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
+        eta_offset_min = self.dictionary.ETA_OFFSET
+        eta_offset_max = self.dictionary.ETA_OFFSET + len(self.dictionary.eta_bins)
+        theta_offset_min = self.dictionary.THETA_OFFSET
+        theta_offset_max = self.dictionary.THETA_OFFSET + len(self.dictionary.theta_bins)
+        phi_offset_min = self.dictionary.PHI_OFFSET
+        phi_offset_max = self.dictionary.PHI_OFFSET + len(self.dictionary.phi_bins)
         
         for event in tokenized_data:
             b_keep_event = True
@@ -184,14 +182,14 @@ class Analyzer:
         tokenized_data = [e for e in tokenized_data if len(e) > 4 and len(e) % 4 == 0]
         
         # Ensure valid token ranges
-        pdgid_offset_min = dictionary.PDGID_OFFSET
-        pdgid_offset_max = dictionary.PDGID_OFFSET + len(dictionary.particles_index)
-        energy_offset_min = dictionary.ENERGY_OFFSET
-        energy_offset_max = dictionary.ENERGY_OFFSET + len(dictionary.e_bins)
-        theta_offset_min = dictionary.THETA_OFFSET
-        theta_offset_max = dictionary.THETA_OFFSET + len(dictionary.theta_bins)
-        phi_offset_min = dictionary.PHI_OFFSET
-        phi_offset_max = dictionary.PHI_OFFSET + len(dictionary.phi_bins)
+        pdgid_offset_min = self.dictionary.PDGID_OFFSET
+        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.particles_index)
+        energy_offset_min = self.dictionary.ENERGY_OFFSET
+        energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
+        theta_offset_min = self.dictionary.THETA_OFFSET
+        theta_offset_max = self.dictionary.THETA_OFFSET + len(self.dictionary.theta_bins)
+        phi_offset_min = self.dictionary.PHI_OFFSET
+        phi_offset_max = self.dictionary.PHI_OFFSET + len(self.dictionary.phi_bins)
         
         for event in tokenized_data:
             b_keep_event = True
@@ -216,15 +214,6 @@ class Analyzer:
             
             if b_keep_event:
                 filtered_data.append(event)
-        
-        # Output data
-        with open(self.filtered_samples_filename, 'w') as filtered_file:
-            for event in filtered_data:
-                event = [str(x) for x in event]
-                event = ' '.join(event)
-                filtered_file.write(event + '\n')
-    
-    
         
         # Output data
         with open(self.filtered_samples_filename, 'w') as filtered_file:
@@ -274,17 +263,7 @@ class Analyzer:
             plt.grid(axis="y", linestyle="--", alpha=0.7)
             plt.savefig(f"{self.latest_sampling_dir.as_posix()}/histogram_{column}.png", bbox_inches='tight')
 
-    def calculate_metrics(self):
-        real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
-        generated_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
-
-        for column, settings in self.bin_settings.items():
-            # NOTE: These being normalized is VERY IMPORTANT.
-            real_histogram = np.histogram(real_df[column], bins=settings['bins'], range=(settings['min'], settings['max']), density=True)
-            generated_histogram = np.histogram(generated_df[column], bins=settings['bins'], range=(settings['min'], settings['max']), density=True)
-            settings['real_histogram'] = real_histogram
-            settings['generated_histogram'] = generated_histogram
-
+    def get_real_jets(self):
         with open(self.meta_filename, 'rb') as f:
             meta = pickle.load(f)
             num_particles_per_event = meta['num_particles_per_event']
@@ -293,10 +272,10 @@ class Analyzer:
         # Preparing real Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # -------------------------------------------------------------------------------
-
+        
         test_real_events = np.memmap(self.test_real_bin_filename, dtype=np.double, mode='r')
         test_real_events = test_real_events.reshape(-1, num_particles_per_event * 5)
-
+        
         real_jets = []
         for event in test_real_events:
             particles = event.reshape(-1, 5)
@@ -321,15 +300,21 @@ class Analyzer:
             real_jets.append(single_jet)
 
         real_jets = np.array(real_jets)
-
+        return real_jets
+    
+    def get_generated_jets(self):
+        with open(self.meta_filename, 'rb') as f:
+            meta = pickle.load(f)
+            num_particles_per_event = meta['num_particles_per_event']
+        
         # -------------------------------------------------------------------------------
         # Preparing generated Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # -------------------------------------------------------------------------------
-
+        
         with open(self.untokenized_samples_filename, 'r') as f:
             untokenized_samples = f.readlines()
-            
+        
         generated_jets = []
         for sample in untokenized_samples:
             particles = sample.strip().split(';')
@@ -341,7 +326,7 @@ class Analyzer:
                 if len(particle) == 0:
                     break
                 
-                pdgid, e, px, py, pz = map(np.double, particle)
+                pdgid, e, px, py, pz = int(particle[0]), *map(np.double, particle[1:])
                 p = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
                 pt = np.sqrt(px ** 2 + py ** 2)
                 theta = np.arctan(pz / p)
@@ -355,15 +340,25 @@ class Analyzer:
 
         def pad_to_shape(lst, pad_value=0):
             num_sublists = len(lst)
-            max_length = num_particles_per_event # max(len(sublist) for sublist in lst)
+            max_length = num_particles_per_event
             padded_array = np.full((num_sublists, max_length, 3), pad_value, dtype=np.float64)
             for i, sublist in enumerate(lst):
                 for j, values in enumerate(sublist):
                     if j < max_length:
                         padded_array[i, j, :] = values  
             return padded_array
-
+        
         generated_jets = pad_to_shape(generated_jets)
+        generated_jets = np.array(generated_jets)
+        return generated_jets
+
+    def calculate_metrics(self):
+        real_jets = self.get_real_jets()
+        generated_jets = self.get_generated_jets()
+        # Make sure real and generated jets have the same num events in them.
+        num_events_in_jets = min(real_jets.shape[0], generated_jets.shape[0])
+        real_jets = real_jets[:num_events_in_jets]
+        generated_jets = generated_jets[:num_events_in_jets]
 
         # -------------------------------------------------------------------------------
         # Coverage and MMD
@@ -396,17 +391,17 @@ class Analyzer:
         # Wasserstein Distances 
         # -------------------------------------------------------------------------------
 
-        # # Wasserstein distances between Energy Flow Polynomials
-        # avg_w1_scores_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
-        # # print(avg_w1_scores_efp)
+        # Wasserstein distances between Energy Flow Polynomials
+        avg_w1_scores_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
+        # print(avg_w1_scores_efp)
 
-        # # Wasserstein distance between masses of jets1 and jets2
-        # w1_mass_score = jetnet.evaluation.w1m(real_jets, generated_jets)
-        # # print(w1_mass_score)
+        # Wasserstein distance between masses of jets1 and jets2
+        w1_mass_score = jetnet.evaluation.w1m(real_jets, generated_jets)
+        # print(w1_mass_score)
 
-        # # Wasserstein distances between particle features of jets1 and jets2
-        # avg_w1_scores_features = jetnet.evaluation.w1p(real_jets, generated_jets)
-        # # print(avg_w1_scores_features)
+        # Wasserstein distances between particle features of jets1 and jets2
+        avg_w1_scores_features = jetnet.evaluation.w1p(real_jets, generated_jets)
+        # print(avg_w1_scores_features)
 
         metrics_results_dict = {
             "coverage": cov,
@@ -420,47 +415,43 @@ class Analyzer:
         with open(self.metrics_results_filename, "w") as opt_file:
             json.dump(metrics_results_dict, opt_file, indent=4)
 
-# This function is used to extract the numbers from the dataset folder name for sorting so our table is in order.
-def extract_numbers(folder_name):
-    parts = folder_name.split('_') 
-    numbers = [int(part) for part in parts if part.isdigit()]
-    return tuple(numbers)
-
 # Need a function for multi-threading
-def analyze_dataset(out_data_dir_name):
+def analyze_dataset_worker(model_name):
+    sampling_dir = pUtil.get_latest_sampling_dir(model_name)
+    if sampling_dir is None:
+        return
+
     # Extract dataset name from sampling info
-    latest_sampling_dir = pUtil.get_latest_sampling_dir(out_data_dir_name)
-    sampling_info_file = script_dir / 'generated_samples' / out_data_dir_name / latest_sampling_dir / 'sampling_info.json'
-    with open(sampling_info_file) as f:
-        sampling_info = json.load(f)
-        dataset = sampling_info['dataset']
+    preparation_name = pUtil.get_model_preparation_name(model_name)
+    config_filename = pUtil.get_model_config_filename(model_name)
+    
+    with open(config_filename, 'r') as config_file:
+        config = json.load(config_file)
+        scheme = config['training_config'].get('scheme', 'standard')
 
     # Run the analysis
-    dataset_analyzer = Analyzer(dataset, out_data_dir_name)
+    dataset_analyzer = Analyzer(model_name, preparation_name, scheme)
     dataset_analyzer.generate_distributions()
     dataset_analyzer.calculate_metrics()
 
-if __name__ == "__main__":
+def analyze_dataset():
     # If argument 'all' is provided, generate distributions and metrics for all sampled datasets' latest sampling
     if 'all' in sys.argv:
-        print("Generating distributions and metrics for all datasets.")
+        print('Generating distributions and metrics for all datasets.')
         
-        # Find all datasets
-        generated_samples_path = script_dir / 'generated_samples'
-        out_data_dir_names = [folder.name for folder in generated_samples_path.iterdir() if folder.is_dir()]
-        out_data_dir_names = sorted(out_data_dir_names, key=extract_numbers)
-        
-        if 'single_threaded' not in sys.argv:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                executor.map(analyze_dataset, out_data_dir_names)
+        all_model_names = pUtil.get_all_model_names()
+        if 'single_threaded' in sys.argv:
+            for model_name in all_model_names:
+                analyze_dataset_worker(model_name)
         else:
-            for out_data_dir_name in out_data_dir_names:
-                analyze_dataset(out_data_dir_name)
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                executor.map(analyze_dataset_worker, all_model_names)
         
-        print("Distributions and metrics generated successfully for all datasets.")
+        print('Distributions and metrics generated successfully for all datasets.')
     else:
         print(f'Generating distributions and metrics for dataset {configurator.preparation_name}.')
-        dataset_analyzer = Analyzer(configurator.preparation_name, configurator.model_name, configurator.scheme)
-        dataset_analyzer.generate_distributions()
-        # dataset_analyzer.calculate_metrics()
-        print("Distributions and metrics generated successfully.")
+        analyze_dataset_worker(configurator.model_name)
+        print('Distributions and metrics generated successfully.')
+
+if __name__ == "__main__":
+   analyze_dataset()

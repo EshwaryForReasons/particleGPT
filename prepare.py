@@ -3,11 +3,13 @@ import csv
 import numpy as np
 from pathlib import Path
 from file_read_backwards import FileReadBackwards
+import time
 
 from dictionary import Dictionary
 import pTokenizerModule as pTokenizer
 import configurator
 import pUtil
+import data_manager
 
 script_dir = Path(__file__).resolve().parent
 dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
@@ -205,38 +207,45 @@ def prepare_dataset():
     Path(meta_filename).parent.mkdir(parents=True, exist_ok=True)
     Path(temp_data_dir).mkdir(parents=True, exist_ok=True)
     
-    # # Only prepare if we haven't already prepared the data
-    if meta_filename.exists():
-        meta = None
-        with open(meta_filename, 'rb') as f:
-            meta = pickle.load(f)
-            if meta['already_prepared']:
-                print("Data already prepared")
-                return
+    # Only prepare if we haven't already prepared the data
+    # if meta_filename.exists():
+    #     meta = None
+    #     with open(meta_filename, 'rb') as f:
+    #         meta = pickle.load(f)
+    #         if meta['already_prepared']:
+    #             print("Data already prepared")
+    #             return
 
-    # dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
+    dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
     dictionary.output_humanized_dictionary(humanized_dictionary_filename)
+    smanager = data_manager.SchemeStandardCompiled(dictionary_filename, input_data_filename, tokenized_data_filename)
+    start_time = time.time()
     if scheme == 'standard':
-        pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
+        smanager.tokenize_data()
+        # pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
     elif scheme == 'no_eta':
         pTokenizer.tokenize_data_scheme_no_eta(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
     elif scheme == 'no_particle_boundaries':
         pTokenizer.tokenize_data_scheme_no_particle_boundaries(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
     elif scheme == 'paddingv2':
         pTokenizer.tokenize_data_scheme_paddingv2(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
-        
+    end_time = time.time()
+    print(f"Execution Time: {end_time - start_time} seconds")
+
+    # return
+
     # The tokenizer generates a bunch of files which need to be concatenated
-    print('Started concatenating tokenized files.')
-    tokenized_csv_files = sorted(
-        [
-            Path(temp_data_dir, f.name)
-            for f in temp_data_dir.iterdir()
-            if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
-        ],
-        key=lambda x: int(x.stem.split('_')[-1])
-    )
-    pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
-    print('Finished concatenating tokenized files.')
+    # print('Started concatenating tokenized files.')
+    # tokenized_csv_files = sorted(
+    #     [
+    #         Path(temp_data_dir, f.name)
+    #         for f in temp_data_dir.iterdir()
+    #         if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
+    #     ],
+    #     key=lambda x: int(x.stem.split('_')[-1])
+    # )
+    # pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
+    # print('Finished concatenating tokenized files.')
     
     # Then we go through and bin the concatenated file
     bin_data()

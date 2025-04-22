@@ -49,28 +49,28 @@ class Dictionary():
         self.particles_id = self.dictionary_data['particles_id']
         
         self.table_data = [
-            ["Type",            "Num",                    "Token Range",                                                          "Min",                    "Max",                    "Step Size"],
-            ["Special tokens",  self.num_special_tokens,  self.token_range(self.SPECIAL_TOKENS_OFFSET, self.num_special_tokens),  "N/A",                    "N/A",                    "N/A"],
-            ["Particles",       self.num_particles,       self.token_range(self.PDGID_OFFSET, self.num_particles),                "N/A",                    "N/A",                    "N/A"],
-            ["Materials",       self.num_materials,       self.token_range(self.MATERIAL_OFFSET, self.num_materials),             "N/A",                    "N/A",                    "N/A"],
-            ["Energy bins",     len(self.e_bins),         self.token_range(self.ENERGY_OFFSET, len(self.e_bins)),                 self.token_min('e'),      self.token_max('e'),      self.token_step_size('e')],
-            ["Eta bins",        len(self.eta_bins),       self.token_range(self.ETA_OFFSET, len(self.eta_bins)),                  self.token_min('eta'),    self.token_max('eta'),    self.token_step_size('eta')],
-            ["Theta bins",      len(self.theta_bins),     self.token_range(self.THETA_OFFSET, len(self.theta_bins)),              self.token_min('theta'),  self.token_max('theta'),  self.token_step_size('theta')],
-            ["Phi bins",        len(self.phi_bins),       self.token_range(self.PHI_OFFSET, len(self.phi_bins)),                  self.token_min('phi'),    self.token_max('phi'),    self.token_step_size('phi')]
+            ["Type",            "Num",                    "Token Range",                                                              "Min",                    "Max",                    "Step Size"],
+            ["Special tokens",  self.num_special_tokens,  self.token_range_str(self.SPECIAL_TOKENS_OFFSET, self.num_special_tokens),  "N/A",                    "N/A",                    "N/A"],
+            ["Particles",       self.num_particles,       self.token_range_str(self.PDGID_OFFSET, self.num_particles),                "N/A",                    "N/A",                    "N/A"],
+            ["Materials",       self.num_materials,       self.token_range_str(self.MATERIAL_OFFSET, self.num_materials),             "N/A",                    "N/A",                    "N/A"],
+            ["Energy bins",     len(self.e_bins),         self.token_range_str(self.ENERGY_OFFSET, len(self.e_bins)),                 self.token_min('e'),      self.token_max('e'),      self.token_step_size('e')],
+            ["Eta bins",        len(self.eta_bins),       self.token_range_str(self.ETA_OFFSET, len(self.eta_bins)),                  self.token_min('eta'),    self.token_max('eta'),    self.token_step_size('eta')],
+            ["Theta bins",      len(self.theta_bins),     self.token_range_str(self.THETA_OFFSET, len(self.theta_bins)),              self.token_min('theta'),  self.token_max('theta'),  self.token_step_size('theta')],
+            ["Phi bins",        len(self.phi_bins),       self.token_range_str(self.PHI_OFFSET, len(self.phi_bins)),                  self.token_min('phi'),    self.token_max('phi'),    self.token_step_size('phi')]
         ]
     
     # Functions to make the table look nicer
-    def token_range(self, offset, num_tokens):
-        return f'{offset} - {(offset + num_tokens - 1)}'
-
+    
     def token_min(self, type_str):
         return self.dictionary_data[f'{type_str}_bin_data']['min']
-
     def token_max(self, type_str):
         return self.dictionary_data[f'{type_str}_bin_data']['max']
-
     def token_step_size(self, type_str):
         return self.dictionary_data[f'{type_str}_bin_data']['step_size']
+    def token_range(self, type_str):
+        return self.token_max(type_str) - self.token_min(type_str)
+    def token_range_str(self, offset, num_tokens):
+        return f'{offset} - {(offset + num_tokens - 1)}'
     
     # Actual class functions
     def get_vocab_size(self):

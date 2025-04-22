@@ -64,11 +64,19 @@ def get_all_model_names():
     model_names = list(atlas['models'].keys())
     return model_names
 
+def get_model_preparation_name(model_name):
+    atlas_filename = script_dir / 'atlas.json'
+    with open(atlas_filename, 'r') as f:
+        atlas = json.load(f)
+    
+    preparation_name = atlas['models'][model_name]['preparation_name']
+    return preparation_name
+
 # Sampling
 
 def get_latest_sampling_id(model_name):
     generated_samples_dir = Path(GENERATED_SAMPLES_DIR_NAME) / model_name
-    largest_sampling = 0
+    largest_sampling = -1
     for folder in generated_samples_dir.glob("sampling_*"):
         if folder.is_dir():
             try:
@@ -81,6 +89,8 @@ def get_latest_sampling_id(model_name):
 
 def get_latest_sampling_dir(model_name):
     latest_sampling_id = get_latest_sampling_id(model_name)
+    if latest_sampling_id is -1:
+        return None
     return get_sampling_dir(model_name) / f'sampling_{latest_sampling_id}'
 
 # csv file utils
