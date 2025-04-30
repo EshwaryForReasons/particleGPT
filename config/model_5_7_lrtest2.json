@@ -1,4 +1,7 @@
 {
+    "preparation_name": "preparation_5_7",
+    "dataset": "dataset_5.csv",
+    "scheme": "neo_no_particle_boundaries",
     "training_config": {
         "eval_interval": 250,
         "eval_iters": 200,
@@ -10,16 +13,13 @@
         "n_head": 16,
         "n_embd": 1024,
         "dropout": 0.1,
-        "learning_rate": 1e-03,
+        "learning_rate": 0.001,
         "max_iters": 1000000,
         "lr_decay_iters": 5000,
-        "min_lr": 1e-04,
+        "min_lr": 0.0001,
         "beta2": 0.98,
         "warmup_iters": 250,
         "max_num_failed_checkpoint_checks": 5000,
-        "preparation_name": "preparation_5_7",
-        "dataset": "dataset_5.csv",
-        "scheme": "neo_no_particle_boundaries",
         "init_from": "resume"
     },
     "sampling_config": {

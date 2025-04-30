@@ -9,7 +9,7 @@ from pathlib import Path
 
 import jetnet
 
-import configurator
+import configurator as conf
 from dictionary import Dictionary
 import pUtil
 import pTokenizerModule as pTokenizer
@@ -426,8 +426,8 @@ def analyze_dataset():
         
         print('Distributions and metrics generated successfully for all datasets.')
     else:
-        print(f'Generating distributions and metrics for dataset {configurator.preparation_name}.')
-        analyze_dataset_worker(configurator.model_name)
+        print(f'Generating distributions and metrics for dataset {conf.generic.preparation_name}.')
+        analyze_dataset_worker(conf.generic.model_name)
         print('Distributions and metrics generated successfully.')
 
 if __name__ == "__main__":

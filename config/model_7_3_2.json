@@ -1,30 +1,30 @@
 {
-  "training_config": {
-    "eval_interval": 250,
-    "eval_iters": 200,
-    "log_interval": 10,
-    "gradient_accumulation_steps": 40,
-    "batch_size": 64,
-    "context_events": 2,
-    "n_layer": 20,
-    "n_head": 16,
-    "n_embd": 512,
-    "dropout": 0.2,
-    "learning_rate": 0.001,
-    "max_iters": 100000,
-    "lr_decay_iters": 500,
-    "min_lr": 5e-06,
-    "beta2": 0.99,
-    "warmup_iters": 100,
-    "model_name": "model_7_3_2",
     "preparation_name": "preparation_7_3",
-    "dataset": "dataset_7.csv"
-  },
-  "sampling_config": {
-    "temperature": 0.8,
-    "top_k": 200,
-    "seed": 1337,
-    "device": "cuda",
-    "compile": true
-  }
+    "dataset": "dataset_7.csv",
+    "training_config": {
+        "eval_interval": 250,
+        "eval_iters": 200,
+        "log_interval": 10,
+        "gradient_accumulation_steps": 40,
+        "batch_size": 64,
+        "context_events": 2,
+        "n_layer": 20,
+        "n_head": 16,
+        "n_embd": 512,
+        "dropout": 0.2,
+        "learning_rate": 0.001,
+        "max_iters": 100000,
+        "lr_decay_iters": 500,
+        "min_lr": 5e-06,
+        "beta2": 0.99,
+        "warmup_iters": 100,
+        "model_name": "model_7_3_2"
+    },
+    "sampling_config": {
+        "temperature": 0.8,
+        "top_k": 200,
+        "seed": 1337,
+        "device": "cuda",
+        "compile": true
+    }
 }

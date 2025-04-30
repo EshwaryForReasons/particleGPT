@@ -1,4 +1,7 @@
 {
+    "preparation_name": "preparation_5_6",
+    "dataset": "dataset_5.csv",
+    "scheme": "paddingv2",
     "training_config": {
         "eval_interval": 250,
         "eval_iters": 200,
@@ -13,13 +16,10 @@
         "learning_rate": 0.01,
         "max_iters": 1000000,
         "lr_decay_iters": 10000,
-        "min_lr": 1e-03,
+        "min_lr": 0.001,
         "beta2": 0.95,
         "warmup_iters": 500,
-        "max_num_failed_checkpoint_checks": 5000,
-        "preparation_name": "preparation_5_6",
-        "dataset": "dataset_5.csv",
-        "scheme": "paddingv2"
+        "max_num_failed_checkpoint_checks": 5000
     },
     "sampling_config": {
         "temperature": 0.8,

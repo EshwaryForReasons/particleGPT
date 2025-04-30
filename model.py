@@ -18,12 +18,12 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import pLogging
-import configurator
+import configurator as conf
 from dictionary import Dictionary
 from dictionary import ETokenTypes
 
 script_dir = Path(__file__).resolve().parent
-dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
+dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')
 
 logger_idx = -1
 # Model will never be used on its own. It will be accessed by the training or generation script.

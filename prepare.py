@@ -7,11 +7,11 @@ import time
 
 from dictionary import Dictionary
 import pTokenizerModule as pTokenizer
-import configurator
+import configurator as conf
 import pUtil
 
 script_dir = Path(__file__).resolve().parent
-dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
+dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')
 
 num_events_total = -1
 num_train_events = -1
@@ -27,10 +27,10 @@ num_features_in_raw_particle = 5
 
 # Much faster, but required a lot of memory.
 def fast_bin(num_train_events, num_val_events, num_test_events):
-    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
-    train_bin_filename = script_dir / 'data' / configurator.preparation_name / 'train.bin'
-    val_bin_filename = script_dir / 'data' / configurator.preparation_name / 'val.bin'
-    test_tokenized_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_tokenized.bin'
+    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
+    train_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'train.bin'
+    val_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'val.bin'
+    test_tokenized_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_tokenized.bin'
     
     print(f'Starting fast bin over {num_train_events + num_val_events + num_test_events} events.')
     
@@ -52,10 +52,10 @@ def fast_bin(num_train_events, num_val_events, num_test_events):
 
 # Bins in place so doesn't require much memory, but is much slower.
 def in_place_bin(num_train_events, num_val_events, num_test_events):
-    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
-    train_bin_filename = script_dir / 'data' / configurator.preparation_name / 'train.bin'
-    val_bin_filename = script_dir / 'data' / configurator.preparation_name / 'val.bin'
-    test_tokenized_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_tokenized.bin'
+    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
+    train_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'train.bin'
+    val_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'val.bin'
+    test_tokenized_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_tokenized.bin'
     
     print(f'Starting in-place bin over {num_train_events + num_val_events + num_test_events} events.')
     with open(tokenized_data_filename, 'r') as f, open(train_bin_filename, 'wb') as train_out, open(val_bin_filename, 'wb') as val_out, open(test_tokenized_bin_filename, 'wb') as test_tokenized_out:
@@ -79,9 +79,9 @@ def bin_data():
     global num_features_per_particle
     global num_features_in_raw_particle
     
-    input_data_filename = script_dir / 'data' / configurator.dataset
-    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
-    test_real_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_real.bin'
+    input_data_filename = script_dir / 'data' / conf.generic.dataset
+    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
+    test_real_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_real.bin'
     
     num_events_total = pUtil.count_rows(tokenized_data_filename)
     # create the train, val, and test splits
@@ -137,9 +137,9 @@ def generate_leading_particle_information():
     global num_features_in_raw_particle
 
     # Output will be num_particles, pdgid, e, px, py, pz, eta, theta, phi
-    tokenized_data_filename = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
-    test_real_bin_filename = script_dir / 'data' / configurator.preparation_name / 'test_real.bin'
-    real_leading_test_particles_filename = script_dir / 'data' / configurator.preparation_name / 'real_leading_test_particles.csv'
+    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
+    test_real_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_real.bin'
+    real_leading_test_particles_filename = script_dir / 'data' / conf.generic.preparation_name / 'real_leading_test_particles.csv'
     
     num_events_total = pUtil.count_rows(tokenized_data_filename)
     # create the train, val, and test splits
@@ -181,29 +181,29 @@ def prepare_dataset():
     global num_tokens_per_particle
     global num_features_per_particle
     
-    if configurator.scheme == 'standard':
+    if conf.generic.scheme == 'standard':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2
-    elif configurator.scheme == 'no_eta':
+    elif conf.generic.scheme == 'no_eta':
         num_features_per_particle = 4
         num_tokens_per_particle = num_features_per_particle + 2
-    elif configurator.scheme == 'no_particle_boundaries':
+    elif conf.generic.scheme == 'no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
-    elif configurator.scheme == 'paddingv2':
+    elif conf.generic.scheme == 'paddingv2':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2
-    elif configurator.scheme == 'neo_no_particle_boundaries':
+    elif conf.generic.scheme == 'neo_no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
     
     # Ensure the outputs directory exists
-    input_data_filename            = script_dir / 'data' / configurator.dataset
-    meta_filename                  = script_dir / 'data' / configurator.preparation_name / 'meta.pkl'
-    dictionary_filename            = script_dir / 'data' / configurator.preparation_name / 'dictionary.json'
-    tokenized_data_filename        = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
-    humanized_dictionary_filename  = script_dir / 'data' / configurator.preparation_name / 'humanized_dictionary.txt'
-    temp_data_dir                  = script_dir / 'data' / configurator.preparation_name / 'temp'
+    input_data_filename            = script_dir / 'data' / conf.generic.dataset
+    meta_filename                  = script_dir / 'data' / conf.generic.preparation_name / 'meta.pkl'
+    dictionary_filename            = script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json'
+    tokenized_data_filename        = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
+    humanized_dictionary_filename  = script_dir / 'data' / conf.generic.preparation_name / 'humanized_dictionary.txt'
+    temp_data_dir                  = script_dir / 'data' / conf.generic.preparation_name / 'temp'
     Path(meta_filename).parent.mkdir(parents=True, exist_ok=True)
     Path(temp_data_dir).mkdir(parents=True, exist_ok=True)
     
@@ -218,7 +218,7 @@ def prepare_dataset():
 
     dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
     dictionary.output_humanized_dictionary(humanized_dictionary_filename)
-    pTokenizer.tokenize_data(dictionary_filename.as_posix(), configurator.scheme, input_data_filename.as_posix(), temp_data_dir.as_posix())
+    pTokenizer.tokenize_data(dictionary_filename.as_posix(), conf.generic.scheme, input_data_filename.as_posix(), temp_data_dir.as_posix())
 
     # The tokenizer generates a bunch of files which need to be concatenated
     print('Started concatenating tokenized files.')

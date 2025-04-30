@@ -10,7 +10,7 @@ from timeit import default_timer as timer
 
 import pLogging
 import pUtil
-import configurator
+import configurator as conf
 import model as model_module
 from model import GPTConfig, GPT
 
@@ -19,13 +19,13 @@ from dictionary import Dictionary
 script_dir = Path(__file__).resolve().parent
 
 # sampling_ids are consecutive so we need to determine the next one (for us)
-sampling_id = pUtil.get_latest_sampling_id(configurator.model_name) + 1
+sampling_id = pUtil.get_latest_sampling_id(conf.generic.model_name) + 1
 
-meta_filename           = script_dir / 'data' / configurator.preparation_name / 'meta.pkl'
-dictionary_filename     = script_dir / 'data' / configurator.preparation_name / 'dictionary.json'
-test_bin_filename       = script_dir / 'data' / configurator.preparation_name / 'test_tokenized.bin'
-model_filename          = pUtil.get_training_dir(configurator.model_name) / 'ckpt.pt'
-samples_output_filename = pUtil.get_sampling_dir(configurator.model_name) / f'sampling_{sampling_id}' / 'generated_samples.csv'
+meta_filename           = script_dir / 'data' / conf.generic.preparation_name / 'meta.pkl'
+dictionary_filename     = script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json'
+test_bin_filename       = script_dir / 'data' / conf.generic.preparation_name / 'test_tokenized.bin'
+model_filename          = pUtil.get_training_dir(conf.generic.model_name) / 'ckpt.pt'
+samples_output_filename = pUtil.get_sampling_dir(conf.generic.model_name) / f'sampling_{sampling_id}' / 'generated_samples.csv'
 
 logger_idx = -1
 dictionary = None
@@ -37,17 +37,17 @@ def initialize_model_and_ctx():
     global model
     global ctx
     
-    torch.manual_seed(configurator.seed)
-    torch.cuda.manual_seed(configurator.seed)
+    torch.manual_seed(conf.sampling.seed)
+    torch.cuda.manual_seed(conf.sampling.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    device_type = 'cuda' if 'cuda' in configurator.device else 'cpu'
-    ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[configurator.dtype]
+    device_type = 'cuda' if 'cuda' in conf.sampling.device else 'cpu'
+    ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[conf.sampling.dtype]
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
     # model
     # init from a model saved in a specific directory
-    checkpoint = torch.load(model_filename, map_location=configurator.device)
+    checkpoint = torch.load(model_filename, map_location=conf.sampling.device)
     gptconf = GPTConfig(**checkpoint['model_args'])
     model = GPT(gptconf)
     state_dict = checkpoint['model']
@@ -58,8 +58,8 @@ def initialize_model_and_ctx():
     model.load_state_dict(state_dict)
 
     model.eval()
-    model.to(configurator.device)
-    if configurator.compile:
+    model.to(conf.sampling.device)
+    if conf.sampling.compile:
         model = torch.compile(model)
 
 # Exists in case we need to sample on CPU or something.
@@ -67,8 +67,8 @@ def initialize_model_and_ctx():
 def sample_standard(sampling_starters, max_new_tokens):
     with open(samples_output_filename, 'a') as out_file:
         for starting_tokens in sampling_starters:
-            x = (torch.tensor(starting_tokens.tolist(), dtype=torch.long, device=configurator.device)[None, ...])
-            y = model.generate(x, max_new_tokens, temperature=configurator.temperature, top_k=configurator.top_k)
+            x = (torch.tensor(starting_tokens.tolist(), dtype=torch.long, device=conf.sampling.device)[None, ...])
+            y = model.generate(x, max_new_tokens, temperature=conf.sampling.temperature, top_k=conf.sampling.top_k)
             out_file.write(" ".join(map(str, y[0].tolist())) + "\n")
 
 @torch.no_grad()
@@ -83,9 +83,9 @@ def sample_batched(sampling_starters, max_new_tokens):
     generated = model.generate_batched_multiGPU(
         starters=all_starters,
         max_new_tokens=max_new_tokens,
-        temperature=configurator.temperature,
-        top_k=configurator.top_k,
-        batch_size=configurator.sampling_batch_size
+        temperature=conf.sampling.temperature,
+        top_k=conf.sampling.top_k,
+        batch_size=conf.sampling.sampling_batch_size
     )
 
     # Batch sampling outputs into padded tensor. This removes padding and outputs data.
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     # Ensure the output directory of the samples exists. This needs to be done before the logger is created.
     Path(samples_output_filename).parent.mkdir(parents=True, exist_ok=True)
 
-    logger_idx = pLogging.create_sampling_logger(configurator.model_name, sampling_id)
+    logger_idx = pLogging.create_sampling_logger(conf.generic.model_name, sampling_id)
     model_module.set_logger(logger_idx)
 
     if not meta_filename.exists():
@@ -120,16 +120,16 @@ if __name__ == "__main__":
 
     pLogging.info(logger_idx, 'Sample generation started.')
     pLogging.info(logger_idx, "Sampling info", {
-        "preparation": configurator.preparation_name,
+        "preparation": conf.generic.preparation_name,
         "model_path": model_filename,
         "samples_output_filename": samples_output_filename,
-        "max_new_tokens": configurator.max_new_tokens,
-        "temperature": configurator.temperature,
-        "top_k": configurator.top_k,
-        "seed": configurator.seed,
-        "device": configurator.device,
-        "dtype": configurator.dtype,
-        "compile": configurator.compile
+        "max_new_tokens": conf.sampling.max_new_tokens,
+        "temperature": conf.sampling.temperature,
+        "top_k": conf.sampling.top_k,
+        "seed": conf.sampling.seed,
+        "device": conf.sampling.device,
+        "dtype": conf.sampling.dtype,
+        "compile": conf.sampling.compile
     })
 
     with open(meta_filename, 'rb') as meta_file:
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     
     start = timer()
     with ctx:
-        if configurator.device == 'cpu':
+        if conf.sampling.device == 'cpu':
             sample_standard(sampling_starters, max_new_tokens=max_sequence_len)
         else:
             sample_batched(sampling_starters, max_new_tokens=max_sequence_len)

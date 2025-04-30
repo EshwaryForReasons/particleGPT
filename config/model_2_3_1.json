@@ -1,32 +1,32 @@
 {
-  "training_config": {
-    "eval_interval": 250,
-    "eval_iters": 200,
-    "log_interval": 10,
-    "always_save_checkpoint": false,
-    "gradient_accumulation_steps": 40,
-    "batch_size": 1024,
-    "block_size": 256,
-    "n_layer": 6,
-    "n_head": 6,
-    "n_embd": 384,
-    "dropout": 0.2,
-    "learning_rate": 0.0001,
-    "max_iters": 100000,
-    "lr_decay_iters": 100000,
-    "min_lr": 1e-05,
-    "beta2": 0.99,
-    "warmup_iters": 100,
     "preparation_name": "preparation_2_3",
     "dataset": "dataset_2.csv",
-    "scheme": "standard"
-  },
-  "sampling_config": {
-    "max_new_tokens": 500,
-    "temperature": 0.8,
-    "top_k": 200,
-    "seed": 1337,
-    "device": "cuda",
-    "compile": true
-  }
+    "scheme": "standard",
+    "training_config": {
+        "eval_interval": 250,
+        "eval_iters": 200,
+        "log_interval": 10,
+        "always_save_checkpoint": false,
+        "gradient_accumulation_steps": 40,
+        "batch_size": 1024,
+        "block_size": 256,
+        "n_layer": 6,
+        "n_head": 6,
+        "n_embd": 384,
+        "dropout": 0.2,
+        "learning_rate": 0.0001,
+        "max_iters": 100000,
+        "lr_decay_iters": 100000,
+        "min_lr": 1e-05,
+        "beta2": 0.99,
+        "warmup_iters": 100
+    },
+    "sampling_config": {
+        "max_new_tokens": 500,
+        "temperature": 0.8,
+        "top_k": 200,
+        "seed": 1337,
+        "device": "cuda",
+        "compile": true
+    }
 }

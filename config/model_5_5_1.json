@@ -1,4 +1,7 @@
 {
+    "preparation_name": "preparation_5_5",
+    "dataset": "dataset_5.csv",
+    "scheme": "no_particle_boundaries",
     "training_config": {
         "eval_interval": 250,
         "eval_iters": 200,
@@ -16,10 +19,7 @@
         "min_lr": 1e-05,
         "beta2": 0.98,
         "warmup_iters": 1000,
-        "max_num_failed_checkpoint_checks": 5000,
-        "preparation_name": "preparation_5_5",
-        "dataset": "dataset_5.csv",
-        "scheme": "no_particle_boundaries"
+        "max_num_failed_checkpoint_checks": 5000
     },
     "sampling_config": {
         "temperature": 0.8,

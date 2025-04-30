@@ -3,63 +3,125 @@ import sys
 import os
 import torch
 
+from dataclasses import dataclass, field
+
 config_file_path = sys.argv[1]
 
-# Common
+@dataclass
+class GenericConfiguration:
+    config_file_path:      str = ''
+    preparation_name:      str = ''
+    model_name:            str = ''
+    dataset:               str = ''
+    scheme:                str = 'standard'
 
-preparation_name = ''
-model_name = ''
-dataset = ''
-scheme = 'standard'
+@dataclass
+class TrainingConfiguration:
+    # I/O
+    eval_interval: int = 2000
+    log_interval: int = 1
+    eval_iters: int = 200
+    eval_only: bool = False
+    init_from: str = 'scratch'  # 'scratch', 'resume', or 'gpt2*'
 
-# Sampling variables
+    # data
+    gradient_accumulation_steps: int = field(default=5 * 8)
+    batch_size: int = 12
+    block_size: int = -1
+    context_events: int = 1  # Used to compute block_size dynamically
 
-samples_storage_dir = ''
-sampling_batch_size = 128
-max_new_tokens = 500
-temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
-top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability
-seed = 1337
-device = 'cuda'
-dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
-compile = True
+    # model
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    dropout: float = 0.0
+    bias: bool = False
 
-# Job submission variables
+    # adamw optimizer
+    learning_rate: float = 6e-4
+    max_iters: int = 600000
+    max_num_failed_checkpoint_checks: int = 4
+    weight_decay: float = 1e-1
+    beta1: float = 0.9
+    beta2: float = 0.95
+    grad_clip: float = 1.0
 
-nodes = 1
-time_duration = "00:10:00"
-constraint = "gpu"
-gpus = 1
-cpus_per_task = 32
-ntasks_per_node = 1
-account = ""
-quality_of_service = "debug"
-use_shifter = False
-shifter_image = ""
-command = ""
+    # learning rate decay
+    decay_lr: bool = True
+    warmup_iters: int = 2000
+    lr_decay_iters: int = 600000
+    min_lr: float = 6e-5
 
-# Configurator
+    # DDP settings
+    backend: str = 'nccl'
+
+    # system
+    device: str = 'cuda'
+    dtype: str = field(init=False)
+    compile: bool = True
+    iterations_per_epoch: int = 0
+
+    def __post_init__(self):
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            self.dtype = 'bfloat16'
+        else:
+            self.dtype = 'float16'
+
+@dataclass
+class SamplingConfiguration:
+    samples_storage_dir:    str = ''
+    sampling_batch_size:    int = 128
+    max_new_tokens:         int = 500
+    temperature:            float = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
+    top_k:                  int = 200
+    seed:                   int = 1337
+    device:                 str = 'cuda'
+    dtype:                  str = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
+    compile:                bool = True
+
+generic = GenericConfiguration()
+training = TrainingConfiguration()
+sampling = SamplingConfiguration()
 
 def perform_configuration():
-    print("FILE LOCATED: ", config_file_path)
+    global generic
+    global training
+    global sampling
+    
+    print(f'Configurator found file {config_file_path}.')
     with open(config_file_path, 'r') as f:
         config = json.load(f)
 
-    globals()['config_file_path'] = config_file_path
+    generic.config_file_path = config_file_path
 
     for key, value in config.items():
-        if isinstance(value, dict):
-            for sub_key, sub_value in value.items():
-                globals()[sub_key] = sub_value
+        if key in ['training_config', 'sampling_config']:
+            continue
+        if hasattr(generic, key):
+            setattr(generic, key, value)
         else:
-            globals()[key] = value
+            print(f'Warning! Key {key} not found in GenericConfiguration. Skipping.')
+    
+    if 'training_config' in config:
+        for key, value in config['training_config'].items():
+            if hasattr(training, key):
+                setattr(training, key, value)
+            else:
+                print(f'Warning! Key {key} not found in TrainingConfiguration. Skipping.')
             
-    # If no output_dir_name is set, then use the config file name.
+    if 'sampling_config' in config:
+        for key, value in config['sampling_config'].items():
+            if hasattr(sampling, key):
+                setattr(sampling, key, value)
+            else:
+                print(f'Warning! Key {key} not found in SamplingConfiguration. Skipping.')
+
+    # If no model_name is set, then use the config file name.
     # This saves a lot of pain with accidentally overwriting files.
-    if (globals()['model_name'] == ''):
+    if (generic.model_name == ''):
         config_file_name = os.path.basename(config_file_path)
         config_file_name_stripped = os.path.splitext(config_file_name)
-        globals()['model_name'] = config_file_name_stripped[0]
+        generic.model_name = config_file_name_stripped[0]
 
 # Configurator should only run if a config file is provided as an argument.
 # All expected exceptions will be handled here.

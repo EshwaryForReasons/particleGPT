@@ -6,8 +6,6 @@ from pathlib import Path
 from particle import Particle
 from enum import Enum
 
-from itertools import accumulate
-
 script_dir = Path(__file__).resolve().parent
 
 class ETokenTypes(Enum):
@@ -41,22 +39,6 @@ class Dictionary():
         
         with open(dictionary_filename, 'r') as f:
             self.dictionary_data = json.load(f)
-            
-        # if configurator.scheme == 'standard':
-        #     self.num_features_per_particle = 5
-        #     self.num_tokens_per_particle = self.num_features_per_particle + 2
-        # elif configurator.scheme == 'no_eta':
-        #     self.num_features_per_particle = 4
-        #     self.num_tokens_per_particle = self.num_features_per_particle + 2
-        # elif configurator.scheme == 'no_particle_boundaries':
-        #     self.num_features_per_particle = 5
-        #     self.num_tokens_per_particle = self.num_features_per_particle
-        # elif configurator.scheme == 'paddingv2':
-        #     self.num_features_per_particle = 5
-        #     self.num_tokens_per_particle = self.num_features_per_particle + 2
-        # elif configurator.scheme == 'neo_no_particle_boundaries':
-        #     self.num_features_per_particle = 5
-        #     self.num_tokens_per_particle = self.num_features_per_particle
             
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles = len(self.dictionary_data['particles_index'])
