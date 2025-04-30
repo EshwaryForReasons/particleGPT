@@ -11,7 +11,6 @@ import math
 import inspect
 from pathlib import Path
 from dataclasses import dataclass
-import multiprocessing as mp
 
 import torch
 import torch.nn as nn
@@ -25,7 +24,6 @@ from dictionary import ETokenTypes
 script_dir = Path(__file__).resolve().parent
 dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
 
-logger_idx = -1
 # Model will never be used on its own. It will be accessed by the training or generation script.
 # Therefore, we inherit the logger from the accessing script.
 def set_logger(in_logger_idx):
@@ -61,49 +59,34 @@ class CausalSelfAttention(nn.Module):
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
-    def forward(self, x, kv_cache=None):
+    def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
-        # if kv_cache is provided, concatenate with current k and v
-        if kv_cache is not None:
-            prev_k, prev_v = kv_cache
-            k = torch.cat((prev_k, k), dim=2)
-            v = torch.cat((prev_v, v), dim=2)
-        
-        # save the current k and v for next step
-        new_kv_cache = (k, v) if kv_cache is not None else None
-
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, 
-                attn_mask=None, 
-                dropout_p=self.dropout if self.training else 0, 
-                is_causal=True if kv_cache is None else False
-            )
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            if kv_cache is None:
-                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y, new_kv_cache
+        return y
 
 class MLP(nn.Module):
+
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
@@ -119,6 +102,7 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
+
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
@@ -126,11 +110,10 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x, kv_cache=None):
-        attn_out, new_kv_cache = self.attn(self.ln_1(x), kv_cache=kv_cache)
-        x = x + attn_out
+    def forward(self, x):
+        x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
-        return x, new_kv_cache
+        return x
 
 @dataclass
 class GPTConfig:
@@ -143,27 +126,8 @@ class GPTConfig:
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     num_token_types: int = 7 # len(ETokenTypes)
 
-def batched_multiGPU_worker(device_id, model_config, model_state_dict, starters_chunk, max_new_tokens, temperature, top_k, batch_size, return_queue):
-    torch.cuda.set_device(device_id)
-    device = torch.device(f'cuda:{device_id}')
-
-    # Rebuild model
-    model = GPT(model_config).to(device)
-    model.load_state_dict(model_state_dict)
-    model.eval()
-
-    starters_chunk = starters_chunk.to(device, non_blocking=True)
-    generated = model.generate_batched_singleGPU(
-        starters_chunk,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        batch_size=batch_size
-    )
-
-    return_queue.put((device_id, generated.cpu()))
-    
 class GPT(nn.Module):
+
     def __init__(self, config):
         super().__init__()
         assert config.vocab_size is not None
@@ -239,8 +203,8 @@ class GPT(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-    
-    def forward(self, idx, targets=None, kv_cache=None):
+
+    def forward(self, idx, targets=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -254,28 +218,23 @@ class GPT(nn.Module):
         type_ids = self.get_token_type_ids_old(idx)
         type_emb = self.transformer.type_emb(type_ids)
 
+        # x = self.transformer.drop(tok_emb + pos_emb)
         x = self.transformer.drop(tok_emb + pos_emb + type_emb)
-        
-        new_kv_cache = []
-        if kv_cache is None:
-            kv_cache = [None] * len(self.transformer.h)
-        
-        for i, block in enumerate(self.transformer.h):
-            x, new_block_kv_cache = block(x, kv_cache=kv_cache[i])
-            new_kv_cache.append(new_block_kv_cache)
-        
+        for block in self.transformer.h:
+            x = block(x)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
+            # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=dictionary.padding_token)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss, new_kv_cache
+        return logits, loss
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -319,9 +278,7 @@ class GPT(nn.Module):
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """
-        estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS
-        """
+        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
@@ -339,14 +296,15 @@ class GPT(nn.Module):
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         """
-        This is a simple and slow implementation. Requires the least memory and works across devices.
-        Practically, this should only be used is we're sampling on the CPU.
+        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _, _ = self(idx_cond)
+            logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -365,102 +323,3 @@ class GPT(nn.Module):
                 break
 
         return idx
-    
-    @torch.no_grad()
-    def generate_batched_singleGPU(self, idx, max_new_tokens, temperature=1.0, top_k=None, batch_size=128):
-        """
-        Can be used standalone to sample on a single GPU. Also used by multiGPU implementation to sample on each GPU.
-        """
-        if idx.dim() == 1:
-            idx = idx.unsqueeze(0)
-
-        device = idx.device
-        original_batch_size = idx.size(0)
-
-        padded_outputs = torch.full(
-            (original_batch_size, idx.size(1) + max_new_tokens),
-            fill_value=dictionary.padding_token,
-            dtype=torch.long,
-            device=device
-        )
-        padded_outputs[:, :idx.size(1)] = idx
-
-        for batch_start in range(0, original_batch_size, batch_size):
-            batch_end = min(batch_start + batch_size, original_batch_size)
-            current_batch = padded_outputs[batch_start:batch_end]
-            cur_batch_size = current_batch.size(0)
-
-            unfinished = torch.ones(cur_batch_size, dtype=torch.bool, device=device)
-            seq_lens = torch.full((cur_batch_size,), idx.size(1), dtype=torch.long, device=device)
-
-            kv_cache = None
-
-            for _ in range(max_new_tokens):
-                if not unfinished.any():
-                    break
-
-                active_idx = unfinished.nonzero(as_tuple=False).squeeze(1)
-                active_seq_lens = seq_lens[active_idx]
-
-                # Get last max_len tokens
-                active_sequences = torch.stack([current_batch[i, :l] for i, l in zip(active_idx, active_seq_lens)], dim=0)
-
-                idx_cond = active_sequences if active_sequences.size(1) <= self.config.block_size else active_sequences[:, -self.config.block_size:]
-
-                logits, _, kv_cache = self(idx_cond, kv_cache=kv_cache)
-
-                # Sample next token
-                logits = logits[:, -1, :] / temperature
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float('Inf')
-                probs = F.softmax(logits, dim=-1)
-                next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
-
-                # Update
-                current_batch[active_idx, seq_lens[active_idx]] = next_tokens
-                seq_lens[active_idx] += 1
-
-                # Check for end tokens
-                is_end = next_tokens == dictionary.event_end_token
-                unfinished[active_idx[is_end]] = False
-
-        return padded_outputs
-    
-    @torch.no_grad()
-    def generate_batched_multiGPU(self, starters, max_new_tokens, temperature=1.0, top_k=None, batch_size=128):
-        """
-        Uses all available GPUs to generate samples in parallel.
-        """
-        if not torch.cuda.is_available():
-            raise RuntimeError("Multi-GPU sampling requires CUDA devices.")
-        
-        num_devices = torch.cuda.device_count()
-        devices = [f'cuda:{i}' for i in range(num_devices)]
-
-        starter_splits = torch.chunk(starters, num_devices, dim=0)
-
-        ctx = mp.get_context('spawn')
-        return_queue = ctx.Queue()
-
-        model_state_dict = self.state_dict()
-        model_config = self.config
-
-        processes = []
-        for device_id, starters_chunk in enumerate(starter_splits):
-            p = ctx.Process(
-                target=batched_multiGPU_worker,
-                args=(device_id, model_config, model_state_dict, starters_chunk, max_new_tokens, temperature, top_k, batch_size, return_queue)
-            )
-            p.start()
-            processes.append(p)
-
-        results = [None] * num_devices
-        for _ in range(num_devices):
-            device_id, generated = return_queue.get()
-            results[device_id] = generated
-
-        for p in processes:
-            p.join()
-
-        return torch.cat(results, dim=0)

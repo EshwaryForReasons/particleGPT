@@ -4,11 +4,29 @@ import json
 import numpy as np
 from pathlib import Path
 from particle import Particle
+from enum import Enum
+
+from itertools import accumulate
 
 script_dir = Path(__file__).resolve().parent
 
-# Custom arange because np.arange and np.linspace suffer from floating point precision issues
+class ETokenTypes(Enum):
+    PADDING = 0
+    SPECIAL = 1
+    PDGID = 2
+    MATERIAL = 3
+    ENERGY = 4
+    ETA = 5
+    THETA = 6
+    PHI = 7
+    PT = 8
+
+# Custom arange because np.arange and np.linspace suffer from floating point precision issues.
+# This is needed so the C++ version matches.
 def custom_arange(start, stop, step_size):
+    if step_size <= 0:
+        return []
+    
     decimal_places = int(np.ceil(np.log10(1 / step_size)))
     result = []
     i = start
@@ -20,20 +38,41 @@ def custom_arange(start, stop, step_size):
 class Dictionary():
     def __init__(self, dictionary_filename):
         self.dictionary_filename = dictionary_filename
+        
         with open(dictionary_filename, 'r') as f:
             self.dictionary_data = json.load(f)
-
-        # Generate the bins based on the data in the file
-        self.e_bins = custom_arange(self.token_min('e'), self.token_max('e'), self.token_step_size('e'))
-        self.eta_bins = custom_arange(self.token_min('eta'), self.token_max('eta'), self.token_step_size('eta'))
-        self.theta_bins = custom_arange(self.token_min('theta'), self.token_max('theta'), self.token_step_size('theta'))
-        self.phi_bins = custom_arange(self.token_min('phi'), self.token_max('phi'), self.token_step_size('phi'))
-        
+            
+        # if configurator.scheme == 'standard':
+        #     self.num_features_per_particle = 5
+        #     self.num_tokens_per_particle = self.num_features_per_particle + 2
+        # elif configurator.scheme == 'no_eta':
+        #     self.num_features_per_particle = 4
+        #     self.num_tokens_per_particle = self.num_features_per_particle + 2
+        # elif configurator.scheme == 'no_particle_boundaries':
+        #     self.num_features_per_particle = 5
+        #     self.num_tokens_per_particle = self.num_features_per_particle
+        # elif configurator.scheme == 'paddingv2':
+        #     self.num_features_per_particle = 5
+        #     self.num_tokens_per_particle = self.num_features_per_particle + 2
+        # elif configurator.scheme == 'neo_no_particle_boundaries':
+        #     self.num_features_per_particle = 5
+        #     self.num_tokens_per_particle = self.num_features_per_particle
+            
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles = len(self.dictionary_data['particles_index'])
         self.num_materials = len(self.dictionary_data['materials_named'])
 
-        self.vocab_size = self.num_special_tokens + self.num_particles + self.num_materials + len(self.e_bins) + len(self.eta_bins) + len(self.theta_bins) + len(self.phi_bins)
+        self.num_special_tokens = len(self.dictionary_data['special_tokens'])
+        self.num_particles      = len(self.dictionary_data['particles_index'])
+        self.num_materials      = len(self.dictionary_data['materials_named'])
+        # Generate the bins based on the data in the file
+        self.e_bins     = custom_arange(self.token_min('e'), self.token_max('e'), self.token_step_size('e'))
+        self.eta_bins   = custom_arange(self.token_min('eta'), self.token_max('eta'), self.token_step_size('eta'))
+        self.theta_bins = custom_arange(self.token_min('theta'), self.token_max('theta'), self.token_step_size('theta'))
+        self.phi_bins   = custom_arange(self.token_min('phi'), self.token_max('phi'), self.token_step_size('phi'))
+        self.pt_bins    = custom_arange(self.token_min('pt'), self.token_max('pt'), self.token_step_size('pt'))
+
+        self.vocab_size = self.num_special_tokens + self.num_particles + self.num_materials + len(self.e_bins) + len(self.eta_bins) + len(self.theta_bins) + len(self.phi_bins) + len(self.pt_bins)
         
         # Offsets for tokenization (since we need to eliminate repeat tokens)
         self.SPECIAL_TOKENS_OFFSET = 0
@@ -43,6 +82,7 @@ class Dictionary():
         self.ETA_OFFSET = self.ENERGY_OFFSET + len(self.e_bins)
         self.THETA_OFFSET = self.ETA_OFFSET + len(self.eta_bins)
         self.PHI_OFFSET = self.THETA_OFFSET + len(self.theta_bins)
+        self.PT_OFFSET = self.PHI_OFFSET + len(self.phi_bins)
 
         # Converts input particle ID to the relevant index
         self.particles_index = self.dictionary_data['particles_index']
@@ -56,32 +96,68 @@ class Dictionary():
             ["Energy bins",     len(self.e_bins),         self.token_range_str(self.ENERGY_OFFSET, len(self.e_bins)),                 self.token_min('e'),      self.token_max('e'),      self.token_step_size('e')],
             ["Eta bins",        len(self.eta_bins),       self.token_range_str(self.ETA_OFFSET, len(self.eta_bins)),                  self.token_min('eta'),    self.token_max('eta'),    self.token_step_size('eta')],
             ["Theta bins",      len(self.theta_bins),     self.token_range_str(self.THETA_OFFSET, len(self.theta_bins)),              self.token_min('theta'),  self.token_max('theta'),  self.token_step_size('theta')],
-            ["Phi bins",        len(self.phi_bins),       self.token_range_str(self.PHI_OFFSET, len(self.phi_bins)),                  self.token_min('phi'),    self.token_max('phi'),    self.token_step_size('phi')]
+            ["Phi bins",        len(self.phi_bins),       self.token_range_str(self.PHI_OFFSET, len(self.phi_bins)),                  self.token_min('phi'),    self.token_max('phi'),    self.token_step_size('phi')],
+            ["Pt bins",         len(self.pt_bins),        self.token_range_str(self.PT_OFFSET, len(self.pt_bins)),                    self.token_min('pt'),     self.token_max('pt'),     self.token_step_size('pt')]
         ]
     
     # Functions to make the table look nicer
-    
     def token_min(self, type_str):
+        if f'{type_str}_bin_data' not in self.dictionary_data:
+            return 0
         return self.dictionary_data[f'{type_str}_bin_data']['min']
     def token_max(self, type_str):
+        if f'{type_str}_bin_data' not in self.dictionary_data:
+            return 0
         return self.dictionary_data[f'{type_str}_bin_data']['max']
     def token_step_size(self, type_str):
+        if f'{type_str}_bin_data' not in self.dictionary_data:
+            return 0
         return self.dictionary_data[f'{type_str}_bin_data']['step_size']
     def token_range(self, type_str):
+        if f'{type_str}_bin_data' not in self.dictionary_data:
+            return 0
         return self.token_max(type_str) - self.token_min(type_str)
     def token_range_str(self, offset, num_tokens):
         return f'{offset} - {(offset + num_tokens - 1)}'
     
     # Actual class functions
-    def get_vocab_size(self):
-        return self.vocab_size
-
-    def get_special_tokens(self):
-        return self.dictionary_data['special_tokens']
-    
-    def get_padding_token(self):
+    @property
+    def padding_token(self):
         return self.dictionary_data['special_tokens']['padding']
-
+    @property
+    def event_start_token(self):
+        return self.dictionary_data['special_tokens']['event_start']
+    @property
+    def event_end_token(self):
+        return self.dictionary_data['special_tokens']['event_end']
+    @property
+    def particle_start_token(self):
+        return self.dictionary_data['special_tokens']['particle_start']
+    @property
+    def particle_end_token(self):
+        return self.dictionary_data['special_tokens']['particle_end']
+    
+    # Returns token type given the current token value (uses token range for evaluation)
+    def get_token_type(self, token):
+        if token == self.padding_token:
+            return ETokenTypes.PADDING
+        elif token in self.dictionary_data['special_tokens'].values():
+            return ETokenTypes.SPECIAL
+        elif token >= self.PDGID_OFFSET and token < self.PDGID_OFFSET + self.num_particles:
+            return ETokenTypes.PDGID
+        elif token >= self.MATERIAL_OFFSET and token < self.MATERIAL_OFFSET + self.num_materials:
+            return ETokenTypes.MATERIAL
+        elif token >= self.ENERGY_OFFSET and token < self.ENERGY_OFFSET + len(self.e_bins):
+            return ETokenTypes.ENERGY
+        elif token >= self.ETA_OFFSET and token < self.ETA_OFFSET + len(self.eta_bins):
+            return ETokenTypes.ETA
+        elif token >= self.THETA_OFFSET and token < self.THETA_OFFSET + len(self.theta_bins):
+            return ETokenTypes.THETA
+        elif token >= self.PHI_OFFSET and token < self.PHI_OFFSET + len(self.phi_bins):
+            return ETokenTypes.PHI
+        elif token >= self.PT_OFFSET and token < self.PT_OFFSET + len(self.pt_bins):
+            return ETokenTypes.PT
+    
     def output_humanized_dictionary(self, output_file_path):
         # Define column widths for formatting
         col_widths = [max(len(str(row[col])) for row in self.table_data) + 3 for col in range(len(self.table_data[0]))]

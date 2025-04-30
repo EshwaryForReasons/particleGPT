@@ -1,11 +1,11 @@
-Type             |  Num     |  Token Range     |  Min    |  Max     |  Step Size   |  
-Special tokens   |  10      |  0 - 9           |  N/A    |  N/A     |  N/A         |  
-Particles        |  72      |  10 - 81         |  N/A    |  N/A     |  N/A         |  
-Materials        |  8       |  82 - 89         |  N/A    |  N/A     |  N/A         |  
-Energy bins      |  140     |  90 - 229        |  0      |  35000   |  250         |  
-Eta bins         |  8499    |  230 - 8728      |  -4     |  4.499   |  0.001       |  
-Theta bins       |  12567   |  8729 - 21295    |  -2pi   |  2pi     |  0.001       |  
-Phi bins         |  12567   |  21296 - 33862   |  -2pi   |  2pi     |  0.001       |  
+Type             |  Num     |  Token Range     |  Min     |  Max     |  Step Size   |  
+Special tokens   |  10      |  0 - 9           |  N/A     |  N/A     |  N/A         |  
+Particles        |  72      |  10 - 81         |  N/A     |  N/A     |  N/A         |  
+Materials        |  8       |  82 - 89         |  N/A     |  N/A     |  N/A         |  
+Energy bins      |  140     |  90 - 229        |  0       |  35000   |  250         |  
+Eta bins         |  8500    |  230 - 8729      |  -4      |  4.499   |  0.001       |  
+Theta bins       |  12560   |  8730 - 21289    |  -6.28   |  6.28    |  0.001       |  
+Phi bins         |  12560   |  21290 - 33849   |  -6.28   |  6.28    |  0.001       |  
 
 Special Token - Token Value
 padding - 0

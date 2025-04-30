@@ -89,8 +89,6 @@ def get_latest_sampling_id(model_name):
 
 def get_latest_sampling_dir(model_name):
     latest_sampling_id = get_latest_sampling_id(model_name)
-    if latest_sampling_id is -1:
-        return None
     return get_sampling_dir(model_name) / f'sampling_{latest_sampling_id}'
 
 # csv file utils

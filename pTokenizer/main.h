@@ -4,85 +4,83 @@
 #include <vector>
 #include <string>
 
-struct FSpecialTokens {
-    int padding = -4;
-    int event_start = -4;
-    int event_end = -4;
-    int particle_start = -4;
-    int particle_end = -4;
-};
+class Dictionary;
 
-struct FOffsets {
-    int special_tokens_offset = 0;
-    int pdgid_offset = 0;
-    int materials_offset = 0;
-    int energy_offset = 0;
-    int eta_offset = 0;
-    int theta_offset = 0;
-    int phi_offset = 0;
-};
-
-struct pdgid_index_pair
-{
-    int pdgid = 0;
-    int index = 0;
-};
-
-class Dictionary
+template<typename Derived>
+class SchemeBase
 {
 public:
 
-    Dictionary() = default;
-    Dictionary(const std::string& dictionary_path);
-
-    std::string dictionary_path;
-
-    FSpecialTokens special_tokens;
-    FOffsets offsets;
-
-    std::vector<double> e_bins;
-    std::vector<double> eta_bins;
-    std::vector<double> theta_bins;
-    std::vector<double> phi_bins;
-    std::vector<pdgid_index_pair> pdgid_to_index;
-
-    //Includes tokenization in bin ranges, min, max, etc in a human readable format
-    void write_humanized_dictionary(const std::string& output_path);
-    //Updates the dictionary.json particle list with the particles present in the input data
-    void update_particle_list(const std::string& input_data_path);
+    static void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+    static void tokenize_events_in_range(const std::string& input_data_path, const std::string& output_data_path, const std::size_t num_particles_max, const std::size_t start_idx, const std::size_t end_idx, const std::size_t idx);
+    static void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
 };
 
-namespace StandardScheme
+/**
+ * Default schemes tokenize into pdgid, energy, eta, theta, phi.
+ * NoEta is an exception. 
+ */
+
+class SchemeStandard : public SchemeBase<SchemeStandard>
 {
-    void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
-    void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+public:
+
+    static const std::size_t NUM_TOKENS_PER_PARTICLE = 7;
+    static const std::vector<int> get_padding_sequence();
+    static const std::vector<int> tokenize_event(const std::vector<double>& event);
+    static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
 };
 
 //Scheme no_eta does not include eta.
-namespace SchemeNoEta
+class SchemeNoEta : public SchemeBase<SchemeNoEta>
 {
-    void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
-    void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+public:
+
+    static const std::size_t NUM_TOKENS_PER_PARTICLE = 6;
+    static const std::vector<int> get_padding_sequence();
+    static const std::vector<int> tokenize_event(const std::vector<double>& event);
+    static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
 };
 
 //Scheme no_particle_boundaries does not the particle_start and particle_end tokens.
-namespace SchemeNoParticleBoundaries
+class SchemeNoParticleBoundaries : public SchemeBase<SchemeNoParticleBoundaries>
 {
-    void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
-    void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+public:
+
+    static const std::size_t NUM_TOKENS_PER_PARTICLE = 5;
+    static const std::vector<int> get_padding_sequence();
+    static const std::vector<int> tokenize_event(const std::vector<double>& event);
+    static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
 };
 
 //Scheme paddingv2 does not the particle_start and particle_end tokens for the padding, but does have it for the particles.
-namespace SchemePaddingV2
+class SchemePaddingV2 : public SchemeBase<SchemePaddingV2>
 {
-    void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
-    void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
+public:
+
+    static const std::size_t NUM_TOKENS_PER_PARTICLE = 7;
+    static const std::vector<int> get_padding_sequence();
+    static const std::vector<int> tokenize_event(const std::vector<double>& event);
+    static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
+};
+
+/**
+ * Neo schemes tokenize into pdgid, energy, pt, eta, phi.
+ */
+
+//Scheme no_particle_boundaries does not the particle_start and particle_end tokens.
+class SchemeNeoNoParticleBoundaries : public SchemeBase<SchemeNeoNoParticleBoundaries>
+{
+public:
+
+    static const std::size_t NUM_TOKENS_PER_PARTICLE = 5;
+    static const std::vector<int> get_padding_sequence();
+    static const std::vector<int> tokenize_event(const std::vector<double>& event);
+    static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
 };
 
 namespace DataManager
 {
-    // void tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
-    // void untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path);
     const Dictionary load_dictionary(std::string dictionary_path);
     const std::vector<std::vector<int>> load_tokenized_data(std::string input_data_path);
     void output_tokenized_data(std::string output_file_path, const std::vector<std::vector<int>>& tokenized_data);

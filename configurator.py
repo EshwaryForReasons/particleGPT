@@ -15,6 +15,7 @@ scheme = 'standard'
 # Sampling variables
 
 samples_storage_dir = ''
+sampling_batch_size = 128
 max_new_tokens = 500
 temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
 top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability

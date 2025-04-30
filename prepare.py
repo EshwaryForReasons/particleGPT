@@ -9,7 +9,6 @@ from dictionary import Dictionary
 import pTokenizerModule as pTokenizer
 import configurator
 import pUtil
-import data_manager
 
 script_dir = Path(__file__).resolve().parent
 dictionary = Dictionary(script_dir / 'data' / configurator.preparation_name / 'dictionary.json')
@@ -93,7 +92,7 @@ def bin_data():
     num_train_events = int(num_events_unreserved * 0.9)
     num_val_events = num_events_unreserved - num_train_events
     
-    fast_bin(num_train_events, num_val_events, num_test_events)
+    in_place_bin(num_train_events, num_val_events, num_test_events)
     
     with FileReadBackwards(input_data_filename) as f, open(test_real_bin_filename, 'wb') as test_real_out:
         accumulated_data = []
@@ -182,19 +181,21 @@ def prepare_dataset():
     global num_tokens_per_particle
     global num_features_per_particle
     
-    scheme = configurator.scheme
-    if scheme == 'standard':
+    if configurator.scheme == 'standard':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2
-    elif scheme == 'no_eta':
+    elif configurator.scheme == 'no_eta':
         num_features_per_particle = 4
         num_tokens_per_particle = num_features_per_particle + 2
-    elif scheme == 'no_particle_boundaries':
+    elif configurator.scheme == 'no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
-    elif scheme == 'paddingv2':
+    elif configurator.scheme == 'paddingv2':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2
+    elif configurator.scheme == 'neo_no_particle_boundaries':
+        num_features_per_particle = 5
+        num_tokens_per_particle = num_features_per_particle
     
     # Ensure the outputs directory exists
     input_data_filename            = script_dir / 'data' / configurator.dataset
@@ -203,49 +204,34 @@ def prepare_dataset():
     tokenized_data_filename        = script_dir / 'data' / configurator.preparation_name / 'tokenized_data.csv'
     humanized_dictionary_filename  = script_dir / 'data' / configurator.preparation_name / 'humanized_dictionary.txt'
     temp_data_dir                  = script_dir / 'data' / configurator.preparation_name / 'temp'
-    temp_data_dir_as_filename      = script_dir / 'data' / configurator.preparation_name / 'temp' / 'something.csv'
     Path(meta_filename).parent.mkdir(parents=True, exist_ok=True)
     Path(temp_data_dir).mkdir(parents=True, exist_ok=True)
     
     # Only prepare if we haven't already prepared the data
-    # if meta_filename.exists():
-    #     meta = None
-    #     with open(meta_filename, 'rb') as f:
-    #         meta = pickle.load(f)
-    #         if meta['already_prepared']:
-    #             print("Data already prepared")
-    #             return
+    if meta_filename.exists():
+        meta = None
+        with open(meta_filename, 'rb') as f:
+            meta = pickle.load(f)
+            if meta['already_prepared']:
+                print("Data already prepared")
+                return
 
     dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
     dictionary.output_humanized_dictionary(humanized_dictionary_filename)
-    smanager = data_manager.SchemeStandardCompiled(dictionary_filename, input_data_filename, tokenized_data_filename)
-    start_time = time.time()
-    if scheme == 'standard':
-        smanager.tokenize_data()
-        # pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
-    elif scheme == 'no_eta':
-        pTokenizer.tokenize_data_scheme_no_eta(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
-    elif scheme == 'no_particle_boundaries':
-        pTokenizer.tokenize_data_scheme_no_particle_boundaries(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
-    elif scheme == 'paddingv2':
-        pTokenizer.tokenize_data_scheme_paddingv2(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir_as_filename.as_posix())
-    end_time = time.time()
-    print(f"Execution Time: {end_time - start_time} seconds")
-
-    # return
+    pTokenizer.tokenize_data(dictionary_filename.as_posix(), configurator.scheme, input_data_filename.as_posix(), temp_data_dir.as_posix())
 
     # The tokenizer generates a bunch of files which need to be concatenated
-    # print('Started concatenating tokenized files.')
-    # tokenized_csv_files = sorted(
-    #     [
-    #         Path(temp_data_dir, f.name)
-    #         for f in temp_data_dir.iterdir()
-    #         if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
-    #     ],
-    #     key=lambda x: int(x.stem.split('_')[-1])
-    # )
-    # pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
-    # print('Finished concatenating tokenized files.')
+    print('Started concatenating tokenized files.')
+    tokenized_csv_files = sorted(
+        [
+            Path(temp_data_dir, f.name)
+            for f in temp_data_dir.iterdir()
+            if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
+        ],
+        key=lambda x: int(x.stem.split('_')[-1])
+    )
+    pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
+    print('Finished concatenating tokenized files.')
     
     # Then we go through and bin the concatenated file
     bin_data()
@@ -257,7 +243,7 @@ def prepare_dataset():
     
     print("----------------------------------------")
     print("Data information:")
-    print(f"Vocab size: {dictionary.get_vocab_size():,} tokens")
+    print(f"Vocab size: {dictionary.vocab_size:,} tokens")
     print(f"Total events: {num_events_total:,} events")
     print(f"Train has: {num_train_events:,} events")
     print(f"Train has: {(num_train_events * max_sequence_length):,} tokens")
@@ -271,7 +257,7 @@ def prepare_dataset():
 
     with open(meta_filename, 'wb') as f:
         meta = {
-            'vocab_size': dictionary.get_vocab_size(),
+            'vocab_size': dictionary.vocab_size ,
             'total_events': num_events_total,
             'num_train_events': num_train_events,
             'num_train_tokens': num_train_events * max_sequence_length,

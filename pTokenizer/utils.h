@@ -42,6 +42,9 @@ namespace pMath
     //Replica of numpy.arange
     inline std::vector<double> arange(double start, double stop, double step)
     {
+        if (step <= 0)
+            return {};
+        
         std::vector<double> result;
         for (double i = start; i < stop; i += step)
         {

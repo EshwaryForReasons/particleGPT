@@ -18,23 +18,28 @@ In this project:
 - `tokenized` data refers to data that has been tokenized per that dataset's specifications
 - `untokenized` data refers to data that was previously tokenized and has since been untokenized
 
-### Dataset setup ###
-
-- The dataset should be in `data/dataset_name/data.csv`.
-- `dictionary.json` must exist per dataset and defines the tokenization for that dataset. The particles list (`particles_id` and `particles_index`) is auto populated based on information in the dataset during the preparation phase. This is to ensure only relevant particles (those present in the dataset) are included in the vocabulary.
-- The dataset is only prepared once. Subsequent training will just use the preprepared data.
-    - IMPORTANT: If the dataset, any of the python files, or the dictionary are changed (for example to change the tokenization) then be sure to delete `outputs/meta.pkl` in the dataset directory to trigger repreparation as otherwise the dataset will not be reprepared and the old tokenized files will be reused.
-
 ### Environment setup ###
 
-Build pTokenizerModule. This must be run for any changes to the pTokenizer code.
+Install all correct dependencies. Also builds pTokenizerModule
 ```shell
-python setup.py
+bash setup.sh
 ```
 
-Prepare the dataset. This is important and must be run per dataset.
+Build pTokenizerModule only. This must be run for any changes to the pTokenizer code.
 ```shell
-python prepare.py config/dataset_to_prepare.json
+bash setup.sh pTokenizer
+```
+
+### Preparing the dataset ###
+
+- The dataset should be in `data/dataset_name.csv`.
+- `dictionary.json` must exist per preparation and defines the tokenization for that preparation. The particles list (`particles_id` and `particles_index`) is auto populated based on information in the dataset during the preparation phase. This is to ensure only relevant particles (those present in the dataset) are included in the vocabulary.
+- The preparation only needs to be done once.
+    - IMPORTANT: If there are any changes to the dataset or dictionary (for example to change the tokenization) then be sure to reprepare the data.
+
+The preparation and dataset used in the config file will be prepared.
+```shell
+python prepare.py config/model_to_prepare.json
 ```
 
 ### Using the model ###
@@ -42,25 +47,25 @@ python prepare.py config/dataset_to_prepare.json
 Training the model
 ```shell
 # Single node, single GPU
-python train.py config/dataset_to_train.json
-# Single node, multiple GPU (4 here)
-torchrun --standalone --nproc_per_node=4 train.py config/dataset_to_train.json 
+python train.py config/model_to_train.json
+# Single node, multiple GPUs (4 here)
+torchrun --standalone --nproc_per_node=4 train.py config/model_to_train.json 
 ```
 
 Sampling
 ```shell
 # Sampling:
-python sample.py config/dataset_to_sample.json
+python sample.py config/model_to_sample.json
 
-# Generate distributions:
-python generate_distributions.py config/dataset_to_use.json
+# Generate distributions and calculate metrics using JetNet:
+python analysis.py config/model_to_analyze.json
 ```
 
 ### Model outputs ###
 
-- Trained models are stored in `trained_models/dataset_name/ckpt.pt`.
-- Generated samples are stored in `generated_samples/dataset_name/sampling_index/generated_samples.csv`.
-- Generated distributions are stored in `generated_samples/dataset_name/sampling_index/` within their respective files.
+- Trained models are stored in `trained_models/model_name/ckpt.pt`.
+- Generated samples are stored in `generated_samples/model_name/sampling_index/generated_samples.csv`.
+- Generated distributions are stored in `generated_samples/model_name/sampling_index/` within their respective files.
 
 ## Notes ##
 
@@ -70,8 +75,8 @@ srun -C "gpu" -q interactive -N 1 -G 1 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash
 srun -C "gpu" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 srun -C "gpu&hbm80g" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 
-# Running batch job:
-python submit_job.py job_scripts/job_config_to_use.json
+# Training on a specified GPU
+CUDA_VISIBLE_DEVICES=0 python train.py config/model_to_train.json
 
 # Profiling scripts using cProfile:
 python -m cProfile -o output_file_name.profile script_to_profile.py

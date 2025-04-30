@@ -13,8 +13,12 @@ import configurator
 from dictionary import Dictionary
 import pUtil
 import pTokenizerModule as pTokenizer
+import data_manager
 
 script_dir = Path(__file__).resolve().parent
+
+# epsilon to avoid invalid logs
+epsilon = 1e-8
 
 class Analyzer:
     def __init__(self, model_name, preparation_name, scheme):
@@ -38,12 +42,18 @@ class Analyzer:
             print("Data has not been prepared! Please prepare data first!")
             exit()
             
+        with open(self.meta_filename, 'rb') as f:
+            meta = pickle.load(f)
+            self.num_particles_per_event = meta['num_particles_per_event']
+            
         self.dictionary = Dictionary(self.dictionary_filename.as_posix())
 
         # Convenience dictionary definitions
         p_bin_count = int(self.dictionary.token_range('e') // 1000)
         e_bin_count = int(self.dictionary.token_range('e') // self.dictionary.token_step_size('e'))
         eta_bin_count = int(self.dictionary.token_range('eta') // self.dictionary.token_step_size('eta'))
+        theta_bin_count = int(self.dictionary.token_range('theta') // self.dictionary.token_step_size('theta'))
+        phi_bin_count = int(self.dictionary.token_range('phi') // self.dictionary.token_step_size('phi'))
 
         self.columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "eta", "theta", "phi"]
         self.bin_settings = {
@@ -53,8 +63,8 @@ class Analyzer:
             "py":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
             "pz":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
             "eta":           { "min": self.dictionary.token_min('eta'),   "max": self.dictionary.token_max('eta'),   "bins": eta_bin_count },
-            "theta":         { "min": self.dictionary.token_min('theta'), "max": self.dictionary.token_max('theta'), "bins": int(self.dictionary.token_range('theta') // self.dictionary.token_step_size('theta')) },
-            "phi":           { "min": self.dictionary.token_min('phi'),   "max": self.dictionary.token_max('phi'),   "bins": int(self.dictionary.token_range('phi') // self.dictionary.token_step_size('theta')) },
+            "theta":         { "min": self.dictionary.token_min('theta'), "max": self.dictionary.token_max('theta'), "bins": theta_bin_count },
+            "phi":           { "min": self.dictionary.token_min('phi'),   "max": self.dictionary.token_max('phi'),   "bins": phi_bin_count },
         }
     
     def generate_leading_particle_information(self):
@@ -225,16 +235,14 @@ class Analyzer:
     def generate_distributions(self):
         if self.scheme == 'standard':
             self.filter_data()
-            pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         elif self.scheme == 'no_eta':
             self.filter_data_scheme_no_eta()
-            pTokenizer.untokenize_data_scheme_no_eta(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         elif self.scheme == 'no_particle_boundaries':
             self.filter_data()
-            pTokenizer.untokenize_data_scheme_no_particle_boundaries(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         elif self.scheme == 'paddingv2':
             self.filter_data()
-            pTokenizer.untokenize_data_scheme_paddingv2(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        
+        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         self.generate_leading_particle_information()
 
         df1 = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
@@ -264,110 +272,60 @@ class Analyzer:
             plt.savefig(f"{self.latest_sampling_dir.as_posix()}/histogram_{column}.png", bbox_inches='tight')
 
     def get_real_jets(self):
-        with open(self.meta_filename, 'rb') as f:
-            meta = pickle.load(f)
-            num_particles_per_event = meta['num_particles_per_event']
-            
         # -------------------------------------------------------------------------------
         # Preparing real Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # -------------------------------------------------------------------------------
         
-        test_real_events = np.memmap(self.test_real_bin_filename, dtype=np.double, mode='r')
-        test_real_events = test_real_events.reshape(-1, num_particles_per_event * 5)
-        
-        real_jets = []
-        for event in test_real_events:
-            particles = event.reshape(-1, 5)
-            
+        test_real_events = np.memmap(self.test_real_bin_filename, dtype=np.float64, mode='r')
+        test_real_events = test_real_events.reshape(-1, self.num_particles_per_event, 5)
+        angular_real_data = data_manager.convert_data_4vector_to_angular(test_real_events, pad_token=0.0)
+                
+        accumulated_data = []
+        for event in angular_real_data:
             single_jet = []
-            for particle in particles:
-                # Calculate transverse momentum, eta, and phi
-                pdgid, e, px, py, pz = particle
-                
-                # Skip padding particles
-                if pdgid == -1:
-                    single_jet.append([0, 0, 0])
-                    continue
-                
-                p = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
-                pt = np.sqrt(px ** 2 + py ** 2)
-                theta = np.arctan(pz / p)
-                eta = -np.log(np.tan(theta / 2))
-                phi = np.arctan2(py, px)
-                single_jet.append([eta, phi, pt])
-            
-            real_jets.append(single_jet)
-
-        real_jets = np.array(real_jets)
-        return real_jets
+            for particle in event:
+                pdgid, e, eta, theta, phi = particle
+                pt = e / np.cosh(eta)
+                features = [eta, phi, pt]
+                single_jet.append(features)
+            accumulated_data.append(single_jet)
+        return np.array(accumulated_data, np.float64)
     
     def get_generated_jets(self):
-        with open(self.meta_filename, 'rb') as f:
-            meta = pickle.load(f)
-            num_particles_per_event = meta['num_particles_per_event']
-        
         # -------------------------------------------------------------------------------
         # Preparing generated Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # -------------------------------------------------------------------------------
         
-        with open(self.untokenized_samples_filename, 'r') as f:
-            untokenized_samples = f.readlines()
+        # Since untokenized samples file uses the same format as Geant4
+        untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=0.0)
+        angular_untokenized_data = data_manager.convert_data_4vector_to_angular(untokenized_data, pad_token=0.0)
         
-        generated_jets = []
-        for sample in untokenized_samples:
-            particles = sample.strip().split(';')
-            
+        accumulated_data = []
+        for event in angular_untokenized_data:
             single_jet = []
-            for particle in particles:
-                particle = particle.strip().split()
-                
-                if len(particle) == 0:
-                    break
-                
-                pdgid, e, px, py, pz = int(particle[0]), *map(np.double, particle[1:])
-                p = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
-                pt = np.sqrt(px ** 2 + py ** 2)
-                theta = np.arctan(pz / p)
-                eta = -np.log(np.tan(theta / 2))
-                phi = np.arctan2(py, px)
-                
+            for particle in event:
+                pdgid, e, eta, theta, phi = particle
+                pt = e / np.cosh(eta)
                 features = [eta, phi, pt]
                 single_jet.append(features)
-            
-            generated_jets.append(single_jet)
-
-        def pad_to_shape(lst, pad_value=0):
-            num_sublists = len(lst)
-            max_length = num_particles_per_event
-            padded_array = np.full((num_sublists, max_length, 3), pad_value, dtype=np.float64)
-            for i, sublist in enumerate(lst):
-                for j, values in enumerate(sublist):
-                    if j < max_length:
-                        padded_array[i, j, :] = values  
-            return padded_array
-        
-        generated_jets = pad_to_shape(generated_jets)
-        generated_jets = np.array(generated_jets)
-        return generated_jets
-
+            accumulated_data.append(single_jet)
+        return np.array(accumulated_data, np.float64)
+    
     def calculate_metrics(self):
         real_jets = self.get_real_jets()
         generated_jets = self.get_generated_jets()
+        
         # Make sure real and generated jets have the same num events in them.
-        num_events_in_jets = min(real_jets.shape[0], generated_jets.shape[0])
+        num_events_in_jets = min(len(real_jets), len(generated_jets))
         real_jets = real_jets[:num_events_in_jets]
         generated_jets = generated_jets[:num_events_in_jets]
-
+        
         # -------------------------------------------------------------------------------
         # Coverage and MMD
         # -------------------------------------------------------------------------------
 
-        real_jets = np.nan_to_num(real_jets, nan=0)
-        generated_jets = np.nan_to_num(generated_jets, nan=0)
-
-        real_jets = real_jets[:len(generated_jets)]
         cov, mmd = jetnet.evaluation.cov_mmd(real_jets, generated_jets)
         # print(cov, mmd)
 
@@ -378,13 +336,13 @@ class Analyzer:
         suggested_real_features = jetnet.evaluation.get_fpd_kpd_jet_features(real_jets)
         suggested_generated_features = jetnet.evaluation.get_fpd_kpd_jet_features(generated_jets)
 
-        suggested_real_features = np.nan_to_num(suggested_real_features, nan=0)
-        suggested_generated_features = np.nan_to_num(suggested_generated_features, nan=0)
+        suggested_real_features = np.nan_to_num(suggested_real_features, nan=0.0)
+        suggested_generated_features = np.nan_to_num(suggested_generated_features, nan=0.0)
 
         kpd_median, kpd_error = jetnet.evaluation.kpd(suggested_real_features, suggested_generated_features, num_threads=0)
-        # print(f"KPD median: {kpd_median}, KPD error: {kpd_error}")
-
         fpd_value, fpd_error = jetnet.evaluation.fpd(suggested_real_features, suggested_generated_features)
+        
+        # print(f"KPD median: {kpd_median}, KPD error: {kpd_error}")
         # print(f"FPD valid: {fpd_value}, FPD error: {fpd_error}")
 
         # -------------------------------------------------------------------------------
@@ -392,16 +350,25 @@ class Analyzer:
         # -------------------------------------------------------------------------------
 
         # Wasserstein distances between Energy Flow Polynomials
-        avg_w1_scores_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
-        # print(avg_w1_scores_efp)
-
+        w1_scores_avg_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
         # Wasserstein distance between masses of jets1 and jets2
         w1_mass_score = jetnet.evaluation.w1m(real_jets, generated_jets)
-        # print(w1_mass_score)
-
         # Wasserstein distances between particle features of jets1 and jets2
-        avg_w1_scores_features = jetnet.evaluation.w1p(real_jets, generated_jets)
-        # print(avg_w1_scores_features)
+        w1_scores_avg_features = jetnet.evaluation.w1p(real_jets, generated_jets)
+
+        # print(w1_scores_avg_efp)
+        # print(w1_mass_score)
+        # print(w1_scores_avg_features)
+        
+        w1m_score = w1_mass_score[0]
+        w1m_score_std = w1_mass_score[1]
+        
+        w1p_avg_eta = w1_scores_avg_features[0][0]
+        w1p_avg_phi = w1_scores_avg_features[0][1]
+        w1p_avg_pt = w1_scores_avg_features[0][2]
+        w1p_avg_eta_std = w1_scores_avg_features[1][0]
+        w1p_avg_phi_std = w1_scores_avg_features[1][1]
+        w1p_avg_pt_std = w1_scores_avg_features[1][2]
 
         metrics_results_dict = {
             "coverage": cov,
@@ -409,7 +376,15 @@ class Analyzer:
             "kpd_median": kpd_median,
             "kpd_error": kpd_error,
             "fpd_value": fpd_value,
-            "fpd_error": fpd_error
+            "fpd_error": fpd_error,
+            "w1m_score": w1m_score,
+            "w1m_score_std": w1m_score_std,
+            "w1p_avg_eta": w1p_avg_eta,
+            "w1p_avg_phi": w1p_avg_phi,
+            "w1p_avg_pt": w1p_avg_pt,
+            "w1p_avg_eta_std": w1p_avg_eta_std,
+            "w1p_avg_phi_std": w1p_avg_phi_std,
+            "w1p_avg_pt_std": w1p_avg_pt_std,
         }
 
         with open(self.metrics_results_filename, "w") as opt_file:
@@ -418,8 +393,10 @@ class Analyzer:
 # Need a function for multi-threading
 def analyze_dataset_worker(model_name):
     sampling_dir = pUtil.get_latest_sampling_dir(model_name)
-    if sampling_dir is None:
+    if not sampling_dir.exists():
         return
+    
+    print(f'Analyzing model {model_name}')
 
     # Extract dataset name from sampling info
     preparation_name = pUtil.get_model_preparation_name(model_name)
