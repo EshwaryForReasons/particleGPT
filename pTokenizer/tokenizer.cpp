@@ -21,6 +21,7 @@ template class SchemeBase<SchemeNoEta>;
 template class SchemeBase<SchemeNoParticleBoundaries>;
 template class SchemeBase<SchemePaddingV2>;
 template class SchemeBase<SchemeNeoNoParticleBoundaries>;
+template class SchemeBase<SchemeNeoV2>;
 
 const std::size_t get_free_memory_size()
 {
@@ -468,6 +469,58 @@ const std::vector<int> SchemeNeoNoParticleBoundaries::tokenize_event(const std::
 
         tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
         tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
+        tokenized_event.push_back(pMath::digitize(pt, dictionary.pt_bins) + dictionary.offsets.pt_offset);
+        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
+        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
+    }
+
+    tokenized_event.push_back(dictionary.special_tokens.event_end);
+    return tokenized_event;
+}
+
+
+
+const std::vector<int> SchemeNeoV2::get_padding_sequence()
+{
+    return {
+        dictionary.special_tokens.padding,
+        dictionary.special_tokens.padding,
+        dictionary.special_tokens.padding,
+        dictionary.special_tokens.padding
+    };
+}
+
+const std::vector<int> SchemeNeoV2::tokenize_event(const std::vector<double>& event)
+{
+    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
+    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
+    {
+        double pdgid = event[particle_idx * 5];
+        double energy = event[particle_idx * 5 + 1];
+        double px = event[particle_idx * 5 + 2];
+        double py = event[particle_idx * 5 + 3];
+        double pz = event[particle_idx * 5 + 4];
+
+        double r = std::sqrt(px * px + py * py + pz * pz);
+        double pt = std::sqrt(px * px + py * py);
+        double theta = std::acos(pz / r);
+        double phi = std::atan2(py, px);
+        double eta = -std::log(std::tan(theta / 2));
+        
+        if (std::abs(eta) > 4)
+            return {};
+
+        int particle_index = 0;
+        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
+        {
+            if (i_pdgid == pdgid)
+            {
+                particle_index = i_index;
+                break;
+            }
+        }
+
+        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
         tokenized_event.push_back(pMath::digitize(pt, dictionary.pt_bins) + dictionary.offsets.pt_offset);
         tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
         tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);

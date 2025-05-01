@@ -1,4 +1,5 @@
 {
+  "scheme": "paddingv2",
   "special_tokens": {
     "padding": 0,
     "event_start": 1,

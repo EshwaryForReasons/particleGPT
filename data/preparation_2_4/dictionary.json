@@ -1,4 +1,5 @@
 {
+  "scheme": "neo_no_particle_boundaries",
   "special_tokens": {
     "padding": 0,
     "event_start": 1,

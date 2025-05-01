@@ -33,6 +33,20 @@ def custom_arange(start, stop, step_size):
         i += step_size
     return result
 
+def custom_linspace(start, stop, n_bins):
+    if n_bins == 0:
+        return []
+    
+    step_size = (stop - start) / n_bins
+    decimal_places = int(np.ceil(np.log10(1 / step_size)))
+
+    result = []
+    i = start
+    while i < stop:
+        result.append(round(i, decimal_places))
+        i += step_size
+    return result
+
 class Dictionary():
     def __init__(self, dictionary_filename):
         self.dictionary_filename = dictionary_filename
@@ -47,13 +61,37 @@ class Dictionary():
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles      = len(self.dictionary_data['particles_index'])
         self.num_materials      = len(self.dictionary_data['materials_named'])
-        # Generate the bins based on the data in the file
-        self.e_bins     = custom_arange(self.token_min('e'), self.token_max('e'), self.token_step_size('e'))
-        self.eta_bins   = custom_arange(self.token_min('eta'), self.token_max('eta'), self.token_step_size('eta'))
-        self.theta_bins = custom_arange(self.token_min('theta'), self.token_max('theta'), self.token_step_size('theta'))
-        self.phi_bins   = custom_arange(self.token_min('phi'), self.token_max('phi'), self.token_step_size('phi'))
-        self.pt_bins    = custom_arange(self.token_min('pt'), self.token_max('pt'), self.token_step_size('pt'))
-
+        
+        def create_bins(type_str):
+            def ret_same(x):
+                return x
+            def ret_log(x):
+                return np.log(max(1, x))
+            
+            token_bin_jey_name = f'{type_str}_bin_data'
+            if token_bin_jey_name not in self.dictionary_data:
+                return []
+            
+            # See if we should use arange or linspace. step_size implies arange and n_bins implies linspace.
+            b_use_linspace = 'n_bins' in self.dictionary_data[token_bin_jey_name]
+            bin_generation_func = custom_linspace if b_use_linspace else custom_arange
+            spacing_func = self.token_n_bins if b_use_linspace else self.token_step_size
+            
+            # Determine the transform function.
+            transform_type = 'linear'
+            if 'transform' in self.dictionary_data[token_bin_jey_name]:
+                transform_type = self.dictionary_data[token_bin_jey_name]['transform']
+            transform_func = ret_log if transform_type == 'log' else ret_same
+            
+            local_bins = bin_generation_func(transform_func(self.token_min(type_str)), transform_func(self.token_max(type_str)), spacing_func(type_str))
+            return local_bins
+        
+        self.e_bins     = create_bins('e')
+        self.eta_bins   = create_bins('eta')
+        self.theta_bins = create_bins('theta')
+        self.phi_bins   = create_bins('phi')
+        self.pt_bins    = create_bins('pt')
+        
         self.vocab_size = self.num_special_tokens + self.num_particles + self.num_materials + len(self.e_bins) + len(self.eta_bins) + len(self.theta_bins) + len(self.phi_bins) + len(self.pt_bins)
         
         # Offsets for tokenization (since we need to eliminate repeat tokens)
@@ -69,6 +107,7 @@ class Dictionary():
         # Converts input particle ID to the relevant index
         self.particles_index = self.dictionary_data['particles_index']
         self.particles_id = self.dictionary_data['particles_id']
+        self.pdgids = self.dictionary_data['pdgids']
         
         self.table_data = [
             ["Type",            "Num",                    "Token Range",                                                              "Min",                    "Max",                    "Step Size"],
@@ -94,7 +133,11 @@ class Dictionary():
     def token_step_size(self, type_str):
         if f'{type_str}_bin_data' not in self.dictionary_data:
             return 0
-        return self.dictionary_data[f'{type_str}_bin_data']['step_size']
+        return self.dictionary_data[f'{type_str}_bin_data'].get('step_size', 'none')
+    def token_n_bins(self, type_str):
+        if f'{type_str}_bin_data' not in self.dictionary_data:
+            return 0
+        return self.dictionary_data[f'{type_str}_bin_data']['n_bins']
     def token_range(self, type_str):
         if f'{type_str}_bin_data' not in self.dictionary_data:
             return 0
@@ -118,6 +161,9 @@ class Dictionary():
     @property
     def particle_end_token(self):
         return self.dictionary_data['special_tokens']['particle_end']
+    @property
+    def scheme(self):
+        return self.dictionary_data.get('scheme', 'standard')
     
     # Returns token type given the current token value (uses token range for evaluation)
     def get_token_type(self, token):

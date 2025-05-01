@@ -85,7 +85,7 @@ def sample_batched(sampling_starters, max_new_tokens):
         max_new_tokens=max_new_tokens,
         temperature=conf.sampling.temperature,
         top_k=conf.sampling.top_k,
-        batch_size=conf.sampling.sampling_batch_size
+        batch_size=conf.sampling.batch_size
     )
 
     # Batch sampling outputs into padded tensor. This removes padding and outputs data.

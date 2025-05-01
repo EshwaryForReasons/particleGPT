@@ -44,7 +44,6 @@ class LayerNorm(nn.Module):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
 class CausalSelfAttention(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -141,7 +140,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    num_token_types: int = 7 # len(ETokenTypes)
+    num_token_types: int = len(ETokenTypes)
 
 def batched_multiGPU_worker(device_id, model_config, model_state_dict, starters_chunk, max_new_tokens, temperature, top_k, batch_size, return_queue):
     torch.cuda.set_device(device_id)
@@ -208,18 +207,6 @@ class GPT(nn.Module):
         type_ids[(idx >= dictionary.PT_OFFSET)                 & (idx < dictionary.PT_OFFSET + len(dictionary.pt_bins))]                   = ETokenTypes.PT.value
         return type_ids
 
-    def get_token_type_ids_old(self, idx):
-        # Map token id ranges to type ids
-        type_ids = torch.zeros_like(idx)
-        type_ids[(idx == 0)]                                                                                                               = 0 # ETokenTypes.PADDING.value
-        type_ids[(idx >= dictionary.SPECIAL_TOKENS_OFFSET + 1) & (idx < dictionary.SPECIAL_TOKENS_OFFSET + dictionary.num_special_tokens)] = 1 # ETokenTypes.SPECIAL.value
-        type_ids[(idx >= dictionary.PDGID_OFFSET)              & (idx < dictionary.PDGID_OFFSET + dictionary.num_particles)]               = 2 # ETokenTypes.PDGID.value
-        type_ids[(idx >= dictionary.ENERGY_OFFSET)             & (idx < dictionary.ENERGY_OFFSET + len(dictionary.e_bins))]                = 3 # ETokenTypes.ENERGY.value
-        type_ids[(idx >= dictionary.ETA_OFFSET)                & (idx < dictionary.ETA_OFFSET + len(dictionary.eta_bins))]                 = 4 # ETokenTypes.ETA.value
-        type_ids[(idx >= dictionary.THETA_OFFSET)              & (idx < dictionary.THETA_OFFSET + len(dictionary.theta_bins))]             = 5 # ETokenTypes.THETA.value
-        type_ids[(idx >= dictionary.PHI_OFFSET)                & (idx < dictionary.PHI_OFFSET + len(dictionary.phi_bins))]                 = 6 # ETokenTypes.PHI.value
-        return type_ids
-
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
@@ -251,7 +238,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         
         # Type embedding because it might help in our case
-        type_ids = self.get_token_type_ids_old(idx)
+        type_ids = self.get_token_type_ids(idx)
         type_emb = self.transformer.type_emb(type_ids)
 
         x = self.transformer.drop(tok_emb + pos_emb + type_emb)

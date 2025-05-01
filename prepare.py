@@ -92,7 +92,7 @@ def bin_data():
     num_train_events = int(num_events_unreserved * 0.9)
     num_val_events = num_events_unreserved - num_train_events
     
-    in_place_bin(num_train_events, num_val_events, num_test_events)
+    fast_bin(num_train_events, num_val_events, num_test_events)
     
     with FileReadBackwards(input_data_filename) as f, open(test_real_bin_filename, 'wb') as test_real_out:
         accumulated_data = []
@@ -136,7 +136,7 @@ def bin_data():
 def generate_leading_particle_information():
     global num_features_in_raw_particle
 
-    # Output will be num_particles, pdgid, e, px, py, pz, eta, theta, phi
+    # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
     tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
     test_real_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_real.bin'
     real_leading_test_particles_filename = script_dir / 'data' / conf.generic.preparation_name / 'real_leading_test_particles.csv'
@@ -170,30 +170,31 @@ def generate_leading_particle_information():
             pz = leading_particle[4]
             
             r = np.sqrt(px * px + py * py + pz * pz)
+            pt = np.sqrt(px * px + py * py)
             theta = np.arccos(pz / r)
             phi = np.arctan2(py, px)
             eta = -np.log(np.tan(theta / 2))
             
-            out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {eta:.5f} {theta:.5f} {phi:.5f}\n')
+            out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {pt} {eta:.5f} {theta:.5f} {phi:.5f}\n')
 
 def prepare_dataset():
     global max_sequence_length
     global num_tokens_per_particle
     global num_features_per_particle
     
-    if conf.generic.scheme == 'standard':
+    if dictionary.scheme == 'standard':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2
-    elif conf.generic.scheme == 'no_eta':
+    elif dictionary.scheme == 'no_eta':
         num_features_per_particle = 4
         num_tokens_per_particle = num_features_per_particle + 2
-    elif conf.generic.scheme == 'no_particle_boundaries':
+    elif dictionary.scheme == 'no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
-    elif conf.generic.scheme == 'paddingv2':
+    elif dictionary.scheme == 'paddingv2':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2
-    elif conf.generic.scheme == 'neo_no_particle_boundaries':
+    elif dictionary.scheme == 'neo_no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
     
@@ -218,7 +219,7 @@ def prepare_dataset():
 
     dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
     dictionary.output_humanized_dictionary(humanized_dictionary_filename)
-    pTokenizer.tokenize_data(dictionary_filename.as_posix(), conf.generic.scheme, input_data_filename.as_posix(), temp_data_dir.as_posix())
+    pTokenizer.tokenize_data(dictionary_filename.as_posix(), dictionary.scheme, input_data_filename.as_posix(), temp_data_dir.as_posix())
 
     # The tokenizer generates a bunch of files which need to be concatenated
     print('Started concatenating tokenized files.')
