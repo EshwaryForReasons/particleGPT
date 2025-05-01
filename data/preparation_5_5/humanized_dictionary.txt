@@ -6,6 +6,7 @@ Energy bins      |  350   |  86 - 435      |  0       |  35000   |  100         
 Eta bins         |  802   |  436 - 1237    |  -4      |  4.01    |  0.01        |  
 Theta bins       |  316   |  1238 - 1553   |  0       |  3.15    |  0.01        |  
 Phi bins         |  631   |  1554 - 2184   |  -3.15   |  3.15    |  0.01        |  
+Pt bins          |  0     |  2185 - 2184   |  0       |  0       |  0           |  
 
 Special Token - Token Value
 padding - 0

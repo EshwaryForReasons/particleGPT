@@ -79,6 +79,22 @@ public:
     static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
 };
 
+/**
+ * NeoV2 schemes tokenize into pdgid, pt, eta, phi.
+ * Contain no particle boundaries.
+ */
+
+//Scheme no_particle_boundaries does not the particle_start and particle_end tokens.
+class SchemeNeoV2 : public SchemeBase<SchemeNeoV2>
+{
+public:
+
+    static const std::size_t NUM_TOKENS_PER_PARTICLE = 4;
+    static const std::vector<int> get_padding_sequence();
+    static const std::vector<int> tokenize_event(const std::vector<double>& event);
+    static const std::vector<double> untokenize_event(const std::vector<int>& event, const Dictionary& dictionary);
+};
+
 namespace DataManager
 {
     const Dictionary load_dictionary(std::string dictionary_path);

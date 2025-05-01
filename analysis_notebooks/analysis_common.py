@@ -8,6 +8,11 @@ import textwrap
 import matplotlib.pyplot as plt
 from pathlib import Path
 import sys
+from collections import Counter
+
+parent_dir = Path().resolve().parent
+sys.path.insert(0, str(parent_dir))
+from dictionary import Dictionary
 
 parent_dir = Path().resolve().parent
 sys.path.insert(0, str(parent_dir))
@@ -246,50 +251,95 @@ def plot_train_graphs(models_to_compare, juxtaposed=True, use_epochs=True, y_lim
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.show()
 
-columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "eta", "theta", "phi"]
+columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
 
 def get_common_data(model_name):
     dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
     real_leading_test_particles_filename = pUtil.get_model_preparation_dir(model_name) / 'real_leading_test_particles.csv'
     sampled_leading_particles_filename = pUtil.get_latest_sampling_dir(model_name) / 'sampled_leading_particles.csv'
     
-    with open(dictionary_filename) as dictionary_file:
-        dictionary = json.load(dictionary_file)
-
+    dictionary = Dictionary(dictionary_filename)
+        
+    def get_bin_count(type_str):
+        step_size = dictionary.token_step_size(type_str)
+        if step_size == 0:
+            return 0
+        return int(dictionary.token_range(type_str) // step_size)
+    
     # Convenience dictionary definitions
-    def type_min(column_name):
-        return dictionary[f'{column_name}_bin_data']["min"]
-    def type_max(column_name):
-        return dictionary[f'{column_name}_bin_data']["max"]
-    def type_range(column_name):
-        return dictionary[f'{column_name}_bin_data']["max"] - dictionary[f'{column_name}_bin_data']["min"]
-    p_bin_count = int(type_range('e') // 1000)
-    e_bin_count = int(type_range('e') // dictionary["e_bin_data"]["step_size"])
-    eta_bin_count = int(type_range('eta') // dictionary["eta_bin_data"]["step_size"])
-    theta_bin_count = int(type_range('theta') // dictionary["theta_bin_data"]["step_size"])
-    phi_bin_count = int(type_range('phi') // dictionary["phi_bin_data"]["step_size"])
-            
+    p_bin_count = int(dictionary.token_range('e') // 1000)
+    e_bin_count = get_bin_count('e')
+    eta_bin_count = get_bin_count('eta')
+    theta_bin_count = get_bin_count('theta')
+    phi_bin_count = get_bin_count('phi')
+    pt_bin_count = get_bin_count('pt')
+    
+    columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     bin_settings = {
-        "num_particles": { "min": 0,                 "max": 50,                "bins": 50 },
-        "e":             { "min": type_min('e'),     "max": type_max('e'),     "bins": e_bin_count },
-        "px":            { "min": type_min('e'),     "max": type_max('e'),     "bins": p_bin_count },
-        "py":            { "min": type_min('e'),     "max": type_max('e'),     "bins": p_bin_count },
-        "pz":            { "min": type_min('e'),     "max": type_max('e'),     "bins": p_bin_count },
-        "eta":           { "min": type_min('eta'),   "max": type_max('eta'),   "bins": eta_bin_count },
-        "theta":         { "min": type_min('theta'), "max": type_max('theta'), "bins": theta_bin_count },
-        "phi":           { "min": type_min('phi'),   "max": type_max('phi'),   "bins": phi_bin_count },
+        "num_particles": { "min": 0,                             "max": 50,                            "bins": 50 },
+        "e":             { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": e_bin_count },
+        "px":            { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": p_bin_count },
+        "py":            { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": p_bin_count },
+        "pz":            { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": p_bin_count },
+        "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": eta_bin_count },
+        "theta":         { "min": dictionary.token_min('theta'), "max": dictionary.token_max('theta'), "bins": theta_bin_count },
+        "phi":           { "min": dictionary.token_min('phi'),   "max": dictionary.token_max('phi'),   "bins": phi_bin_count },
+        "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": pt_bin_count },
     }
 
     real_df = pd.read_csv(real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
     sampled_df = pd.read_csv(sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
     return bin_settings, real_df, sampled_df
 
-def plot_model_distributions(model_name, column_name, ax=None):
+def plot_pdgid_distributions(model_name, ax=None, use_log_scale=False):
+    dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
+    dictionary = Dictionary(dictionary_filename)
+    
+    _, real_df, sampled_df = get_common_data(model_name)
+    
+    # PDGID is a fundamentally different plot, so we do it first here.
+    read_pdgids = real_df['pdgid'].astype(str)
+    sampled_pdgids = sampled_df['pdgid'].astype(str)
+    real_freq = Counter(read_pdgids)
+    sampled_freq = Counter(sampled_pdgids)
+    real_total = sum(real_freq.values())
+    sampled_total = sum(sampled_freq.values())
+    real_normalized = {dictionary.particles_id.get(pid, pid): count / real_total for pid, count in real_freq.items()}
+    sampled_normalized = {dictionary.particles_id.get(pid, pid): count / sampled_total for pid, count in sampled_freq.items()}
+    
+    # Union of all particle labels from both histograms
+    all_particles = sorted(set(real_normalized.keys()).union(sampled_normalized.keys()))
+    total_freq = {p: real_normalized.get(p, 0) + sampled_normalized.get(p, 0) for p in all_particles}
+    
+    sorted_particles = sorted(all_particles, key=lambda p: total_freq[p], reverse=True)
+    
+    # Build aligned values for both histograms
+    real_values = [real_normalized.get(p, 0) for p in sorted_particles]
+    sampeld_values = [sampled_normalized.get(p, 0) for p in sorted_particles]
+    
+    # Plotting
+    ax = ax or plt
+    x = range(len(sorted_particles))
+    ax.bar(x, real_values, label=f'Input ({model_name})', color='blue', alpha=0.7)
+    ax.bar(x, sampeld_values, label=f'Sampled ({model_name})', color='orange', alpha=0.7)
+    if ax is not plt:
+        if use_log_scale:
+            ax.set_yscale('log', base=10)
+        ax.set_xticks(x, sorted_particles, rotation=45, ha='right')
+        ax.set_xlabel("Particle Type")
+        ax.set_ylabel("Normalized Frequency")
+        ax.set_title("Normalized Particle Type Distributions")
+    ax.legend()
+
+def plot_model_distributions(model_name, column_name, ax=None, use_log_scale=False):
     bin_settings, real_df, sampled_df = get_common_data(model_name)
     
     min_val = bin_settings[column_name]['min']
     max_val = bin_settings[column_name]['max']
     bins = bin_settings[column_name]['bins']
+    
+    if bins == 0:
+        return
     
     real_df_weights = np.ones_like(real_df[column_name]) / len(real_df[column_name])
     sampled_df_weights = np.ones_like(sampled_df[column_name]) / len(sampled_df[column_name])
@@ -298,12 +348,19 @@ def plot_model_distributions(model_name, column_name, ax=None):
     ax.hist(real_df[column_name], bins=bins, weights=real_df_weights, range=(min_val, max_val), alpha=0.7, color="blue", label=f'Input ({model_name})')
     ax.hist(sampled_df[column_name], bins=bins, weights=sampled_df_weights, range=(min_val, max_val), alpha=0.7, color="orange", label=f'Sampled ({model_name})')
     if ax is not plt:
-        ax.set_xlabel(column_name)
+        unit = ''
+        if column_name in ['e', 'px', 'py', 'pz', 'pt']:
+            unit = '(MeV)'
+        elif column_name in ['eta', 'theta', 'phi']:
+            unit = '(angular)'
+        if use_log_scale:
+            ax.set_yscale('log', base=10)
+        ax.set_xlabel(f'{column_name} {unit}')
         ax.set_ylabel('Frequency (Normalized)')
         ax.set_title(f'{model_name}')
         ax.legend()
-
-def compare_distributions(models_to_compare, column_name, juxtaposed=True, dists_per_row=3):
+    
+def compare_pdgid_distributions(models_to_compare, juxtaposed=True, dists_per_row=3, use_log_scale=False):
     if juxtaposed:
         num_horizontal, num_vertical = min(len(models_to_compare), dists_per_row), (math.ceil(len(models_to_compare) / dists_per_row))
         figure, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True)
@@ -311,17 +368,46 @@ def compare_distributions(models_to_compare, column_name, juxtaposed=True, dists
             axes = [axes]
         axes = np.atleast_1d(axes).flatten()
         for model_name, ax in zip(models_to_compare, axes):
-            plot_model_distributions(model_name, column_name=column_name, ax=ax)
-        figure.suptitle(f'Training Progress for {", ".join(models_to_compare)}')
+            plot_pdgid_distributions(model_name, ax=ax, use_log_scale=use_log_scale)
+        figure.suptitle(f'Particle Type Distributions for {", ".join(models_to_compare)}')
         plt.tight_layout()
         plt.grid(axis="y", linestyle="--", alpha=0.7)
         plt.show()
     else:
         plt.figure(figsize=(15, 6))
+        if use_log_scale:
+            plt.yscale('log', base=10)
         for model_name in models_to_compare:
-            plot_model_distributions(model_name, column_name=column_name)
-        plt.title(f'Training Progress for {", ".join(models_to_compare)}')
-        plt.xlabel('Iteration')
-        plt.ylabel('Loss')
+            plot_pdgid_distributions(model_name, use_log_scale=use_log_scale)
+        plt.title(f'Particle Type Distributions for {", ".join(models_to_compare)}')
+        plt.legend()
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+
+def compare_distributions(models_to_compare, column_name, juxtaposed=True, dists_per_row=3, use_log_scale=False):
+    if column_name == 'pdgid':
+        compare_pdgid_distributions(models_to_compare, juxtaposed=juxtaposed, dists_per_row=dists_per_row, use_log_scale=use_log_scale)
+        return
+    
+    if juxtaposed:
+        num_horizontal, num_vertical = min(len(models_to_compare), dists_per_row), (math.ceil(len(models_to_compare) / dists_per_row))
+        figure, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True)
+        if len(models_to_compare) == 1:
+            axes = [axes]
+        axes = np.atleast_1d(axes).flatten()
+        for model_name, ax in zip(models_to_compare, axes):
+            plot_model_distributions(model_name, column_name=column_name, ax=ax, use_log_scale=use_log_scale)
+        figure.suptitle(f'Distributions for {", ".join(models_to_compare)}')
+        plt.tight_layout()
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.show()
+    else:
+        plt.figure(figsize=(15, 6))
+        if use_log_scale:
+            plt.yscale('log', base=10)
+        for model_name in models_to_compare:
+            plot_model_distributions(model_name, column_name=column_name, use_log_scale=use_log_scale)
+        plt.title(f'Distributions for {", ".join(models_to_compare)}')
+        # plt.xlabel('Iteration')
+        # plt.ylabel('Loss')
         plt.legend()
         plt.grid(axis="y", linestyle="--", alpha=0.7)

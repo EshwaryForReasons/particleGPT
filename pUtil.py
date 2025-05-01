@@ -75,7 +75,7 @@ def get_model_preparation_name(model_name):
 # Sampling
 
 def get_latest_sampling_id(model_name):
-    generated_samples_dir = Path(GENERATED_SAMPLES_DIR_NAME) / model_name
+    generated_samples_dir = script_dir / Path(GENERATED_SAMPLES_DIR_NAME) / model_name
     largest_sampling = -1
     for folder in generated_samples_dir.glob("sampling_*"):
         if folder.is_dir():

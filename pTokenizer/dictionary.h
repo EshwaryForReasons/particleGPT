@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <iostream>
 
 struct FSpecialTokens {
     int padding = -1;
@@ -74,45 +75,37 @@ public:
 
         //Generate bins
 
-        if (dictionary_json.contains("e_bin_data"))
+        auto create_bins = [=](const std::string& type_str)
         {
-            double e_min = dictionary_json["e_bin_data"]["min"];
-            double e_max = dictionary_json["e_bin_data"]["max"];
-            double e_step = dictionary_json["e_bin_data"]["step_size"];
-            e_bins = pMath::arange(e_min, e_max, e_step);
-        }
+            const std::string token_bin_key_name = type_str + "_bin_data";
+            if (!dictionary_json.contains(token_bin_key_name))
+                return BinData(std::vector<double>(), "none");
+            
+            //See if we should use arange or linspace. step_size implies arange and n_bins implies linspace.
+            const bool b_use_linspace = dictionary_json[token_bin_key_name].contains("n_bins");
+            auto bin_generation_func = b_use_linspace ? pMath::linspace : pMath::arange;
+            const std::string spacing_key = b_use_linspace ? "n_bins" : "step_size";
 
-        if (dictionary_json.contains("eta_bin_data"))
-        {
-            double eta_min = dictionary_json["eta_bin_data"]["min"];
-            double eta_max = dictionary_json["eta_bin_data"]["max"];
-            double eta_step = dictionary_json["eta_bin_data"]["step_size"];
-            eta_bins = pMath::arange(eta_min, eta_max, eta_step);
-        }
+            //Determine the transform function
+            std::string transform_type = "linear";
+            if (dictionary_json[token_bin_key_name].contains("transform"))
+                transform_type = dictionary_json[token_bin_key_name]["transform"];
+            auto ret_same = [](double x) { return x; };
+            auto ret_log = [](double x) { return std::log(std::max(1.0, x)); };
+            auto transform_func = transform_type == "log" ? ret_log : ret_same;
 
-        if (dictionary_json.contains("theta_bin_data"))
-        {
-            double theta_min = dictionary_json["theta_bin_data"]["min"];
-            double theta_max = dictionary_json["theta_bin_data"]["max"];
-            double theta_step = dictionary_json["theta_bin_data"]["step_size"];
-            theta_bins = pMath::arange(theta_min, theta_max, theta_step);
-        }
+            std::vector<double> bins = bin_generation_func(
+                transform_func(dictionary_json[token_bin_key_name]["min"]),
+                transform_func(dictionary_json[token_bin_key_name]["max"]),
+                dictionary_json[token_bin_key_name][spacing_key]);
+            return BinData{ bins, transform_type };
+        };
 
-        if (dictionary_json.contains("phi_bin_data"))
-        {
-            double phi_min = dictionary_json["phi_bin_data"]["min"];
-            double phi_max = dictionary_json["phi_bin_data"]["max"];
-            double phi_step = dictionary_json["phi_bin_data"]["step_size"];
-            phi_bins = pMath::arange(phi_min, phi_max, phi_step);
-        }
-
-        if (dictionary_json.contains("pt_bin_data"))
-        {
-            double pt_min = dictionary_json["pt_bin_data"]["min"];
-            double pt_max = dictionary_json["pt_bin_data"]["max"];
-            double pt_step = dictionary_json["pt_bin_data"]["step_size"];
-            pt_bins = pMath::arange(pt_min, pt_max, pt_step);
-        }
+        e_bins     = create_bins("e");
+        eta_bins   = create_bins("eta");
+        theta_bins = create_bins("theta");
+        phi_bins   = create_bins("phi");
+        pt_bins    = create_bins("pt");
 
         //Calculate offsets
 
@@ -124,10 +117,10 @@ public:
         offsets.pdgid_offset = offsets.special_tokens_offset + num_special_tokens;
         offsets.materials_offset = offsets.pdgid_offset + num_particles;
         offsets.energy_offset = offsets.materials_offset + num_materials;
-        offsets.eta_offset = offsets.energy_offset + e_bins.size();
-        offsets.theta_offset = offsets.eta_offset + eta_bins.size();
-        offsets.phi_offset = offsets.theta_offset + theta_bins.size();
-        offsets.pt_offset = offsets.phi_offset + phi_bins.size();
+        offsets.eta_offset = offsets.energy_offset + e_bins.bins.size();
+        offsets.theta_offset = offsets.eta_offset + eta_bins.bins.size();
+        offsets.phi_offset = offsets.theta_offset + theta_bins.bins.size();
+        offsets.pt_offset = offsets.phi_offset + phi_bins.bins.size();
     }
 
     std::string dictionary_path;
@@ -135,10 +128,10 @@ public:
     FSpecialTokens special_tokens;
     FOffsets offsets;
 
-    std::vector<double> e_bins;
-    std::vector<double> eta_bins;
-    std::vector<double> theta_bins;
-    std::vector<double> phi_bins;
-    std::vector<double> pt_bins;
+    BinData e_bins;
+    BinData eta_bins;
+    BinData theta_bins;
+    BinData phi_bins;
+    BinData pt_bins;
     std::vector<pdgid_index_pair> pdgid_to_index;
 };

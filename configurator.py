@@ -13,7 +13,6 @@ class GenericConfiguration:
     preparation_name:      str = ''
     model_name:            str = ''
     dataset:               str = ''
-    scheme:                str = 'standard'
 
 @dataclass
 class TrainingConfiguration:
@@ -70,7 +69,7 @@ class TrainingConfiguration:
 @dataclass
 class SamplingConfiguration:
     samples_storage_dir:    str = ''
-    sampling_batch_size:    int = 128
+    batch_size:             int = 128
     max_new_tokens:         int = 500
     temperature:            float = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
     top_k:                  int = 200

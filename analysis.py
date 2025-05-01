@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import concurrent.futures
 from pathlib import Path
+from collections import Counter
 
 import jetnet
 
@@ -24,7 +25,6 @@ class Analyzer:
     def __init__(self, model_name, preparation_name, scheme):
         self.preparation = preparation_name
         self.model_name = model_name
-        self.scheme = scheme
         
         self.latest_sampling_dir = pUtil.get_latest_sampling_dir(model_name)
 
@@ -48,14 +48,20 @@ class Analyzer:
             
         self.dictionary = Dictionary(self.dictionary_filename.as_posix())
 
+        def get_bin_count(type_str):
+            step_size = self.dictionary.token_step_size(type_str)
+            if step_size == 0:
+                return 0
+            return int(self.dictionary.token_range(type_str) // step_size)
         # Convenience dictionary definitions
         p_bin_count = int(self.dictionary.token_range('e') // 1000)
-        e_bin_count = int(self.dictionary.token_range('e') // self.dictionary.token_step_size('e'))
-        eta_bin_count = int(self.dictionary.token_range('eta') // self.dictionary.token_step_size('eta'))
-        theta_bin_count = int(self.dictionary.token_range('theta') // self.dictionary.token_step_size('theta'))
-        phi_bin_count = int(self.dictionary.token_range('phi') // self.dictionary.token_step_size('phi'))
+        e_bin_count = get_bin_count('e')
+        eta_bin_count = get_bin_count('eta')
+        theta_bin_count = get_bin_count('theta')
+        phi_bin_count = get_bin_count('phi')
+        pt_bin_count = get_bin_count('pt')
 
-        self.columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "eta", "theta", "phi"]
+        self.columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
         self.bin_settings = {
             "num_particles": { "min": 0,                                  "max": 50,                                 "bins": 50 },
             "e":             { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": e_bin_count },
@@ -65,10 +71,11 @@ class Analyzer:
             "eta":           { "min": self.dictionary.token_min('eta'),   "max": self.dictionary.token_max('eta'),   "bins": eta_bin_count },
             "theta":         { "min": self.dictionary.token_min('theta'), "max": self.dictionary.token_max('theta'), "bins": theta_bin_count },
             "phi":           { "min": self.dictionary.token_min('phi'),   "max": self.dictionary.token_max('phi'),   "bins": phi_bin_count },
+            "pt":            { "min": self.dictionary.token_min('pt'),    "max": self.dictionary.token_max('pt'),    "bins": pt_bin_count },
         }
     
     def generate_leading_particle_information(self):
-        # Output will be num_particles, pdgid, e, px, py, pz, eta, theta, phi
+        # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
 
         untokenized_samples_data = []
         with open(self.untokenized_samples_filename, 'r') as in_file:
@@ -100,11 +107,12 @@ class Analyzer:
                 pz = leading_particle[4]
                 
                 r = np.sqrt(px * px + py * py + pz * pz)
+                pt = np.sqrt(px * px + py * py)
                 theta = np.arccos(pz / r)
                 phi = np.arctan2(py, px)
                 eta = -np.log(np.tan(theta / 2))
                 
-                out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {eta:.5f} {theta:.5f} {phi:.5f}\n')
+                out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {pt} {eta:.5f} {theta:.5f} {phi:.5f}\n')
     
     def filter_data(self):
         # Load data
@@ -233,37 +241,76 @@ class Analyzer:
                 filtered_file.write(event + '\n')
     
     def generate_distributions(self):
-        if self.scheme == 'standard':
+        if self.dictionary.scheme == 'standard':
             self.filter_data()
-        elif self.scheme == 'no_eta':
+        elif self.dictionary.scheme == 'no_eta':
             self.filter_data_scheme_no_eta()
-        elif self.scheme == 'no_particle_boundaries':
+        elif self.dictionary.scheme == 'no_particle_boundaries':
             self.filter_data()
-        elif self.scheme == 'paddingv2':
+        elif self.dictionary.scheme == 'paddingv2':
             self.filter_data()
         
-        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.dictionary.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         self.generate_leading_particle_information()
 
-        df1 = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
-        df2 = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
+        real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
+        sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
+        
+        # PDGID is a fundamentally different plot, so we do it first here.
+        read_pdgids = real_df['pdgid'].astype(str)
+        sampled_pdgids = sampled_df['pdgid'].astype(str)
+        real_freq = Counter(read_pdgids)
+        sampled_freq = Counter(sampled_pdgids)
+        real_total = sum(real_freq.values())
+        sampled_total = sum(sampled_freq.values())
+        real_normalized = {self.dictionary.particles_id.get(pid, pid): count / real_total for pid, count in real_freq.items()}
+        sampled_normalized = {self.dictionary.particles_id.get(pid, pid): count / sampled_total for pid, count in sampled_freq.items()}
+        
+        # Union of all particle labels from both histograms
+        all_particles = sorted(set(real_normalized.keys()).union(sampled_normalized.keys()))
+        total_freq = {p: real_normalized.get(p, 0) + sampled_normalized.get(p, 0) for p in all_particles}
+
+        sorted_particles = sorted(all_particles, key=lambda p: total_freq[p], reverse=True)
+
+        # Build aligned values for both histograms
+        real_values = [real_normalized.get(p, 0) for p in sorted_particles]
+        sampeld_values = [sampled_normalized.get(p, 0) for p in sorted_particles]
+
+        # Plotting
+        x = range(len(sorted_particles))
+        plt.figure(figsize=(21, 6))
+        plt.bar(x, real_values, label="Input", color='blue', alpha=0.7)
+        plt.bar(x, sampeld_values, label="Sampled", color='orange', alpha=0.7)
+        # width = 0.4
+        # plt.bar([i - width / 2 for i in x], real_values, width=width, label="Input", color='blue')
+        # plt.bar([i + width / 2 for i in x], sampeld_values, width=width, label="Sampled", color='Orange')
+        plt.xticks(x, sorted_particles, rotation=45, ha='right')
+        plt.xlabel("Particle Type")
+        plt.ylabel("Normalized Frequency")
+        plt.title("Normalized Particle Type Distributions")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f"{self.latest_sampling_dir.as_posix()}/histogram_pdgid.png", bbox_inches='tight')
 
         for column, settings in self.bin_settings.items():
-            if self.scheme == 'no_eta' and column == 'eta':
-                continue                
+            if self.dictionary.scheme == 'no_eta' and column == 'eta':
+                continue
             
             min_val = settings["min"]
             max_val = settings["max"]
             bins = settings["bins"]
             
-            df1_weights = np.ones_like(df1[column]) / len(df1[column])
-            df2_weights = np.ones_like(df2[column]) / len(df2[column])
+            if bins == 0:
+                return
+            
+            real_df_weights = np.ones_like(real_df[column]) / len(real_df[column])
+            sampled_df_weights = np.ones_like(sampled_df[column]) / len(sampled_df[column])
 
             plt.figure(figsize=(21, 6))
             plt.subplot(1, 2, 1)
             plt.xlim([min_val, max_val])
-            plt.hist(df1[column], bins=bins, weights=df1_weights, range=(min_val, max_val), alpha=0.7, color="blue", label="Input")
-            plt.hist(df2[column], bins=bins, weights=df2_weights, range=(min_val, max_val), alpha=0.7, color="orange", label="Sampled")
+            plt.hist(real_df[column], bins=bins, weights=real_df_weights, range=(min_val, max_val), alpha=0.7, color="blue", label="Input")
+            plt.hist(sampled_df[column], bins=bins, weights=sampled_df_weights, range=(min_val, max_val), alpha=0.7, color="orange", label="Sampled")
             plt.title(f"Histogram of {column}")
             plt.xlabel(column)
             plt.ylabel("Frequency")
