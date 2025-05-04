@@ -1,481 +1,186 @@
-import sys
-import json
-import pickle
+
+import jetnet.evaluation
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import concurrent.futures
+from collections import Counter, defaultdict
 from pathlib import Path
-from collections import Counter
 
 import jetnet
 
-import configurator as conf
-from dictionary import Dictionary
-import pUtil
-import pTokenizerModule as pTokenizer
-import data_manager
-
-script_dir = Path(__file__).resolve().parent
-
-# epsilon to avoid invalid logs
-epsilon = 1e-8
-
-class Analyzer:
-    def __init__(self, model_name, preparation_name, scheme):
-        self.preparation = preparation_name
-        self.model_name = model_name
+class dataset:
+    @staticmethod
+    def get_pdgid_frequency_distribution(dataset):
+        """
+        dataset: expected shape (num_events, num_particles_per_event, num_features_per_particle)
+            where the first feature is the PDGID of the particle.
+        freq: contains the frequency of each PDGID in the dataset.
+        occurrences: contains the events (as row numbers) in which each PDGID occurs.
+        """
+        freq = Counter()
+        occurrences = defaultdict(list)
         
-        self.latest_sampling_dir = pUtil.get_latest_sampling_dir(model_name)
-
-        self.dictionary_filename                  = script_dir / 'data' / preparation_name / 'dictionary.json'
-        self.meta_filename                        = script_dir / 'data' / preparation_name / 'meta.pkl'
-        self.test_real_bin_filename               = script_dir / 'data' / preparation_name / 'test_real.bin'
-        self.real_leading_test_particles_filename = script_dir / 'data' / preparation_name / 'real_leading_test_particles.csv'
-        self.generated_samples_filename           = self.latest_sampling_dir / 'generated_samples.csv'
-        self.filtered_samples_filename            = self.latest_sampling_dir / 'filtered_samples.csv'
-        self.sampled_leading_particles_filename   = self.latest_sampling_dir / 'sampled_leading_particles.csv'
-        self.untokenized_samples_filename         = self.latest_sampling_dir / 'untokenized_samples.csv'
-        self.metrics_results_filename             = self.latest_sampling_dir / 'metrics_results.json'
-        
-        if not self.meta_filename.exists():
-            print("Data has not been prepared! Please prepare data first!")
-            exit()
-            
-        with open(self.meta_filename, 'rb') as f:
-            meta = pickle.load(f)
-            self.num_particles_per_event = meta['num_particles_per_event']
-            
-        self.dictionary = Dictionary(self.dictionary_filename.as_posix())
-
-        def get_bin_count(type_str):
-            step_size = self.dictionary.token_step_size(type_str)
-            if step_size == 0:
-                return 0
-            return int(self.dictionary.token_range(type_str) // step_size)
-        # Convenience dictionary definitions
-        p_bin_count = int(self.dictionary.token_range('e') // 1000)
-        e_bin_count = get_bin_count('e')
-        eta_bin_count = get_bin_count('eta')
-        theta_bin_count = get_bin_count('theta')
-        phi_bin_count = get_bin_count('phi')
-        pt_bin_count = get_bin_count('pt')
-
-        self.columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
-        self.bin_settings = {
-            "num_particles": { "min": 0,                                  "max": 50,                                 "bins": 50 },
-            "e":             { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": e_bin_count },
-            "px":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
-            "py":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
-            "pz":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
-            "eta":           { "min": self.dictionary.token_min('eta'),   "max": self.dictionary.token_max('eta'),   "bins": eta_bin_count },
-            "theta":         { "min": self.dictionary.token_min('theta'), "max": self.dictionary.token_max('theta'), "bins": theta_bin_count },
-            "phi":           { "min": self.dictionary.token_min('phi'),   "max": self.dictionary.token_max('phi'),   "bins": phi_bin_count },
-            "pt":            { "min": self.dictionary.token_min('pt'),    "max": self.dictionary.token_max('pt'),    "bins": pt_bin_count },
-        }
-    
-    def generate_leading_particle_information(self):
-        # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
-
-        untokenized_samples_data = []
-        with open(self.untokenized_samples_filename, 'r') as in_file:
-            for event in in_file:
-                particles = event.strip().split(';')
-                event_arr = []
-                for particle in particles:
-                    particle = [float(x) for x in particle.strip().split()]
-                    event_arr.extend(particle)
-                untokenized_samples_data.append(event_arr)
-        
-        with open(self.sampled_leading_particles_filename, 'w') as out_file:
-            for event in untokenized_samples_data:
-                if len(event) == 0:
+        for event_idx, event in enumerate(dataset):
+            found_ids = set()
+            for particle in event:
+                pdgid = particle[0]
+                if pdgid == 0.0:
                     continue
-                event = np.array(event)
-                num_particles = len(event) // 5
-                particles = event.reshape((num_particles, 5))
-                secondaries = particles[1:]
-                # Find index of particle with the highest energy
-                leading_particle_idx = np.argmax(secondaries[:, 1])
-                leading_particle = secondaries[leading_particle_idx]
-                secondaries = [s for s in secondaries if s[0] != 0]
+                freq[pdgid] += 1
+                found_ids.add(pdgid)
+            for pid in found_ids:
+                occurrences[pid].append(event_idx)
                 
-                pdgid = leading_particle[0]
-                e = leading_particle[1]
-                px = leading_particle[2]
-                py = leading_particle[3]
-                pz = leading_particle[4]
-                
-                r = np.sqrt(px * px + py * py + pz * pz)
-                pt = np.sqrt(px * px + py * py)
-                theta = np.arccos(pz / r)
-                phi = np.arctan2(py, px)
-                eta = -np.log(np.tan(theta / 2))
-                
-                out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {pt} {eta:.5f} {theta:.5f} {phi:.5f}\n')
+        return freq, occurrences
     
-    def filter_data(self):
-        # Load data
-        tokenized_data = []
-        with open(self.generated_samples_filename) as gen_samples_file:
-            for event in gen_samples_file:
-                event = [int(x) for x in event.strip().split()]
-                tokenized_data.append(event)
-                
-        filtered_data = []
+    @staticmethod
+    def find_events_lost_due_to_particle_removal(rows_occurring, n_least_frequent):
+        """
+        events_lost: If we remove all events containing the n_least_frequent particles, which events (as row numbers) do we lose?
+        """
+        sorted_items = sorted(rows_occurring.items(), key=lambda x: len(x[1]), reverse=False)
+        sorted_items = sorted_items[:n_least_frequent]
         
-        # Ensure valid borders
-        tokenized_data = [e for e in tokenized_data if e[0] == 1 and e[-1] == 2]
-        
-        # Remove special tokens
-        tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4]] for e in tokenized_data]
-            
-        # Ensure events are well formed
-        tokenized_data = [e for e in tokenized_data if len(e) > 5 and len(e) % 5 == 0]
-        
-        # Ensure valid token ranges
-        pdgid_offset_min = self.dictionary.PDGID_OFFSET
-        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.pdgids)
-        energy_offset_min = self.dictionary.ENERGY_OFFSET
-        energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
-        eta_offset_min = self.dictionary.ETA_OFFSET
-        eta_offset_max = self.dictionary.ETA_OFFSET + len(self.dictionary.eta_bins)
-        theta_offset_min = self.dictionary.THETA_OFFSET
-        theta_offset_max = self.dictionary.THETA_OFFSET + len(self.dictionary.theta_bins)
-        phi_offset_min = self.dictionary.PHI_OFFSET
-        phi_offset_max = self.dictionary.PHI_OFFSET + len(self.dictionary.phi_bins)
-        
-        for event in tokenized_data:
-            b_keep_event = True
-            for i, token in enumerate(event):
-                token_type_id = i % 5
-                if token_type_id == 0:
-                    if token < pdgid_offset_min or token >= pdgid_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 1:
-                    if token < energy_offset_min or token >= energy_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 2:
-                    if token < eta_offset_min or token >= eta_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 3:
-                    if token < theta_offset_min or token >= theta_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 4:
-                    if token < phi_offset_min or token >= phi_offset_max:
-                        b_keep_event = False
-                        break
-            
-            if b_keep_event:
-                filtered_data.append(event)
-        
-        # Output data
-        with open(self.filtered_samples_filename, 'w') as filtered_file:
-            for event in filtered_data:
-                event = [str(x) for x in event]
-                event = ' '.join(event)
-                filtered_file.write(event + '\n')
+        events_lost = set()
+        for particle, events in sorted_items:
+            events_lost.update(events)
+        return events_lost
+
+    @staticmethod
+    def calculate_num_removable_particles(rows_occurring, n_allowed_event_removals):
+        """
+        n_most_remove_particles: number of least frequent particles we can remove and still only remove n_allowed_event_removals events.
+        """
+        n_most_removable_particles = 0
+        for i in range(0, len(rows_occurring)):
+            removed_events = dataset.find_events_lost_due_to_particle_removal(rows_occurring, i)
+            n_removed_events = len(removed_events)
+            if n_removed_events <= n_allowed_event_removals:
+                n_most_removable_particles = i
+        return n_most_removable_particles
+
+class metrics:
+    # Wrappers for JetNet metrics
+    jetnet_get_suggested_kpd_fpd_features = jetnet.evaluation.get_fpd_kpd_jet_features
+    jetnet_eval_cov_mmd = jetnet.evaluation.cov_mmd
+    jetnet_eval_kpd = jetnet.evaluation.kpd
+    jetnet_eval_fpd = jetnet.evaluation.fpd
+    jetnet_eval_w1efp = jetnet.evaluation.w1efp
+    jetnet_eval_w1m = jetnet.evaluation.w1m
+    jetnet_eval_w1p = jetnet.evaluation.w1p
     
-    def filter_data_scheme_no_eta(self):
-        # Load data
-        tokenized_data = []
-        with open(self.generated_samples_filename) as gen_samples_file:
-            for event in gen_samples_file:
-                event = [int(x) for x in event.strip().split()]
-                tokenized_data.append(event)
-                
-        filtered_data = []
-        
-        # Ensure valid borders
-        tokenized_data = [e for e in tokenized_data if e[0] == 1 and e[-1] == 2]
-        
-        # Remove special tokens
-        tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4]] for e in tokenized_data]
-            
-        # Ensure events are well formed
-        tokenized_data = [e for e in tokenized_data if len(e) > 4 and len(e) % 4 == 0]
-        
-        # Ensure valid token ranges
-        pdgid_offset_min = self.dictionary.PDGID_OFFSET
-        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.pdgids)
-        energy_offset_min = self.dictionary.ENERGY_OFFSET
-        energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
-        theta_offset_min = self.dictionary.THETA_OFFSET
-        theta_offset_max = self.dictionary.THETA_OFFSET + len(self.dictionary.theta_bins)
-        phi_offset_min = self.dictionary.PHI_OFFSET
-        phi_offset_max = self.dictionary.PHI_OFFSET + len(self.dictionary.phi_bins)
-        
-        for event in tokenized_data:
-            b_keep_event = True
-            for i, token in enumerate(event):
-                token_type_id = i % 4
-                if token_type_id == 0:
-                    if token < pdgid_offset_min or token >= pdgid_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 1:
-                    if token < energy_offset_min or token >= energy_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 2:
-                    if token < theta_offset_min or token >= theta_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 3:
-                    if token < phi_offset_min or token >= phi_offset_max:
-                        b_keep_event = False
-                        break
-            
-            if b_keep_event:
-                filtered_data.append(event)
-        
-        # Output data
-        with open(self.filtered_samples_filename, 'w') as filtered_file:
-            for event in filtered_data:
-                event = [str(x) for x in event]
-                event = ' '.join(event)
-                filtered_file.write(event + '\n')
+    # Custom metrics implementations go here...
     
-    def generate_distributions(self):
-        if self.dictionary.scheme == 'standard':
-            self.filter_data()
-        elif self.dictionary.scheme == 'no_eta':
-            self.filter_data_scheme_no_eta()
-        elif self.dictionary.scheme == 'no_particle_boundaries':
-            self.filter_data()
-        elif self.dictionary.scheme == 'paddingv2':
-            self.filter_data()
+class plotting:
+    """
+    All plotting functions will follow a similar API. This allows easy intuitive generation
+    of various types of plots.
+    
+    normalized: (optional: False) bool, should the values be normalized to a area of 1 before plotting?
+    use_log: (optional: False) bool, should the dependent axis be log scaled.
+    juxtaposed: (optional: False) bool, if input contains multiple values (array) should all be plotted on the same
+        figure should different figures be used side-by-side.
+    out_file: (optional) pathlib.Path, file to save figure to. show will always be called since it
+        naturally only works if there is a way to show the figures.
+    """
+    
+    # Colors in the order they will be used for overlapping graphs.
+    colors = ['blue', 'orange', 'purple', 'green', 'red']
+    
+    @staticmethod
+    def plot_continuous_distribution(all_data, all_labels, name="unspecified", min=None, max=None, n_bins=None, normalized=False, use_log=False, juxtaposed=False, out_file=None):
+        """Generates distributions (histogram) for the provided data. This works for any "continuous" data, i.e.
+            energy, momentum, etc. distributions. This will not work for "discrete" data, like pdgid distributions.
+
+        Args:
+            all_data (array_like or array of array_like): data to plot distributions for
+            n_bins (int): number of bins for histogram
+            min (int, optional): Min value for the histogram, use min(data) if not provided. Defaults to None.
+            max (int, optional): Max value for the histogram, use max(data) if not provided. Defaults to None.
+        """
+        if n_bins == None or n_bins == 0:
+            raise RuntimeError("analysis: plotting: generate_distributions: invalid n_bins provided. exiting.")
         
-        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.dictionary.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
-        self.generate_leading_particle_information()
-
-        real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
-        sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
+        # Ensure all-data and all_labels are lists of lists
+        if not isinstance(all_data, list):
+            all_data = [all_data]
+        if not isinstance(all_labels, list):
+            all_labels = [all_labels]
+                
+        if min == None:
+            min = min(all_data.flatten())
+        if max == None:
+            max = max(all_data.flatten())
         
-        # PDGID is a fundamentally different plot, so we do it first here.
-        read_pdgids = real_df['pdgid'].astype(str)
-        sampled_pdgids = sampled_df['pdgid'].astype(str)
-        real_freq = Counter(read_pdgids)
-        sampled_freq = Counter(sampled_pdgids)
-        real_total = sum(real_freq.values())
-        sampled_total = sum(sampled_freq.values())
-        real_normalized = {self.dictionary.particles_id.get(pid, pid): count / real_total for pid, count in real_freq.items()}
-        sampled_normalized = {self.dictionary.particles_id.get(pid, pid): count / sampled_total for pid, count in sampled_freq.items()}
+        weights = [None] * len(all_data)
+        if normalized:
+            for idx, i_data in enumerate(all_data):
+                weights[idx] = np.ones_like(i_data) / len(i_data)
         
-        # Union of all particle labels from both histograms
-        all_particles = sorted(set(real_normalized.keys()).union(sampled_normalized.keys()))
-        total_freq = {p: real_normalized.get(p, 0) + sampled_normalized.get(p, 0) for p in all_particles}
+        plt.figure(figsize=(21, 6), dpi=300)
+        plt.subplot(1, 2, 1)
+        if use_log:
+            plt.yscale('log')
+        plt.xlim([min, max])
+        for i_weight, i_data, i_label, i_color, in zip(weights, all_data, all_labels, plotting.colors):
+            plt.hist(i_data, bins=n_bins, weights=i_weight, range=(min, max), alpha=0.7, color=i_color, label=i_label)
+        plt.title(f"Histogram of {name}")
+        plt.xlabel(name)
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        if out_file != None:
+            plt.savefig(out_file, bbox_inches='tight')
+        plt.show()
+    
+    @staticmethod
+    def plot_discrete_distribution(all_freq_dists, all_labels, name="unspecified", normalized=False, use_log=False, juxtaposed=False, out_file=None):
+        """Generates distributions (histogram) for the provided data. This works for any "discrete" data, i.e.
+            pdgid distributions. This will not work for "continuous" data, like energy or momentum distributions.
 
-        sorted_particles = sorted(all_particles, key=lambda p: total_freq[p], reverse=True)
-
-        # Build aligned values for both histograms
-        real_values = [real_normalized.get(p, 0) for p in sorted_particles]
-        sampeld_values = [sampled_normalized.get(p, 0) for p in sorted_particles]
-
-        # Plotting
-        x = range(len(sorted_particles))
-        plt.figure(figsize=(21, 6))
-        plt.bar(x, real_values, label="Input", color='blue', alpha=0.7)
-        plt.bar(x, sampeld_values, label="Sampled", color='orange', alpha=0.7)
-        # width = 0.4
-        # plt.bar([i - width / 2 for i in x], real_values, width=width, label="Input", color='blue')
-        # plt.bar([i + width / 2 for i in x], sampeld_values, width=width, label="Sampled", color='Orange')
-        plt.xticks(x, sorted_particles, rotation=45, ha='right')
-        plt.xlabel("Particle Type")
-        plt.ylabel("Normalized Frequency")
-        plt.title("Normalized Particle Type Distributions")
+        Args:
+            all_freq_dists (array_like or array of array_like): data to plot distributions for
+            n_bins (int): number of bins for histogram
+        """
+        
+        # Ensure all-data and all_labels are lists of lists
+        if not isinstance(all_freq_dists, list):
+            all_freq_dists = [all_freq_dists]
+        if not isinstance(all_labels, list):
+            all_labels = [all_labels]
+        
+        if normalized:
+            all_normalized_freq_dists = []
+            for i_freq_dist in all_freq_dists:
+                total = sum(i_freq_dist.values())
+                norm_dists = {
+                    pid: count / total
+                    for pid, count in i_freq_dist.items()
+                }
+                all_normalized_freq_dists.append(norm_dists)
+            all_freq_dists = all_normalized_freq_dists
+        
+        # Take a union of all freq dists
+        all_bins = sorted(set().union(*[freq.keys() for freq in all_freq_dists]))
+        # freq dist which sums freq across all the dists in all_freq_dist.
+        # This is needed because some of them might be have 0 frequency and thus wont
+        # exist in the freq dist. That would break sorting so we use this fix.
+        total_freqs = {p: sum(c.get(p, 0) for c in all_freq_dists) for p in all_bins}
+        sorted_freqs = sorted(all_bins, key=lambda p: total_freqs[p], reverse=True)
+        aligned_values = [[freq.get(f, 0) for f in sorted_freqs] for freq in all_freq_dists]
+        
+        x = range(len(sorted_freqs))
+        plt.figure(figsize=(21, 6), dpi=300)
+        if use_log:
+            plt.yscale('log')
+        for i_value, i_label, i_color in zip(aligned_values, all_labels, plotting.colors):
+            plt.bar(x, i_value, label=i_label, color=i_color, alpha=0.7)
+        plt.xticks(x, sorted_freqs, rotation=45, ha='right')
+        plt.xlabel(name)
+        plt.ylabel(f"{'Normalized ' if normalized else ''}Frequency")
+        plt.title(f"Normalized {name} Distributions")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f"{self.latest_sampling_dir.as_posix()}/histogram_pdgid.png", bbox_inches='tight')
-
-        for column, settings in self.bin_settings.items():
-            if self.dictionary.scheme == 'no_eta' and column == 'eta':
-                continue
-            
-            min_val = settings["min"]
-            max_val = settings["max"]
-            bins = settings["bins"]
-            
-            if bins == 0:
-                return
-            
-            real_df_weights = np.ones_like(real_df[column]) / len(real_df[column])
-            sampled_df_weights = np.ones_like(sampled_df[column]) / len(sampled_df[column])
-
-            plt.figure(figsize=(21, 6))
-            plt.subplot(1, 2, 1)
-            plt.xlim([min_val, max_val])
-            plt.hist(real_df[column], bins=bins, weights=real_df_weights, range=(min_val, max_val), alpha=0.7, color="blue", label="Input")
-            plt.hist(sampled_df[column], bins=bins, weights=sampled_df_weights, range=(min_val, max_val), alpha=0.7, color="orange", label="Sampled")
-            plt.title(f"Histogram of {column}")
-            plt.xlabel(column)
-            plt.ylabel("Frequency")
-            plt.legend()
-            plt.grid(axis="y", linestyle="--", alpha=0.7)
-            plt.savefig(f"{self.latest_sampling_dir.as_posix()}/histogram_{column}.png", bbox_inches='tight')
-
-    def get_real_jets(self):
-        # -------------------------------------------------------------------------------
-        # Preparing real Jet data
-        # Features for jet in JetNet is (eta, phi, pT), in that order
-        # -------------------------------------------------------------------------------
-        
-        test_real_events = np.memmap(self.test_real_bin_filename, dtype=np.float64, mode='r')
-        test_real_events = test_real_events.reshape(-1, self.num_particles_per_event, 5)
-        angular_real_data = data_manager.convert_data_4vector_to_angular(test_real_events, pad_token=0.0)
-                
-        accumulated_data = []
-        for event in angular_real_data:
-            single_jet = []
-            for particle in event:
-                pdgid, e, eta, theta, phi = particle
-                pt = e / np.cosh(eta)
-                features = [eta, phi, pt]
-                single_jet.append(features)
-            accumulated_data.append(single_jet)
-        return np.array(accumulated_data, np.float64)
-    
-    def get_generated_jets(self):
-        # -------------------------------------------------------------------------------
-        # Preparing generated Jet data
-        # Features for jet in JetNet is (eta, phi, pT), in that order
-        # -------------------------------------------------------------------------------
-        
-        # Since untokenized samples file uses the same format as Geant4
-        untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=0.0)
-        angular_untokenized_data = data_manager.convert_data_4vector_to_angular(untokenized_data, pad_token=0.0)
-        
-        accumulated_data = []
-        for event in angular_untokenized_data:
-            single_jet = []
-            for particle in event:
-                pdgid, e, eta, theta, phi = particle
-                pt = e / np.cosh(eta)
-                features = [eta, phi, pt]
-                single_jet.append(features)
-            accumulated_data.append(single_jet)
-        return np.array(accumulated_data, np.float64)
-    
-    def calculate_metrics(self):
-        real_jets = self.get_real_jets()
-        generated_jets = self.get_generated_jets()
-        
-        # Make sure real and generated jets have the same num events in them.
-        num_events_in_jets = min(len(real_jets), len(generated_jets))
-        real_jets = real_jets[:num_events_in_jets]
-        generated_jets = generated_jets[:num_events_in_jets]
-        
-        # -------------------------------------------------------------------------------
-        # Coverage and MMD
-        # -------------------------------------------------------------------------------
-
-        cov, mmd = jetnet.evaluation.cov_mmd(real_jets, generated_jets)
-        # print(cov, mmd)
-
-        # -------------------------------------------------------------------------------
-        # FPD and KPD
-        # -------------------------------------------------------------------------------
-
-        suggested_real_features = jetnet.evaluation.get_fpd_kpd_jet_features(real_jets)
-        suggested_generated_features = jetnet.evaluation.get_fpd_kpd_jet_features(generated_jets)
-
-        suggested_real_features = np.nan_to_num(suggested_real_features, nan=0.0)
-        suggested_generated_features = np.nan_to_num(suggested_generated_features, nan=0.0)
-
-        kpd_median, kpd_error = jetnet.evaluation.kpd(suggested_real_features, suggested_generated_features, num_threads=0)
-        fpd_value, fpd_error = jetnet.evaluation.fpd(suggested_real_features, suggested_generated_features)
-        
-        # print(f"KPD median: {kpd_median}, KPD error: {kpd_error}")
-        # print(f"FPD valid: {fpd_value}, FPD error: {fpd_error}")
-
-        # -------------------------------------------------------------------------------
-        # Wasserstein Distances 
-        # -------------------------------------------------------------------------------
-
-        # Wasserstein distances between Energy Flow Polynomials
-        w1_scores_avg_efp = jetnet.evaluation.w1efp(real_jets, generated_jets)
-        # Wasserstein distance between masses of jets1 and jets2
-        w1_mass_score = jetnet.evaluation.w1m(real_jets, generated_jets)
-        # Wasserstein distances between particle features of jets1 and jets2
-        w1_scores_avg_features = jetnet.evaluation.w1p(real_jets, generated_jets)
-
-        # print(w1_scores_avg_efp)
-        # print(w1_mass_score)
-        # print(w1_scores_avg_features)
-        
-        w1m_score = w1_mass_score[0]
-        w1m_score_std = w1_mass_score[1]
-        
-        w1p_avg_eta = w1_scores_avg_features[0][0]
-        w1p_avg_phi = w1_scores_avg_features[0][1]
-        w1p_avg_pt = w1_scores_avg_features[0][2]
-        w1p_avg_eta_std = w1_scores_avg_features[1][0]
-        w1p_avg_phi_std = w1_scores_avg_features[1][1]
-        w1p_avg_pt_std = w1_scores_avg_features[1][2]
-
-        metrics_results_dict = {
-            "coverage": cov,
-            "mmd": mmd,
-            "kpd_median": kpd_median,
-            "kpd_error": kpd_error,
-            "fpd_value": fpd_value,
-            "fpd_error": fpd_error,
-            "w1m_score": w1m_score,
-            "w1m_score_std": w1m_score_std,
-            "w1p_avg_eta": w1p_avg_eta,
-            "w1p_avg_phi": w1p_avg_phi,
-            "w1p_avg_pt": w1p_avg_pt,
-            "w1p_avg_eta_std": w1p_avg_eta_std,
-            "w1p_avg_phi_std": w1p_avg_phi_std,
-            "w1p_avg_pt_std": w1p_avg_pt_std,
-        }
-
-        with open(self.metrics_results_filename, "w") as opt_file:
-            json.dump(metrics_results_dict, opt_file, indent=4)
-
-# Need a function for multi-threading
-def analyze_dataset_worker(model_name):
-    sampling_dir = pUtil.get_latest_sampling_dir(model_name)
-    if not sampling_dir.exists():
-        return
-    
-    print(f'Analyzing model {model_name}')
-
-    # Extract dataset name from sampling info
-    preparation_name = pUtil.get_model_preparation_name(model_name)
-    config_filename = pUtil.get_model_config_filename(model_name)
-    
-    with open(config_filename, 'r') as config_file:
-        config = json.load(config_file)
-        scheme = config['training_config'].get('scheme', 'standard')
-
-    # Run the analysis
-    dataset_analyzer = Analyzer(model_name, preparation_name, scheme)
-    dataset_analyzer.generate_distributions()
-    dataset_analyzer.calculate_metrics()
-
-def analyze_dataset():
-    # If argument 'all' is provided, generate distributions and metrics for all sampled datasets' latest sampling
-    if 'all' in sys.argv:
-        print('Generating distributions and metrics for all datasets.')
-        
-        all_model_names = pUtil.get_all_model_names()
-        if 'single_threaded' in sys.argv:
-            for model_name in all_model_names:
-                analyze_dataset_worker(model_name)
-        else:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                executor.map(analyze_dataset_worker, all_model_names)
-        
-        print('Distributions and metrics generated successfully for all datasets.')
-    else:
-        print(f'Generating distributions and metrics for dataset {conf.generic.preparation_name}.')
-        analyze_dataset_worker(conf.generic.model_name)
-        print('Distributions and metrics generated successfully.')
-
-if __name__ == "__main__":
-    analyze_dataset()
+        if out_file != None:
+            plt.savefig(out_file, bbox_inches='tight')
+        plt.show()

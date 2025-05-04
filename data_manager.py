@@ -1,6 +1,8 @@
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
+from particle import Particle
+
 def load_geant4_dataset(dataset_filepath, flattened_events=False, pad_token=np.nan):
     """
     Ultra-fast loader for Geant4 MC dataset files.
@@ -54,10 +56,11 @@ def convert_data_4vector_to_features(input_data, pad_token=np.nan):
     Returns
     np.ndarray
         Converted data of shape (n_events, n_particles_per_event, n_features).
-        n_features will be 5 (pdgid, e, pt, eta, phi).
+        n_features will be 4 (pdgid, pt, eta, phi).
     """
     
-    output_data = np.full_like(input_data, pad_token)
+    # output_data = np.full_like(input_data, pad_token)
+    output_data = np.full((input_data.shape[0], input_data.shape[1], 4), pad_token)
 
     pdgid = input_data[:, :, 0]
     e = input_data[:, :, 1]
@@ -72,10 +75,9 @@ def convert_data_4vector_to_features(input_data, pad_token=np.nan):
     phi = np.arctan2(py, px)
 
     output_data[:, :, 0] = pdgid
-    output_data[:, :, 1] = e
-    output_data[:, :, 2] = pt
-    output_data[:, :, 3] = eta
-    output_data[:, :, 4] = phi
+    output_data[:, :, 1] = pt
+    output_data[:, :, 2] = eta
+    output_data[:, :, 3] = phi
     
     np.nan_to_num(output_data, copy=False, nan=pad_token)
     return output_data
@@ -87,7 +89,7 @@ def convert_data_features_to_4vector(input_data, pad_token=np.nan):
     Params
     input_data: np.ndarray
         Input data of shape (n_events, n_particles_per_event, n_features).
-        n_features should be 5 (pdgid, e, pt, eta, phi).
+        n_features should be 4 (pdgid, pt, eta, phi).
     
     Returns
     np.ndarray
@@ -95,17 +97,18 @@ def convert_data_features_to_4vector(input_data, pad_token=np.nan):
         n_features will be 5 (pdgid, e, px, py, pz).
     """
     
-    output_data = np.full_like(input_data, pad_token)
+    output_data = np.full((input_data.shape[0], input_data.shape[1], 5), pad_token)
 
     pdgid = input_data[:, :, 0]
-    e = input_data[:, :, 1]
-    pt = input_data[:, :, 2]
-    eta = input_data[:, :, 3]
-    phi = input_data[:, :, 4]
-    
+    pt = input_data[:, :, 1]
+    eta = input_data[:, :, 2]
+    phi = input_data[:, :, 3]
+
     px = pt * np.cos(phi)
     py = pt * np.sin(phi)
     pz = pt * np.sinh(phi)
+    particle = Particle.from_pdgid(pdgid)
+    e = np.sqrt(px * px + py * py + pz * pz + particle.mass * particle.mass)
 
     output_data[:, :, 0] = pdgid
     output_data[:, :, 1] = e
