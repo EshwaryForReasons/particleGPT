@@ -135,7 +135,7 @@ class Analyzer:
         
         # Ensure valid token ranges
         pdgid_offset_min = self.dictionary.PDGID_OFFSET
-        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.particles_index)
+        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.pdgids)
         energy_offset_min = self.dictionary.ENERGY_OFFSET
         energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
         eta_offset_min = self.dictionary.ETA_OFFSET
@@ -201,7 +201,7 @@ class Analyzer:
         
         # Ensure valid token ranges
         pdgid_offset_min = self.dictionary.PDGID_OFFSET
-        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.particles_index)
+        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.pdgids)
         energy_offset_min = self.dictionary.ENERGY_OFFSET
         energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
         theta_offset_min = self.dictionary.THETA_OFFSET
@@ -478,4 +478,4 @@ def analyze_dataset():
         print('Distributions and metrics generated successfully.')
 
 if __name__ == "__main__":
-   analyze_dataset()
+    analyze_dataset()

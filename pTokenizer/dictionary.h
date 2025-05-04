@@ -58,19 +58,12 @@ public:
 
         //Load particles
 
-        nlohmann::json particles_index_json = dictionary_json["particles_index"];
-        nlohmann::json particles_id_json = dictionary_json["particles_id"];
-        for (auto& [particle_id, particle_name] : particles_id_json.items())
+        nlohmann::json pdgids_json = dictionary_json["pdgids"];
+        for (auto& [idx_str, pdgid] : pdgids_json.items())
         {
-            for (auto& [particle_name_inner, particle_index] : particles_index_json.items())
-            {
-                if (particle_name == particle_name_inner)
-                {
-                    pdgid_index_pair pair = { std::stoi(particle_id), particle_index };
-                    pdgid_to_index.push_back(pair);
-                    break;
-                }
-            }
+            const int idx = pMath::fast_stoi(idx_str);
+            pdgid_index_pair pair = { pdgid, idx };
+            pdgid_to_index.push_back(pair);
         }
 
         //Generate bins

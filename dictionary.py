@@ -55,11 +55,7 @@ class Dictionary():
             self.dictionary_data = json.load(f)
             
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
-        self.num_particles = len(self.dictionary_data['particles_index'])
-        self.num_materials = len(self.dictionary_data['materials_named'])
-
-        self.num_special_tokens = len(self.dictionary_data['special_tokens'])
-        self.num_particles      = len(self.dictionary_data['particles_index'])
+        self.num_particles      = len(self.dictionary_data['pdgids'])
         self.num_materials      = len(self.dictionary_data['materials_named'])
         
         def create_bins(type_str):
@@ -105,8 +101,6 @@ class Dictionary():
         self.PT_OFFSET = self.PHI_OFFSET + len(self.phi_bins)
 
         # Converts input particle ID to the relevant index
-        self.particles_index = self.dictionary_data['particles_index']
-        self.particles_id = self.dictionary_data['particles_id']
         self.pdgids = self.dictionary_data['pdgids']
         
         self.table_data = [
@@ -206,9 +200,13 @@ class Dictionary():
             output_file.write("\n")
                 
             # Print particles and their corresponding token values
-            output_file.write("Particle Name - Token Value\n")
-            for particle_name, token_value in self.dictionary_data['particles_index'].items():
-                output_file.write(f"{particle_name} - {token_value + self.PDGID_OFFSET}\n")
+            output_file.write("Token - PDGID - Particle Name\n")
+            for idx, pdgid in self.dictionary_data['pdgids'].items():
+                if pdgid == -1:
+                    output_file.write(f"{int(idx) + self.PDGID_OFFSET} - {pdgid} - none\n")
+                    continue
+                p = Particle.from_pdgid(pdgid)
+                output_file.write(f"{int(idx) + self.PDGID_OFFSET} - {pdgid} - {p.name}\n")
 
             # Print materials and their corresponding token values
             output_file.write("\nMaterial Name - Token Value\n")
@@ -225,19 +223,23 @@ class Dictionary():
                     pid = particle.split()[0]
                     particle_ids.add(int(pid))
 
-        # Create particles_id and particles_index dictionaries
-        dictionary_particles_id = {}
-        dictionary_particles_index = {}
-        for idx, pid in enumerate(particle_ids):
-            p = Particle.from_pdgid(pid)
-            dictionary_particles_id[pid] = p.name
-            dictionary_particles_index[p.name] = idx
+        # Create pdgids dictionary
+        read_pdgids = {}
+        for idx, pid, in enumerate(particle_ids):
+            read_pdgids[idx] = pid
+            
+        if len(read_pdgids) > 75:
+            raise ValueError("More than 75 unique PDGIDs found. This is currently unsupported.")
+        
+        # Make sure we have 75 slots by marking unused with "reserved"
+        for i in range(75):
+            if i not in read_pdgids:
+                read_pdgids[i] = "reserved"
 
         # Update dictionary.json
         with open(dictionary_filename, 'r') as f:
             dictionary = json.load(f)
 
         with open(dictionary_filename, 'w') as f:
-            dictionary["particles_id"] = dictionary_particles_id
-            dictionary["particles_index"] = dictionary_particles_index
+            dictionary["pdgids"] = read_pdgids
             json.dump(dictionary, f, indent=2)

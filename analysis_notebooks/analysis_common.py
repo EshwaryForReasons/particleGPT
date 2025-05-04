@@ -12,11 +12,8 @@ from collections import Counter
 
 parent_dir = Path().resolve().parent
 sys.path.insert(0, str(parent_dir))
+
 from dictionary import Dictionary
-
-parent_dir = Path().resolve().parent
-sys.path.insert(0, str(parent_dir))
-
 import pUtil
 
 def get_model_metadata_columns():
@@ -81,7 +78,7 @@ def get_metrics_for_model(model_name):
         metrics_data = json.load(metrics_file)
     
     return metrics_data
-    
+
 # Returns all important data for a model in a dictionary
 def get_all_data_for_model(model_name):
     meta_filename = pUtil.get_model_meta_filename(model_name)
@@ -382,6 +379,7 @@ def compare_pdgid_distributions(models_to_compare, juxtaposed=True, dists_per_ro
         plt.title(f'Particle Type Distributions for {", ".join(models_to_compare)}')
         plt.legend()
         plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.show()
 
 def compare_distributions(models_to_compare, column_name, juxtaposed=True, dists_per_row=3, use_log_scale=False):
     if column_name == 'pdgid':
@@ -411,3 +409,4 @@ def compare_distributions(models_to_compare, column_name, juxtaposed=True, dists
         # plt.ylabel('Loss')
         plt.legend()
         plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.show()
