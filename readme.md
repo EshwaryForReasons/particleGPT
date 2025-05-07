@@ -49,7 +49,7 @@ Training the model
 # Single node, single GPU
 python train.py config/model_to_train.json
 # Single node, multiple GPUs (4 here)
-torchrun --standalone --nproc_per_node=4 train.py config/model_to_train.json 
+torchrun --standalone --nproc_per_node=4 train.py config/model_to_train.json
 ```
 
 Sampling

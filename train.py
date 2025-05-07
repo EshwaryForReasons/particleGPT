@@ -67,7 +67,7 @@ if conf.training.block_size == -1 and conf.training.context_events != -1:
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
-    init_process_group(backend=conf.train.backend)
+    init_process_group(backend=conf.training.backend)
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
@@ -207,7 +207,7 @@ model.to(conf.training.device)
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.amp.GradScaler('cuda', enabled=(conf.training.dtype == 'float16'))
 
-# conf.train.optimizer
+# conf.training.optimizer
 optimizer = model.configure_optimizers(conf.training.weight_decay, conf.training.learning_rate, (conf.training.beta1, conf.training.beta2), device_type)
 if conf.training.init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])

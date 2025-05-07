@@ -84,7 +84,7 @@ def convert_data_4vector_to_features(input_data, pad_token=np.nan):
 
 def convert_data_features_to_4vector(input_data, pad_token=np.nan):
     """
-    Converts featured data back to 4-vector format.
+    Converts featured data back to 4-vector format. Reconstruction uses mass from particle library.
     
     Params
     input_data: np.ndarray

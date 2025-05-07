@@ -202,7 +202,7 @@ class Dictionary():
             # Print particles and their corresponding token values
             output_file.write("Token - PDGID - Particle Name\n")
             for idx, pdgid in self.dictionary_data['pdgids'].items():
-                if pdgid == -1:
+                if pdgid == 0:
                     output_file.write(f"{int(idx) + self.PDGID_OFFSET} - {pdgid} - none\n")
                     continue
                 p = Particle.from_pdgid(pdgid)
@@ -231,10 +231,10 @@ class Dictionary():
         if len(read_pdgids) > 75:
             raise ValueError("More than 75 unique PDGIDs found. This is currently unsupported.")
         
-        # Make sure we have 75 slots by marking unused with "reserved"
+        # Make sure we have 75 slots by marking unused with 0 since that is not a valid pdgid
         for i in range(75):
             if i not in read_pdgids:
-                read_pdgids[i] = "reserved"
+                read_pdgids[i] = 0
 
         # Update dictionary.json
         with open(dictionary_filename, 'r') as f:

@@ -21,7 +21,7 @@ import analysis as anal
 script_dir = Path(__file__).resolve().parent
 
 class Analyzer:
-    def __init__(self, model_name, preparation_name, scheme):
+    def __init__(self, model_name, preparation_name):
         self.preparation = preparation_name
         self.model_name = model_name
         
@@ -46,33 +46,7 @@ class Analyzer:
             self.num_particles_per_event = meta['num_particles_per_event']
             
         self.dictionary = Dictionary(self.dictionary_filename.as_posix())
-
-        def get_bin_count(type_str):
-            step_size = self.dictionary.token_step_size(type_str)
-            if step_size == 0:
-                return 0
-            return int(self.dictionary.token_range(type_str) // step_size)
-        # Convenience dictionary definitions
-        p_bin_count = int(self.dictionary.token_range('e') // 1000)
-        e_bin_count = get_bin_count('e')
-        eta_bin_count = get_bin_count('eta')
-        theta_bin_count = get_bin_count('theta')
-        phi_bin_count = get_bin_count('phi')
-        pt_bin_count = get_bin_count('pt')
-
-        self.columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
-        self.bin_settings = {
-            "num_particles": { "min": 0,                                  "max": 50,                                 "bins": 50 },
-            "e":             { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": e_bin_count },
-            "px":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
-            "py":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
-            "pz":            { "min": self.dictionary.token_min('e'),     "max": self.dictionary.token_max('e'),     "bins": p_bin_count },
-            "eta":           { "min": self.dictionary.token_min('eta'),   "max": self.dictionary.token_max('eta'),   "bins": eta_bin_count },
-            "theta":         { "min": self.dictionary.token_min('theta'), "max": self.dictionary.token_max('theta'), "bins": theta_bin_count },
-            "phi":           { "min": self.dictionary.token_min('phi'),   "max": self.dictionary.token_max('phi'),   "bins": phi_bin_count },
-            "pt":            { "min": self.dictionary.token_min('pt'),    "max": self.dictionary.token_max('pt'),    "bins": pt_bin_count },
-        }
-    
+        
     def generate_leading_particle_information(self):
         # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
 
@@ -114,6 +88,8 @@ class Analyzer:
                 out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {pt} {eta:.5f} {theta:.5f} {phi:.5f}\n')
     
     def filter_data(self):
+        num_features_per_particle = 4
+        
         # Load data
         tokenized_data = []
         with open(self.generated_samples_filename) as gen_samples_file:
@@ -130,30 +106,28 @@ class Analyzer:
         tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4]] for e in tokenized_data]
             
         # Ensure events are well formed
-        tokenized_data = [e for e in tokenized_data if len(e) > 5 and len(e) % 5 == 0]
+        tokenized_data = [e for e in tokenized_data if len(e) > num_features_per_particle and len(e) % num_features_per_particle == 0]
         
         # Ensure valid token ranges
         pdgid_offset_min = self.dictionary.PDGID_OFFSET
         pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.pdgids)
-        energy_offset_min = self.dictionary.ENERGY_OFFSET
-        energy_offset_max = self.dictionary.ENERGY_OFFSET + len(self.dictionary.e_bins)
+        pt_offset_min = self.dictionary.PT_OFFSET
+        pt_offset_max = self.dictionary.PT_OFFSET + len(self.dictionary.pt_bins)
         eta_offset_min = self.dictionary.ETA_OFFSET
         eta_offset_max = self.dictionary.ETA_OFFSET + len(self.dictionary.eta_bins)
-        theta_offset_min = self.dictionary.THETA_OFFSET
-        theta_offset_max = self.dictionary.THETA_OFFSET + len(self.dictionary.theta_bins)
         phi_offset_min = self.dictionary.PHI_OFFSET
         phi_offset_max = self.dictionary.PHI_OFFSET + len(self.dictionary.phi_bins)
         
         for event in tokenized_data:
             b_keep_event = True
             for i, token in enumerate(event):
-                token_type_id = i % 5
+                token_type_id = i % num_features_per_particle
                 if token_type_id == 0:
                     if token < pdgid_offset_min or token >= pdgid_offset_max:
                         b_keep_event = False
                         break
                 elif token_type_id == 1:
-                    if token < energy_offset_min or token >= energy_offset_max:
+                    if token < pt_offset_min or token >= pt_offset_max:
                         b_keep_event = False
                         break
                 elif token_type_id == 2:
@@ -161,10 +135,6 @@ class Analyzer:
                         b_keep_event = False
                         break
                 elif token_type_id == 3:
-                    if token < theta_offset_min or token >= theta_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 4:
                     if token < phi_offset_min or token >= phi_offset_max:
                         b_keep_event = False
                         break
@@ -180,38 +150,37 @@ class Analyzer:
                 filtered_file.write(event + '\n')
     
     def generate_distributions(self):
-        # if self.dictionary.scheme == 'standard':
-        #     self.filter_data()
-        # elif self.dictionary.scheme == 'no_eta':
-        #     raise RuntimeError("Scheme no_eta is no longer supported!")
-        # elif self.dictionary.scheme == 'no_particle_boundaries':
-        #     self.filter_data()
-        # elif self.dictionary.scheme == 'paddingv2':
-        #     self.filter_data()
+        self.filter_data()
+        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.dictionary.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        self.generate_leading_particle_information()
         
-        # pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.dictionary.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
-        # self.generate_leading_particle_information()
+        def get_bin_count(type_str):
+            if column in ['px', 'py', 'pz']:
+                return int(self.dictionary.token_range('e') // 1000)
+            step_size = self.dictionary.token_step_size(type_str)
+            if step_size == 0:
+                return 0
+            return int(self.dictionary.token_range(type_str) // step_size)
+                
+        columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
+        real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
+        sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
+        
+        anal.plotting.plot_discrete_distribution([Counter(real_df['pdgid']), Counter(sampled_df['pdgid'])], ['Input', 'Sampled'], name="Particle IDs", use_log=True, out_file=self.latest_sampling_dir / f'histogram_pdgid.png')
 
-        real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
-        sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=self.columns, engine="c", header=None)
-        
-        # PDGID is a fundamentally different plot, so we do it first here.
-        read_pdgids = real_df['pdgid'].astype(str)
-        sampled_pdgids = sampled_df['pdgid'].astype(str)
-        real_freq = Counter(read_pdgids)
-        sampled_freq = Counter(sampled_pdgids)
-        
-        out_file = self.latest_sampling_dir / f'histogram_pdgid.png'
-        anal.plotting.plot_discrete_distribution([real_freq, sampled_freq], ['Input', 'Sampled'], name="Particle IDs", out_file=out_file)
-
-        for column, settings in self.bin_settings.items():
-            if settings["bins"] == 0:
+        for column in columns:
+            type_str = 'e' if column in ['px', 'py', 'pz'] else column
+            if get_bin_count(type_str) == 0:
                 continue
-            real_data = real_df[column].to_list()
-            sampled_data = sampled_df[column].to_list()
-            out_file = self.latest_sampling_dir / f'histogram_{column}.png'
-            anal.plotting.plot_continuous_distribution([real_data, sampled_data], ['Input', 'Sampled'], name=column, min=settings["min"], max=settings["max"], n_bins=settings["bins"], normalized=True, out_file=out_file)
-        
+            anal.plotting.plot_continuous_distribution(
+                all_data=[real_df[column].to_list(), sampled_df[column].to_list()],
+                all_labels=['Input', 'Sampled'],
+                name=column,
+                min=self.dictionary.token_min(type_str),
+                max=self.dictionary.token_max(type_str),
+                n_bins=get_bin_count(type_str),
+                normalized=True,
+                out_file=self.latest_sampling_dir / f'histogram_{column}.png')
 
     def get_real_jets(self):
         # -------------------------------------------------------------------------------
@@ -221,15 +190,13 @@ class Analyzer:
         
         test_real_events = np.memmap(self.test_real_bin_filename, dtype=np.float64, mode='r')
         test_real_events = test_real_events.reshape(-1, self.num_particles_per_event, 5)
-        angular_real_data = data_manager.convert_data_4vector_to_angular(test_real_events, pad_token=0.0)
-                
+        angular_real_data = data_manager.convert_data_4vector_to_features(test_real_events, pad_token=0.0)
+
         accumulated_data = []
         for event in angular_real_data:
             single_jet = []
             for particle in event:
-                pdgid, e, eta, theta, phi = particle
-                part = Particle.from_pdgid(pdgid)
-                pt = np.sqrt(e * e + part.mass * part.mass) / np.cosh(eta)
+                pdgid, pt, eta, phi = particle
                 features = [eta, phi, pt]
                 single_jet.append(features)
             accumulated_data.append(single_jet)
@@ -243,15 +210,13 @@ class Analyzer:
         
         # Since untokenized samples file uses the same format as Geant4
         untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=0.0)
-        angular_untokenized_data = data_manager.convert_data_4vector_to_angular(untokenized_data, pad_token=0.0)
+        angular_untokenized_data = data_manager.convert_data_4vector_to_features(untokenized_data, pad_token=0.0)
         
         accumulated_data = []
         for event in angular_untokenized_data:
             single_jet = []
             for particle in event:
-                pdgid, e, eta, theta, phi = particle
-                part = Particle.from_pdgid(pdgid)
-                pt = np.sqrt(e * e + part.mass * part.mass) / np.cosh(eta)
+                pdgid, pt, eta, phi = particle
                 features = [eta, phi, pt]
                 single_jet.append(features)
             accumulated_data.append(single_jet)
@@ -337,14 +302,9 @@ def analyze_dataset_worker(model_name):
 
     # Extract dataset name from sampling info
     preparation_name = pUtil.get_model_preparation_name(model_name)
-    config_filename = pUtil.get_model_config_filename(model_name)
     
-    with open(config_filename, 'r') as config_file:
-        config = json.load(config_file)
-        scheme = config['training_config'].get('scheme', 'standard')
-
     # Run the analysis
-    dataset_analyzer = Analyzer(model_name, preparation_name, scheme)
+    dataset_analyzer = Analyzer(model_name, preparation_name)
     dataset_analyzer.generate_distributions()
     dataset_analyzer.calculate_metrics()
 

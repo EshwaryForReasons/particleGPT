@@ -197,6 +197,9 @@ def prepare_dataset():
     elif dictionary.scheme == 'neo_no_particle_boundaries':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle
+    elif dictionary.scheme == 'neov2':
+        num_features_per_particle = 4
+        num_tokens_per_particle = num_features_per_particle
     
     # Ensure the outputs directory exists
     input_data_filename            = script_dir / 'data' / conf.generic.dataset

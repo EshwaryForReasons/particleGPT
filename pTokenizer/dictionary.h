@@ -103,7 +103,7 @@ public:
         //Calculate offsets
 
         std::size_t num_special_tokens = dictionary_json["special_tokens"].size();
-        std::size_t num_particles = dictionary_json["particles_index"].size();
+        std::size_t num_particles = dictionary_json["pdgids"].size();
         std::size_t num_materials = dictionary_json["materials_named"].size();
 
         offsets.special_tokens_offset = 0;

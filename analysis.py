@@ -99,7 +99,8 @@ class plotting:
             max (int, optional): Max value for the histogram, use max(data) if not provided. Defaults to None.
         """
         if n_bins == None or n_bins == 0:
-            raise RuntimeError("analysis: plotting: generate_distributions: invalid n_bins provided. exiting.")
+            print("analysis: plotting: plot_continuous_distribution: invalid n_bins provided. exiting.")
+            return
         
         # Ensure all-data and all_labels are lists of lists
         if not isinstance(all_data, list):
