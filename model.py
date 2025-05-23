@@ -226,6 +226,54 @@ class GPT(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+   
+    """ 
+    Cross-entropy cares little if the prediction was 80 or 700. If a high probability was
+    decided for 80 it'll be penalized a lot since it is an incorrect token. Cross-entopy
+    cares entirely about the predicted probabilities and little about what the token actually
+    is. This is sensible for text prediction as 80 might be potato, 81 the, and 82 everest.
+    Clearly, in this example distance from correct token means nothing.
+    In our case, for physics data, distance means a lot. i.e. the range 78-84 are likely all
+    reasonable and acceptable tokens with 81 being the best (what our training data would have).
+    """
+    @staticmethod
+    def classic_cross_entropy(self, logits, target_idxs, ignore_index=-1):
+        loss = F.cross_entropy(logits, target_idxs, ignore_index=ignore_index)
+    
+    """
+    Custom loss function
+    
+    This function considers distance from correct bin when deciding a penalty for tokens.
+    e.g. say the correct token is 81 and we predict 80 or 82.
+    
+    This custom loss function aims to consider the physical reasonability of the predicted token.
+    This function does this by penalizing the bins based on (1) being in the right range for the
+    type of token this is (i.e. for a pt token it following the bounds for pt), and (2) by
+    defining the penalty as a function of distance from the correct token (i.e. 80 is still ok,
+    whereas 700 is utterly unacceptable).
+    """
+    @staticmethod
+    def batch_gaussian_labels(target_idxs, vocab_size, sigma=1.0):
+        """
+        Create soft target distributions for a batch of indices using a Gaussian.
+        target_idxs: [batch_size] (int)
+        returns: [batch_size, vocab_size]
+        """
+        batch_size = target_idxs.size(0)
+        device = target_idxs.device
+        positions = torch.arange(vocab_size, device=device).unsqueeze(0)  # [1, vocab_size]
+        target_idxs = target_idxs.unsqueeze(1).float()                    # [batch_size, 1]
+
+        gauss = torch.exp(-0.5 * ((positions - target_idxs) / sigma) ** 2)
+        soft_targets = gauss / gauss.sum(dim=1, keepdim=True)
+        return soft_targets  # [batch_size, vocab_size]
+
+    @staticmethod
+    def distance_sensitive_loss(logits, target_idxs, sigma=1.0):
+        soft_targets = GPT.batch_gaussian_labels(target_idxs, logits.size(1), sigma)
+        log_probs = F.log_softmax(logits, dim=1)
+        loss = F.kl_div(log_probs, soft_targets, reduction='batchmean')
+        return loss
     
     def forward(self, idx, targets=None, kv_cache=None):
         device = idx.device
@@ -236,8 +284,6 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        
-        # Type embedding because it might help in our case
         type_ids = self.get_token_type_ids(idx)
         type_emb = self.transformer.type_emb(type_ids)
 
@@ -256,7 +302,7 @@ class GPT(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=dictionary.padding_token)
+            loss = GPT.classic_cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=dictionary.padding_token)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

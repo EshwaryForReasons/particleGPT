@@ -383,7 +383,7 @@ def compare_pdgid_distributions(models_to_compare, juxtaposed=True, dists_per_ro
 
 def compare_distributions(models_to_compare, column_name, juxtaposed=True, dists_per_row=3, use_log_scale=False):
     if column_name == 'pdgid':
-        compare_pdgid_distributions(models_to_compare, juxtaposed=juxtaposed, dists_per_row=dists_per_row, use_log_scale=use_log_scale)
+        # compare_pdgid_distributions(models_to_compare, juxtaposed=juxtaposed, dists_per_row=dists_per_row, use_log_scale=use_log_scale)
         return
     
     if juxtaposed:

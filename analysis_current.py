@@ -13,6 +13,7 @@ from particle import Particle
 
 import configurator as conf
 from dictionary import Dictionary
+from dictionary import ETokenTypes
 import pUtil
 import pTokenizerModule as pTokenizer
 import data_manager
@@ -96,8 +97,6 @@ class Analyzer:
             for event in gen_samples_file:
                 event = [int(x) for x in event.strip().split()]
                 tokenized_data.append(event)
-                
-        filtered_data = []
         
         # Ensure valid borders
         tokenized_data = [e for e in tokenized_data if e[0] == 1 and e[-1] == 2]
@@ -108,44 +107,45 @@ class Analyzer:
         # Ensure events are well formed
         tokenized_data = [e for e in tokenized_data if len(e) > num_features_per_particle and len(e) % num_features_per_particle == 0]
         
-        # Ensure valid token ranges
-        pdgid_offset_min = self.dictionary.PDGID_OFFSET
-        pdgid_offset_max = self.dictionary.PDGID_OFFSET + len(self.dictionary.pdgids)
-        pt_offset_min = self.dictionary.PT_OFFSET
-        pt_offset_max = self.dictionary.PT_OFFSET + len(self.dictionary.pt_bins)
-        eta_offset_min = self.dictionary.ETA_OFFSET
-        eta_offset_max = self.dictionary.ETA_OFFSET + len(self.dictionary.eta_bins)
-        phi_offset_min = self.dictionary.PHI_OFFSET
-        phi_offset_max = self.dictionary.PHI_OFFSET + len(self.dictionary.phi_bins)
+        # Util function; works on non-uniform 2D lists.
+        def convert_2D_list_to_array(lst, pad_token=np.nan, dtype=np.uint32):
+            max_len = max(len(sub) for sub in lst)
+            padded = np.full((len(lst), max_len), pad_token, dtype=dtype)
+            for i, sub in enumerate(lst):
+                padded[i, :len(sub)] = sub
+            return padded
         
-        for event in tokenized_data:
-            b_keep_event = True
-            for i, token in enumerate(event):
-                token_type_id = i % num_features_per_particle
-                if token_type_id == 0:
-                    if token < pdgid_offset_min or token >= pdgid_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 1:
-                    if token < pt_offset_min or token >= pt_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 2:
-                    if token < eta_offset_min or token >= eta_offset_max:
-                        b_keep_event = False
-                        break
-                elif token_type_id == 3:
-                    if token < phi_offset_min or token >= phi_offset_max:
-                        b_keep_event = False
-                        break
+        def vectorized_token_range_filtration():
+            nonlocal tokenized_data
+            tokenized_data = convert_2D_list_to_array(tokenized_data, pad_token=0, dtype=np.uint16)
             
-            if b_keep_event:
-                filtered_data.append(event)
+            # Precompute (token, token type) mapping.
+            token_type_lookup = np.empty(self.dictionary.vocab_size, dtype=np.uint8)
+            for token in range(self.dictionary.vocab_size):
+                token_type_lookup[token] = self.dictionary.get_token_type(token).value
+            
+            # Convert token IDs to token types via lookup table.
+            token_types = token_type_lookup[tokenized_data]
+
+            # Build expected pattern based on token position in particle (pdgid, pt, eta, phi).
+            expected_pattern = np.array([ETokenTypes.PDGID.value, ETokenTypes.PT.value, ETokenTypes.ETA.value, ETokenTypes.PHI.value], dtype=token_types.dtype)
+            expected_token_types = np.tile(expected_pattern, tokenized_data.shape[1] // num_features_per_particle)[:tokenized_data.shape[1]]
+            # Ensure padding is not counted among the expected token types.
+            padding_mask = tokenized_data == self.dictionary.padding_token
+            expected_token_types = np.where(~padding_mask, expected_token_types, ETokenTypes.PADDING.value).astype(int)
+            
+            # Filter rows where all tokens match the expected pattern.
+            valid_mask = np.all(token_types == expected_token_types, axis=1)
+            filtered_data = tokenized_data[valid_mask]
+
+            return filtered_data
+        
+        tokenized_data = vectorized_token_range_filtration()
         
         # Output data
         with open(self.filtered_samples_filename, 'w') as filtered_file:
-            for event in filtered_data:
-                event = [str(x) for x in event]
+            for event in tokenized_data:
+                event = [str(x) for x in event if x != self.dictionary.padding_token]
                 event = ' '.join(event)
                 filtered_file.write(event + '\n')
     
@@ -155,21 +155,28 @@ class Analyzer:
         self.generate_leading_particle_information()
         
         def get_bin_count(type_str):
-            if column in ['px', 'py', 'pz']:
-                return int(self.dictionary.token_range('e') // 1000)
             step_size = self.dictionary.token_step_size(type_str)
             if step_size == 0:
                 return 0
+            # Make angular look nice by binning to a minimum of 0.1
+            if type_str in ['eta', 'theta', 'phi']:
+                step_size = max(step_size, 0.1)
             return int(self.dictionary.token_range(type_str) // step_size)
                 
         columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
         real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
         sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
         
-        anal.plotting.plot_discrete_distribution([Counter(real_df['pdgid']), Counter(sampled_df['pdgid'])], ['Input', 'Sampled'], name="Particle IDs", use_log=True, out_file=self.latest_sampling_dir / f'histogram_pdgid.png')
+        freq_dists = [Counter(real_df['pdgid']), Counter(sampled_df['pdgid'])]
+        anal.plotting.plot_discrete_distribution(
+            all_data=freq_dists,
+            all_labels=['Input', 'Sampled'],
+            name="Particle IDs",
+            use_log=True,
+            out_file=self.latest_sampling_dir / f'histogram_pdgid.png')
 
         for column in columns:
-            type_str = 'e' if column in ['px', 'py', 'pz'] else column
+            type_str = 'pt' if column in ['e', 'px', 'py', 'pz'] else column
             if get_bin_count(type_str) == 0:
                 continue
             anal.plotting.plot_continuous_distribution(

@@ -63,6 +63,11 @@
                         "model_5_9_1",
                         "model_5_9_2"
                     ]
+                },
+                "preparation_5_10": {
+                    "associated_models": [
+                        "model_5_10_1"
+                    ]
                 }
             }
         }
@@ -247,6 +252,11 @@
             "config_file": "model_5_9_2.json",
             "dataset_name": "dataset_5",
             "preparation_name": "preparation_5_9"
+        },
+        "model_5_10_1": {
+            "config_file": "model_5_10_1.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_10"
         }
     }
 }

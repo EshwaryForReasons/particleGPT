@@ -237,7 +237,7 @@ const std::vector<double> SchemeNeoV2::untokenize_event(const std::vector<int>& 
     {
         int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
         int pt_idx = event[i + 1] - dictionary.offsets.pt_offset;
-        int eta_idx = event[i + 1] - dictionary.offsets.eta_offset;
+        int eta_idx = event[i + 2] - dictionary.offsets.eta_offset;
         int phi_idx = event[i + 3] - dictionary.offsets.phi_offset;
 
         int pdgid = 0;
@@ -255,7 +255,7 @@ const std::vector<double> SchemeNeoV2::untokenize_event(const std::vector<int>& 
 
         double px = pt * std::cos(phi);
         double py = pt * std::sin(phi);
-        double pz = pt * std::sinh(phi);
+        double pz = pt * std::sinh(eta);
         //@TODO: find a way to get the mass from the pdgid. Particle in python can do this, but not sure how to do it in C++.
         double mass = 0.0f;
         double energy = std::sqrt(px * px + py * py + pz * pz + mass * mass);
