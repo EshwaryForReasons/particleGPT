@@ -102,40 +102,14 @@ void output_raw_data(std::string output_file_path, const std::vector<std::vector
 }
 }
 
-void tokenize_data_router(std::string dictionary_path, std::string scheme, std::string input_data_path, std::string output_data_path)
+void tokenize_data_router(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
 {
-    if (scheme == "standard")
-        SchemeStandard::tokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "no_eta")
-        SchemeNoEta::tokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "no_particle_boundaries")
-        SchemeNoParticleBoundaries::tokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "paddingv2")
-        SchemePaddingV2::tokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "neo_no_particle_boundaries")
-        SchemeNeoNoParticleBoundaries::tokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "neov2")
-        SchemeNeoV2::tokenize_data(dictionary_path, input_data_path, output_data_path);
-    else
-        throw std::runtime_error("pTokenizer: Invalid scheme specified.");
+    Tokenizer::tokenize_data(dictionary_path, input_data_path, output_data_path);
 }
 
-void untokenize_data_router(std::string dictionary_path, std::string scheme, std::string input_data_path, std::string output_data_path)
+void untokenize_data_router(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
 {
-    if (scheme == "standard")
-        SchemeStandard::untokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "no_eta")
-        SchemeNoEta::untokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "no_particle_boundaries")
-        SchemeNoParticleBoundaries::untokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "paddingv2")
-        SchemePaddingV2::untokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "neo_no_particle_boundaries")
-        SchemeNeoNoParticleBoundaries::untokenize_data(dictionary_path, input_data_path, output_data_path);
-    else if (scheme == "neov2")
-        SchemeNeoV2::untokenize_data(dictionary_path, input_data_path, output_data_path);
-    else
-        throw std::runtime_error("pTokenizer: Invalid scheme specified.");
+    Tokenizer::untokenize_data(dictionary_path, input_data_path, output_data_path);
 }
 
 PYBIND11_MODULE(pTokenizerModule, m)

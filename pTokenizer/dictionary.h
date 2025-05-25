@@ -114,6 +114,45 @@ public:
         offsets.theta_offset = offsets.eta_offset + eta_bins.bins.size();
         offsets.phi_offset = offsets.theta_offset + theta_bins.bins.size();
         offsets.pt_offset = offsets.phi_offset + phi_bins.bins.size();
+
+        //Load tokenization and padding schema
+
+        nlohmann::json tokenization_schema_json = dictionary_json["tokenization"];
+        tokenization_schema.resize(tokenization_schema_json.size());
+        for (auto& [pos_str, type_str] : tokenization_schema_json.items())
+        {
+            int pos = pMath::fast_stoi(pos_str);
+            tokenization_schema[pos] = type_str;
+        }
+
+        nlohmann::json padding_schema_json = dictionary_json["padding"];
+        padding_schema.resize(padding_schema_json.size());
+        for (auto& [pos_str, type_str] : padding_schema_json.items())
+        {
+            int pos = pMath::fast_stoi(pos_str);
+            padding_schema[pos] = type_str;
+        }
+    }
+
+    const std::vector<int> get_padding_sequence() const
+    {
+        std::vector<int> padding_sequence;
+        padding_sequence.resize(get_num_tokens_per_particle());
+        for (int i = 0; i < get_num_tokens_per_particle(); ++i)
+        {
+            if (padding_schema[i] == "padding")
+                padding_sequence[i] = special_tokens.padding;
+            else if (padding_schema[i] == "particle_start")
+                padding_sequence[i] = special_tokens.particle_start;
+            else if (padding_schema[i] == "particle_end")
+                padding_sequence[i] = special_tokens.particle_end;
+        }
+        return padding_sequence;
+    }
+
+    const std::size_t get_num_tokens_per_particle() const
+    {
+        return tokenization_schema.size();
     }
 
     std::string dictionary_path;
@@ -127,4 +166,7 @@ public:
     BinData phi_bins;
     BinData pt_bins;
     std::vector<pdgid_index_pair> pdgid_to_index;
+
+    std::vector<std::string> tokenization_schema = {};
+    std::vector<std::string> padding_schema = {};
 };

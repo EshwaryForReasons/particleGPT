@@ -182,6 +182,9 @@ def prepare_dataset():
     global num_tokens_per_particle
     global num_features_per_particle
     
+    if dictionary.scheme == '':
+        num_features_per_particle = 5
+        num_tokens_per_particle = num_features_per_particle
     if dictionary.scheme == 'standard':
         num_features_per_particle = 5
         num_tokens_per_particle = num_features_per_particle + 2

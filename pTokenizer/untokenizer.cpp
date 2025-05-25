@@ -14,15 +14,7 @@
 #include <iomanip>
 #include <format>
 
-template class SchemeBase<SchemeStandard>;
-template class SchemeBase<SchemeNoEta>;
-template class SchemeBase<SchemeNoParticleBoundaries>;
-template class SchemeBase<SchemePaddingV2>;
-template class SchemeBase<SchemeNeoNoParticleBoundaries>;
-template class SchemeBase<SchemeNeoV2>;
-
-template<typename Derived>
-void SchemeBase<Derived>::untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
+void Tokenizer::untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
 {
     std::printf("----------------------------------------\n");
     const auto dictionary = DataManager::load_dictionary(dictionary_path);
@@ -33,7 +25,7 @@ void SchemeBase<Derived>::untokenize_data(std::string dictionary_path, std::stri
     //Profiling shows no reason to multithread this one (more threads was actually slower?)
     for (auto& event : tokenized_data)
     {
-        const auto untokenized_event = Derived::untokenize_event(event, dictionary);
+        const auto untokenized_event = untokenize_event(event, dictionary);
         raw_data.push_back(untokenized_event);
     }
 
@@ -42,17 +34,27 @@ void SchemeBase<Derived>::untokenize_data(std::string dictionary_path, std::stri
     std::printf("----------------------------------------\n");
 }
 
-const std::vector<double> SchemeStandard::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
+const std::vector<double> Tokenizer::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
 {
     std::vector<double> untokenized_event;
-    for (int i = 0; i < event.size(); i += NUM_TOKENS_PER_PARTICLE)
+    for (int i = 0; i < event.size(); i += dictionary.get_num_tokens_per_particle())
     {
-        int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
-        int energy_idx = event[i + 1] - dictionary.offsets.energy_offset;
-        int eta_idx = event[i + 2] - dictionary.offsets.eta_offset;
-        int theta_idx = event[i + 3] - dictionary.offsets.theta_offset;
-        int phi_idx = event[i + 4] - dictionary.offsets.phi_offset;
+        const auto determine_bin_idx = [&](const std::string& type_str, int type_offset) -> std::size_t {
+            const auto it = std::ranges::find(dictionary.tokenization_schema, type_str);
+            if (it == dictionary.tokenization_schema.end())
+                return (std::size_t)-1;
+            const std::size_t type_pos = std::distance(dictionary.tokenization_schema.begin(), it);
+            return event[i + type_pos] - type_offset;
+        };
 
+        int pdgid_idx         = determine_bin_idx("pdgid", dictionary.offsets.pdgid_offset);
+        int energy_bin_idx    = determine_bin_idx("energy", dictionary.offsets.energy_offset);
+        int pt_bin_idx        = determine_bin_idx("pt", dictionary.offsets.pt_offset);
+        int eta_bin_idx       = determine_bin_idx("eta", dictionary.offsets.eta_offset);
+        int theta_bin_idx     = determine_bin_idx("theta", dictionary.offsets.theta_offset);
+        int phi_bin_idx       = determine_bin_idx("phi", dictionary.offsets.phi_offset);
+
+        // We can reasonably assume pdgid exists since it is need to have a proper particle.
         int pdgid = 0;
         for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
         {
@@ -62,203 +64,50 @@ const std::vector<double> SchemeStandard::untokenize_event(const std::vector<int
                 break;
             }
         }
-        double energy = pMath::get_bin_median(dictionary.e_bins, energy_idx);
-        double eta = pMath::get_bin_median(dictionary.eta_bins, eta_idx);
-        double theta = pMath::get_bin_median(dictionary.theta_bins, theta_idx);
-        double phi = pMath::get_bin_median(dictionary.phi_bins, phi_idx);
 
-        double px = energy * std::sin(theta) * std::cos(phi);
-        double py = energy * std::sin(theta) * std::sin(phi);
-        double pz = energy * std::cos(theta);
+        double energy = 0.0f;
+        double pt = 0.0f;
+        double eta = 0.0f;
+        double theta = 0.0f;
+        double phi = 0.0f;
 
-        untokenized_event.push_back(pdgid);
-        untokenized_event.push_back(energy);
-        untokenized_event.push_back(px);
-        untokenized_event.push_back(py);
-        untokenized_event.push_back(pz);
-    }
-    return untokenized_event;
-}
+        double px = 0.0f;
+        double py = 0.0f;
+        double pz = 0.0f;
 
-const std::vector<double> SchemeNoEta::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
-{
-    std::vector<double> untokenized_event;
-    for (int i = 0; i < event.size(); i += NUM_TOKENS_PER_PARTICLE)
-    {
-        int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
-        int energy_idx = event[i + 1] - dictionary.offsets.energy_offset;
-        int theta_idx = event[i + 2] - dictionary.offsets.theta_offset;
-        int phi_idx = event[i + 3] - dictionary.offsets.phi_offset;
+        if (energy_bin_idx != (std::size_t)-1)
+            energy = pMath::get_bin_median(dictionary.e_bins, energy_bin_idx);
+        if (pt_bin_idx != (std::size_t)-1)
+            pt = pMath::get_bin_median(dictionary.pt_bins, pt_bin_idx);
+        if (eta_bin_idx != (std::size_t)-1)
+            eta = pMath::get_bin_median(dictionary.eta_bins, eta_bin_idx);
+        if (theta_bin_idx != (std::size_t)-1)
+            theta = pMath::get_bin_median(dictionary.theta_bins, theta_bin_idx);
+        if (phi_bin_idx != (std::size_t)-1)
+            phi = pMath::get_bin_median(dictionary.phi_bins, phi_bin_idx);
 
-        int pdgid = 0;
-        for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
+        // Either pt or energy should exist.
+        if (pt_bin_idx != (std::size_t)-1 && eta_bin_idx != (std::size_t)-1 && phi_bin_idx != (std::size_t)-1)
         {
-            if (pdg_idx == pdgid_idx)
-            {
-                pdgid = pdg_id;
-                break;
-            }
+            px = pt * std::cos(phi);
+            py = pt * std::sin(phi);
+            pz = pt * std::sinh(eta);
         }
-        double energy = pMath::get_bin_median(dictionary.e_bins, energy_idx);
-        double theta = pMath::get_bin_median(dictionary.theta_bins, theta_idx);
-        double phi = pMath::get_bin_median(dictionary.phi_bins, phi_idx);
-
-        double px = energy * std::sin(theta) * std::cos(phi);
-        double py = energy * std::sin(theta) * std::sin(phi);
-        double pz = energy * std::cos(theta);
-
-        untokenized_event.push_back(pdgid);
-        untokenized_event.push_back(energy);
-        untokenized_event.push_back(px);
-        untokenized_event.push_back(py);
-        untokenized_event.push_back(pz);
-    }
-    return untokenized_event;
-}
-
-const std::vector<double> SchemeNoParticleBoundaries::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
-{
-    std::vector<double> untokenized_event;
-    for (int i = 0; i < event.size(); i += NUM_TOKENS_PER_PARTICLE)
-    {
-        int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
-        int energy_idx = event[i + 1] - dictionary.offsets.energy_offset;
-        int eta_idx = event[i + 2] - dictionary.offsets.eta_offset;
-        int theta_idx = event[i + 3] - dictionary.offsets.theta_offset;
-        int phi_idx = event[i + 4] - dictionary.offsets.phi_offset;
-
-        int pdgid = 0;
-        for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
+        else if (energy_bin_idx != (std::size_t)-1 && theta_bin_idx != (std::size_t)-1 && phi_bin_idx != (std::size_t)-1)
         {
-            if (pdg_idx == pdgid_idx)
-            {
-                pdgid = pdg_id;
-                break;
-            }
+            px = energy * std::sin(theta) * std::cos(phi);
+            py = energy * std::sin(theta) * std::sin(phi);
+            pz = energy * std::cos(theta);
         }
-        double energy = pMath::get_bin_median(dictionary.e_bins, energy_idx);
-        double eta = pMath::get_bin_median(dictionary.eta_bins, eta_idx);
-        double theta = pMath::get_bin_median(dictionary.theta_bins, theta_idx);
-        double phi = pMath::get_bin_median(dictionary.phi_bins, phi_idx);
+        else
+            throw std::runtime_error("pTokenizer: untokenizer: Cannot calculate linear momentum.");
 
-        double px = energy * std::sin(theta) * std::cos(phi);
-        double py = energy * std::sin(theta) * std::sin(phi);
-        double pz = energy * std::cos(theta);
-
-        untokenized_event.push_back(pdgid);
-        untokenized_event.push_back(energy);
-        untokenized_event.push_back(px);
-        untokenized_event.push_back(py);
-        untokenized_event.push_back(pz);
-    }
-    return untokenized_event;
-}
-
-const std::vector<double> SchemePaddingV2::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
-{
-    std::vector<double> untokenized_event;
-    for (int i = 0; i < event.size(); i += NUM_TOKENS_PER_PARTICLE)
-    {
-        int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
-        int energy_idx = event[i + 1] - dictionary.offsets.energy_offset;
-        int eta_idx = event[i + 2] - dictionary.offsets.eta_offset;
-        int theta_idx = event[i + 3] - dictionary.offsets.theta_offset;
-        int phi_idx = event[i + 4] - dictionary.offsets.phi_offset;
-
-        int pdgid = 0;
-        for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
+        if (energy_bin_idx == (std::size_t)-1)
         {
-            if (pdg_idx == pdgid_idx)
-            {
-                pdgid = pdg_id;
-                break;
-            }
+            //@TODO: find a way to get the mass from the pdgid. Particle in python can do this, but not sure how to do it in C++.
+            double mass = 0.0f;
+            energy = std::sqrt(px * px + py * py + pz * pz + mass * mass);
         }
-        double energy = pMath::get_bin_median(dictionary.e_bins, energy_idx);
-        double eta = pMath::get_bin_median(dictionary.eta_bins, eta_idx);
-        double theta = pMath::get_bin_median(dictionary.theta_bins, theta_idx);
-        double phi = pMath::get_bin_median(dictionary.phi_bins, phi_idx);
-
-        double px = energy * std::sin(theta) * std::cos(phi);
-        double py = energy * std::sin(theta) * std::sin(phi);
-        double pz = energy * std::cos(theta);
-
-        untokenized_event.push_back(pdgid);
-        untokenized_event.push_back(energy);
-        untokenized_event.push_back(px);
-        untokenized_event.push_back(py);
-        untokenized_event.push_back(pz);
-    }
-    return untokenized_event;
-}
-
-const std::vector<double> SchemeNeoNoParticleBoundaries::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
-{
-    std::vector<double> untokenized_event;
-    for (int i = 0; i < event.size(); i += NUM_TOKENS_PER_PARTICLE)
-    {
-        int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
-        int energy_idx = event[i + 1] - dictionary.offsets.energy_offset;
-        int pt_idx = event[i + 2] - dictionary.offsets.pt_offset;
-        int eta_idx = event[i + 3] - dictionary.offsets.eta_offset;
-        int phi_idx = event[i + 4] - dictionary.offsets.phi_offset;
-
-        int pdgid = 0;
-        for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
-        {
-            if (pdg_idx == pdgid_idx)
-            {
-                pdgid = pdg_id;
-                break;
-            }
-        }
-        double energy = pMath::get_bin_median(dictionary.e_bins, energy_idx);
-        double pt = pMath::get_bin_median(dictionary.pt_bins, pt_idx);
-        double eta = pMath::get_bin_median(dictionary.eta_bins, eta_idx);
-        double phi = pMath::get_bin_median(dictionary.phi_bins, phi_idx);
-
-        double px = pt * std::cos(phi);
-        double py = pt * std::sin(phi);
-        double pz = pt * std::sinh(phi);
-
-        untokenized_event.push_back(pdgid);
-        untokenized_event.push_back(energy);
-        untokenized_event.push_back(px);
-        untokenized_event.push_back(py);
-        untokenized_event.push_back(pz);
-    }
-    return untokenized_event;
-}
-
-const std::vector<double> SchemeNeoV2::untokenize_event(const std::vector<int>& event, const Dictionary& dictionary)
-{
-    std::vector<double> untokenized_event;
-    for (int i = 0; i < event.size(); i += NUM_TOKENS_PER_PARTICLE)
-    {
-        int pdgid_idx = event[i] - dictionary.offsets.pdgid_offset;
-        int pt_idx = event[i + 1] - dictionary.offsets.pt_offset;
-        int eta_idx = event[i + 2] - dictionary.offsets.eta_offset;
-        int phi_idx = event[i + 3] - dictionary.offsets.phi_offset;
-
-        int pdgid = 0;
-        for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
-        {
-            if (pdg_idx == pdgid_idx)
-            {
-                pdgid = pdg_id;
-                break;
-            }
-        }
-        double eta = pMath::get_bin_median(dictionary.eta_bins, eta_idx);
-        double pt = pMath::get_bin_median(dictionary.pt_bins, pt_idx);
-        double phi = pMath::get_bin_median(dictionary.phi_bins, phi_idx);
-
-        double px = pt * std::cos(phi);
-        double py = pt * std::sin(phi);
-        double pz = pt * std::sinh(eta);
-        //@TODO: find a way to get the mass from the pdgid. Particle in python can do this, but not sure how to do it in C++.
-        double mass = 0.0f;
-        double energy = std::sqrt(px * px + py * py + pz * pz + mass * mass);
 
         untokenized_event.push_back(pdgid);
         untokenized_event.push_back(energy);

@@ -160,7 +160,7 @@ class Analyzer:
                 return 0
             # Make angular look nice by binning to a minimum of 0.1
             if type_str in ['eta', 'theta', 'phi']:
-                step_size = max(step_size, 0.1)
+                step_size = max(step_size, 0.05)
             return int(self.dictionary.token_range(type_str) // step_size)
                 
         columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
@@ -169,7 +169,7 @@ class Analyzer:
         
         freq_dists = [Counter(real_df['pdgid']), Counter(sampled_df['pdgid'])]
         anal.plotting.plot_discrete_distribution(
-            all_data=freq_dists,
+            all_freq_dists=freq_dists,
             all_labels=['Input', 'Sampled'],
             name="Particle IDs",
             use_log=True,

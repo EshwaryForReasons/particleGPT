@@ -1,5 +1,17 @@
 {
   "scheme": "neov2",
+  "tokenization": {
+    "0": "pdgid",
+    "1": "pt",
+    "2": "eta",
+    "3": "phi"
+  },
+  "padding": {
+    "0": "padding",
+    "1": "padding",
+    "2": "padding",
+    "3": "padding"
+  },
   "special_tokens": {
     "padding": 0,
     "event_start": 1,

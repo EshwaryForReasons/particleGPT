@@ -16,13 +16,6 @@
 
 Dictionary dictionary;
 
-template class SchemeBase<SchemeStandard>;
-template class SchemeBase<SchemeNoEta>;
-template class SchemeBase<SchemeNoParticleBoundaries>;
-template class SchemeBase<SchemePaddingV2>;
-template class SchemeBase<SchemeNeoNoParticleBoundaries>;
-template class SchemeBase<SchemeNeoV2>;
-
 const std::size_t get_free_memory_size()
 {
     std::ifstream meminfo("/proc/meminfo");
@@ -72,8 +65,7 @@ const auto analyze_dataset(const std::string& filename)
     return AnalysisResult{.num_events = num_rows, .num_particles_max = max_cols};
 }
 
-template<typename Derived>
-void SchemeBase<Derived>::tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
+void Tokenizer::tokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
 {
     std::printf("----------------------------------------\n");
 
@@ -104,7 +96,7 @@ void SchemeBase<Derived>::tokenize_data(std::string dictionary_path, std::string
 
     std::printf("pTokenizer: tokenizer: Began tokenizing data.\n");
     std::printf("Input data file path: %s\n", input_data_path.c_str());
-    std::printf("Available memory: %zu\n", available_memory);
+    std::printf("Available memory: %zu GB\n", available_memory / 1024 / 1024 / 1024);
     std::printf("Number of hardware threads: %zu\n", num_threads);
     std::printf("Number of required threads: %zu\n", required_threads);
     std::printf("Events per thread: %zu\n", events_per_thread);
@@ -140,44 +132,43 @@ void SchemeBase<Derived>::tokenize_data(std::string dictionary_path, std::string
     std::printf("----------------------------------------\n");
 }
 
-template<typename Derived>
-void SchemeBase<Derived>::tokenize_events_in_range(const std::string& input_data_path, const std::string& output_data_path, const std::size_t num_particles_max, const std::size_t start_idx, const std::size_t end_idx, const std::size_t idx)
+void Tokenizer::tokenize_events_in_range(const std::string& input_data_path, const std::string& output_data_path, const std::size_t num_particles_max, const std::size_t start_idx, const std::size_t end_idx, const std::size_t idx)
 {
     std::ifstream input_data_file(input_data_path);
 
     //Tokenize data
-
+    
     std::vector<std::vector<int>> tokenized_events;
     std::string event;
     std::vector<double> input_events;
     for (std::size_t i = 0; i <= end_idx; ++i)
     {
         std::getline(input_data_file, event);
-
+        
         //Skip to start_idx
         if (i < start_idx)
-            continue;
-
+        continue;
+        
         std::replace(event.begin(), event.end(), ';', ' ');
         const std::vector<std::string_view> event_split_str = Utils::split(event, ' ');
         std::vector<double> event_split;
         for (auto event_split_single : event_split_str)
-            event_split.push_back(std::stod(event_split_single.data()));
+        event_split.push_back(std::stod(event_split_single.data()));
         
-        const std::vector<int> tokenized_event = Derived::tokenize_event(event_split);
+        const std::vector<int> tokenized_event = tokenize_event(event_split);
         if (!tokenized_event.empty())
             tokenized_events.push_back(tokenized_event);
     }
 
     //Pad data
 
-    const auto padding_sequence = Derived::get_padding_sequence();
-    const std::size_t max_sequence_length = num_particles_max * Derived::NUM_TOKENS_PER_PARTICLE + 2;
+    const auto padding_sequence = dictionary.get_padding_sequence();
+    const std::size_t max_sequence_length = num_particles_max * dictionary.get_num_tokens_per_particle() + 2;
     for (auto& tokenized_event : tokenized_events)
     {
         if (tokenized_event.size() < max_sequence_length)
         {
-            const std::size_t num_particles = (tokenized_event.size() - 2) / Derived::NUM_TOKENS_PER_PARTICLE;
+            const std::size_t num_particles = (tokenized_event.size() - 2) / dictionary.get_num_tokens_per_particle();
             const std::size_t required_delta = num_particles_max - num_particles;
             for (std::size_t i = 0; i < required_delta; ++i)
             {
@@ -206,36 +197,24 @@ void SchemeBase<Derived>::tokenize_events_in_range(const std::string& input_data
     }
 }
 
-
-const std::vector<int> SchemeStandard::get_padding_sequence()
-{
-    return {
-        dictionary.special_tokens.particle_start,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.particle_end
-    };
-}
-
-const std::vector<int> SchemeStandard::tokenize_event(const std::vector<double>& event)
+const std::vector<int> Tokenizer::tokenize_event(const std::vector<double>& event)
 {
     std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
     for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
     {
-        double pdgid = event[particle_idx * 5];
-        double energy = event[particle_idx * 5 + 1];
-        double px = event[particle_idx * 5 + 2];
-        double py = event[particle_idx * 5 + 3];
-        double pz = event[particle_idx * 5 + 4];
+        double pdgid    = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 0];
+        double energy   = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 1];
+        double px       = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 2];
+        double py       = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 3];
+        double pz       = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 4];
 
-        double r = std::sqrt(px * px + py * py + pz * pz);
-        double theta = std::acos(pz / r);
-        double phi = std::atan2(py, px);
-        double eta = -std::log(std::tan(theta / 2));
+        double r        = std::sqrt(px * px + py * py + pz * pz);
+        double pt       = std::sqrt(px * px + py * py);
+        double theta    = std::acos(pz / r);
+        double phi      = std::atan2(py, px);
+        double eta      = -std::log(std::tan(theta / 2));
 
+        //Eta constrain
         if (std::abs(eta) > 4)
             return {};
 
@@ -249,281 +228,27 @@ const std::vector<int> SchemeStandard::tokenize_event(const std::vector<double>&
             }
         }
 
-        tokenized_event.push_back(dictionary.special_tokens.particle_start);
-        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
-        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
-        tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
-        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
-        tokenized_event.push_back(dictionary.special_tokens.particle_end);
-    }
-
-    tokenized_event.push_back(dictionary.special_tokens.event_end);
-    return tokenized_event;
-}
-
-
-const std::vector<int> SchemeNoEta::get_padding_sequence()
-{
-    return {
-        dictionary.special_tokens.particle_start,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.particle_end
-    };
-}
-
-const std::vector<int> SchemeNoEta::tokenize_event(const std::vector<double>& event)
-{
-    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
-    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
-    {
-        double pdgid = event[particle_idx * 5];
-        double energy = event[particle_idx * 5 + 1];
-        double px = event[particle_idx * 5 + 2];
-        double py = event[particle_idx * 5 + 3];
-        double pz = event[particle_idx * 5 + 4];
-
-        double r = std::sqrt(px * px + py * py + pz * pz);
-        double theta = std::acos(pz / r);
-        double phi = std::atan2(py, px);
-        double eta = -std::log(std::tan(theta / 2));
-
-        if (std::abs(eta) > 4)
-            return {};
-
-        int particle_index = 0;
-        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
+        for (int i = 0; i < dictionary.get_num_tokens_per_particle(); ++i)
         {
-            if (i_pdgid == pdgid)
-            {
-                particle_index = i_index;
-                break;
-            }
+            if (dictionary.tokenization_schema[i] == "pdgid")
+                tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
+            else if (dictionary.tokenization_schema[i] == "pt")
+                tokenized_event.push_back(pMath::digitize(pt, dictionary.pt_bins) + dictionary.offsets.pt_offset);
+            else if (dictionary.tokenization_schema[i] == "energy")
+                tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
+            else if (dictionary.tokenization_schema[i] == "eta")
+                tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
+            else if (dictionary.tokenization_schema[i] == "theta")
+                tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
+            else if (dictionary.tokenization_schema[i] == "phi")
+                tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
+            else if (dictionary.tokenization_schema[i] == "particle_start")
+                tokenized_event.push_back(dictionary.special_tokens.particle_start);
+            else if (dictionary.tokenization_schema[i] == "particle_end")
+                tokenized_event.push_back(dictionary.special_tokens.particle_end);
+            else
+                throw std::runtime_error("pTokenizer: Unknown tokenization schema: " + dictionary.tokenization_schema[i]);
         }
-
-        tokenized_event.push_back(dictionary.special_tokens.particle_start);
-        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
-        tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
-        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
-        tokenized_event.push_back(dictionary.special_tokens.particle_end);
-    }
-
-    tokenized_event.push_back(dictionary.special_tokens.event_end);
-    return tokenized_event;
-}
-
-
-const std::vector<int> SchemeNoParticleBoundaries::get_padding_sequence()
-{
-    return {
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-    };
-}
-
-const std::vector<int> SchemeNoParticleBoundaries::tokenize_event(const std::vector<double>& event)
-{
-    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
-    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
-    {
-        double pdgid = event[particle_idx * 5];
-        double energy = event[particle_idx * 5 + 1];
-        double px = event[particle_idx * 5 + 2];
-        double py = event[particle_idx * 5 + 3];
-        double pz = event[particle_idx * 5 + 4];
-
-        double r = std::sqrt(px * px + py * py + pz * pz);
-        double theta = std::acos(pz / r);
-        double phi = std::atan2(py, px);
-        double eta = -std::log(std::tan(theta / 2));
-
-        if (std::abs(eta) > 4)
-            return {};
-
-        int particle_index = 0;
-        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
-        {
-            if (i_pdgid == pdgid)
-            {
-                particle_index = i_index;
-                break;
-            }
-        }
-
-        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
-        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
-        tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
-        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
-    }
-
-    tokenized_event.push_back(dictionary.special_tokens.event_end);
-    return tokenized_event;
-}
-
-
-const std::vector<int> SchemePaddingV2::get_padding_sequence()
-{
-    return {
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-    };
-}
-
-const std::vector<int> SchemePaddingV2::tokenize_event(const std::vector<double>& event)
-{
-    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
-    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
-    {
-        double pdgid = event[particle_idx * 5];
-        double energy = event[particle_idx * 5 + 1];
-        double px = event[particle_idx * 5 + 2];
-        double py = event[particle_idx * 5 + 3];
-        double pz = event[particle_idx * 5 + 4];
-
-        double r = std::sqrt(px * px + py * py + pz * pz);
-        double theta = std::acos(pz / r);
-        double phi = std::atan2(py, px);
-        double eta = -std::log(std::tan(theta / 2));
-
-        if (std::abs(eta) > 4)
-            return {};
-
-        int particle_index = 0;
-        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
-        {
-            if (i_pdgid == pdgid)
-            {
-                particle_index = i_index;
-                break;
-            }
-        }
-
-        tokenized_event.push_back(dictionary.special_tokens.particle_start);
-        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
-        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
-        tokenized_event.push_back(pMath::digitize(theta, dictionary.theta_bins) + dictionary.offsets.theta_offset);
-        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
-        tokenized_event.push_back(dictionary.special_tokens.particle_end);
-    }
-
-    tokenized_event.push_back(dictionary.special_tokens.event_end);
-    return tokenized_event;
-}
-
-
-
-const std::vector<int> SchemeNeoNoParticleBoundaries::get_padding_sequence()
-{
-    return {
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-    };
-}
-
-const std::vector<int> SchemeNeoNoParticleBoundaries::tokenize_event(const std::vector<double>& event)
-{
-    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
-    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
-    {
-        double pdgid = event[particle_idx * 5];
-        double energy = event[particle_idx * 5 + 1];
-        double px = event[particle_idx * 5 + 2];
-        double py = event[particle_idx * 5 + 3];
-        double pz = event[particle_idx * 5 + 4];
-
-        double r = std::sqrt(px * px + py * py + pz * pz);
-        double theta = std::acos(pz / r);
-        double phi = std::atan2(py, px);
-        double eta = -std::log(std::tan(theta / 2));
-        double pt = std::sqrt(px * px + py * py);
-
-        if (std::abs(eta) > 4)
-            return {};
-
-        int particle_index = 0;
-        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
-        {
-            if (i_pdgid == pdgid)
-            {
-                particle_index = i_index;
-                break;
-            }
-        }
-
-        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(pMath::digitize(energy, dictionary.e_bins) + dictionary.offsets.energy_offset);
-        tokenized_event.push_back(pMath::digitize(pt, dictionary.pt_bins) + dictionary.offsets.pt_offset);
-        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
-        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
-    }
-
-    tokenized_event.push_back(dictionary.special_tokens.event_end);
-    return tokenized_event;
-}
-
-
-
-const std::vector<int> SchemeNeoV2::get_padding_sequence()
-{
-    return {
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding,
-        dictionary.special_tokens.padding
-    };
-}
-
-const std::vector<int> SchemeNeoV2::tokenize_event(const std::vector<double>& event)
-{
-    std::vector<int> tokenized_event = { dictionary.special_tokens.event_start };
-    for (int particle_idx = 0; particle_idx < event.size() / 5; ++particle_idx)
-    {
-        double pdgid = event[particle_idx * 5];
-        double energy = event[particle_idx * 5 + 1];
-        double px = event[particle_idx * 5 + 2];
-        double py = event[particle_idx * 5 + 3];
-        double pz = event[particle_idx * 5 + 4];
-
-        double r = std::sqrt(px * px + py * py + pz * pz);
-        double pt = std::sqrt(px * px + py * py);
-        double theta = std::acos(pz / r);
-        double phi = std::atan2(py, px);
-        double eta = -std::log(std::tan(theta / 2));
-        
-        if (std::abs(eta) > 4)
-            return {};
-
-        int particle_index = 0;
-        for (auto& [i_pdgid, i_index] : dictionary.pdgid_to_index)
-        {
-            if (i_pdgid == pdgid)
-            {
-                particle_index = i_index;
-                break;
-            }
-        }
-
-        tokenized_event.push_back(particle_index + dictionary.offsets.pdgid_offset);
-        tokenized_event.push_back(pMath::digitize(pt, dictionary.pt_bins) + dictionary.offsets.pt_offset);
-        tokenized_event.push_back(pMath::digitize(eta, dictionary.eta_bins) + dictionary.offsets.eta_offset);
-        tokenized_event.push_back(pMath::digitize(phi, dictionary.phi_bins) + dictionary.offsets.phi_offset);
     }
 
     tokenized_event.push_back(dictionary.special_tokens.event_end);
