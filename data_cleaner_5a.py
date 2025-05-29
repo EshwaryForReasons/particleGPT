@@ -13,14 +13,14 @@ loaded_dataset = data_manager.load_geant4_dataset(in_dataset_filename, pad_token
 freq, occurrences = anal.dataset.get_pdgid_frequency_distribution(loaded_dataset)
 
 out_file = script_dir / f'pdgid_freq_particle_dist_{in_dataset_filename.name}_new.png'
-anal.plotting.plot_discrete_distribution(freq, 'Dataset', use_log=True, out_file=out_file)
+anal.plotting.plot_bar(freq, 'Dataset', use_log=True, out_file=out_file)
 
 # Turn occurrences into a freq distribution before plotting.
 ofreq = {}
 for pid, n_events in occurrences.items():
     ofreq[pid] = len(n_events)
 out_file = script_dir / f'pdgid_freq_event_dist_{in_dataset_filename.name}_new.png'
-anal.plotting.plot_discrete_distribution(ofreq, 'Dataset', use_log=True, out_file=out_file)
+anal.plotting.plot_bar(ofreq, 'Dataset', use_log=True, out_file=out_file)
 
 sorted_frequency = sorted(freq.items(), key=lambda f: f[1], reverse=True)
 sorted_rows_occuring = sorted(occurrences.items(), key=lambda f: len(f[1]), reverse=True)

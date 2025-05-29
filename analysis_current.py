@@ -168,7 +168,7 @@ class Analyzer:
         sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
         
         freq_dists = [Counter(real_df['pdgid']), Counter(sampled_df['pdgid'])]
-        anal.plotting.plot_discrete_distribution(
+        anal.plotting.plot_bar(
             all_freq_dists=freq_dists,
             all_labels=['Input', 'Sampled'],
             name="Particle IDs",
@@ -179,7 +179,7 @@ class Analyzer:
             type_str = 'pt' if column in ['e', 'px', 'py', 'pz'] else column
             if get_bin_count(type_str) == 0:
                 continue
-            anal.plotting.plot_continuous_distribution(
+            anal.plotting.plot_hist(
                 all_data=[real_df[column].to_list(), sampled_df[column].to_list()],
                 all_labels=['Input', 'Sampled'],
                 name=column,
