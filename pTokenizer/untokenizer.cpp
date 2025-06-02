@@ -3,6 +3,21 @@
 #include "utils.h"
 #include "dictionary.h"
 
+#include "G4RunManager.hh"
+#include "G4PhysListFactory.hh"
+#include "G4VModularPhysicsList.hh"
+#include "G4VUserDetectorConstruction.hh"
+#include "G4Box.hh"
+#include "G4LogicalVolume.hh"
+#include "G4PVPlacement.hh"
+#include "G4NistManager.hh"
+#include "G4ParticleTable.hh"
+#include "G4IonTable.hh"
+#include "G4ParticleDefinition.hh"
+#include "G4GenericIon.hh"
+
+#include "TLorentzVector.h"
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -14,15 +29,95 @@
 #include <iomanip>
 #include <format>
 
+G4ParticleTable* particleTable = nullptr;
+G4RunManager* runManager = nullptr;
+
+//Need a dummy detector to initialize the G4RunManager properly
+class DummyDetector : public G4VUserDetectorConstruction
+{
+public:
+    DummyDetector() = default;
+    virtual ~DummyDetector() = default;
+
+    virtual G4VPhysicalVolume* Construct() override
+    {
+        // Just build a tiny dummy box world
+        G4NistManager* nist = G4NistManager::Instance();
+        G4Material* air = nist->FindOrBuildMaterial("G4_AIR");
+
+        G4Box* solidWorld = new G4Box("World", 1 * CLHEP::m, 1 * CLHEP::m, 1 * CLHEP::m);
+        G4LogicalVolume* logicWorld = new G4LogicalVolume(solidWorld, air, "World");
+        G4VPhysicalVolume* physWorld = new G4PVPlacement(
+            0,                     // no rotation
+            G4ThreeVector(),       // at (0,0,0)
+            logicWorld,            // logical volume
+            "World",               // name
+            0,                     // mother volume
+            false,                 // no boolean operation
+            0,                     // copy number
+            true);                 // check overlaps
+
+        return physWorld;
+    }
+};
+
+void initialize_geant4()
+{
+    G4PhysListFactory factory;
+    G4VModularPhysicsList* physicsList = factory.GetReferencePhysList("FTFP_BERT_ATL");
+    if (!physicsList)
+        throw std::runtime_error("Failed to get reference physics list.");
+    
+    runManager = new G4RunManager();
+    if (!runManager)
+        throw std::runtime_error("Failed to create G4RunManager instance.");
+    runManager->SetUserInitialization(new DummyDetector());
+    runManager->SetUserInitialization(physicsList);
+    runManager->Initialize();
+
+    particleTable = G4ParticleTable::GetParticleTable();
+    if (!particleTable)
+        throw std::runtime_error("Failed to get G4ParticleTable instance.");
+    particleTable->SetReadiness();
+    //Add ions to the particle table
+    G4IonTable* ions = particleTable->GetIonTable();
+    ions->CreateAllIon();
+    ions->CreateAllIsomer();
+}
+
+/**
+ * Geant4 lazy loads ions and, resultantly, some I need are not included by default.
+ * This parses the PDGID and loads those ions as needed.
+ * 
+ * ionTable->GetIon() creates the ion if it does not exist, so we can use it to create ions on demand.
+ */
+G4ParticleDefinition* FindParticleByPDGID(int pdgCode)
+{
+    // Not a nuclear PDG code, use normal lookup
+    if (pdgCode < 1000000000)
+        return G4ParticleTable::GetParticleTable()->FindParticle(pdgCode);
+
+    // Extract Z, A, and isomer level
+    int Z = (pdgCode / 10000) % 1000;
+    int A = (pdgCode / 10) % 1000;
+    int I = pdgCode % 10;
+    double excitationEnergy = I * CLHEP::MeV;
+
+    G4IonTable* ionTable = G4ParticleTable::GetParticleTable()->GetIonTable();
+    return ionTable->GetIon(Z, A, excitationEnergy);
+}
+
 void Tokenizer::untokenize_data(std::string dictionary_path, std::string input_data_path, std::string output_data_path)
 {
     std::printf("----------------------------------------\n");
     const auto dictionary = DataManager::load_dictionary(dictionary_path);
     const auto tokenized_data = DataManager::load_tokenized_data(input_data_path);
+    initialize_geant4();
+
     std::printf("pTokenizer: untokenizer: Began untokenizing data.\n");
-    std::vector<std::vector<double>> raw_data;
-    
+
     //Profiling shows no reason to multithread this one (more threads was actually slower?)
+    std::vector<std::vector<double>> raw_data;
     for (auto& event : tokenized_data)
     {
         const auto untokenized_event = untokenize_event(event, dictionary);
@@ -54,7 +149,7 @@ const std::vector<double> Tokenizer::untokenize_event(const std::vector<int>& ev
         int theta_bin_idx     = determine_bin_idx("theta", dictionary.offsets.theta_offset);
         int phi_bin_idx       = determine_bin_idx("phi", dictionary.offsets.phi_offset);
 
-        // We can reasonably assume pdgid exists since it is need to have a proper particle.
+        // We can reasonably assume pdgid exists in the tokenization since it is needed to have a proper particle.
         int pdgid = 0;
         for (auto& [pdg_id, pdg_idx] : dictionary.pdgid_to_index)
         {
@@ -71,10 +166,6 @@ const std::vector<double> Tokenizer::untokenize_event(const std::vector<int>& ev
         double theta = 0.0f;
         double phi = 0.0f;
 
-        double px = 0.0f;
-        double py = 0.0f;
-        double pz = 0.0f;
-
         if (energy_bin_idx != (std::size_t)-1)
             energy = pMath::get_bin_median(dictionary.e_bins, energy_bin_idx);
         if (pt_bin_idx != (std::size_t)-1)
@@ -86,34 +177,29 @@ const std::vector<double> Tokenizer::untokenize_event(const std::vector<int>& ev
         if (phi_bin_idx != (std::size_t)-1)
             phi = pMath::get_bin_median(dictionary.phi_bins, phi_bin_idx);
 
+        auto* particle = FindParticleByPDGID(pdgid);
+
+        TLorentzVector vec;
+        
         // Either pt or energy should exist.
         if (pt_bin_idx != (std::size_t)-1 && eta_bin_idx != (std::size_t)-1 && phi_bin_idx != (std::size_t)-1)
         {
-            px = pt * std::cos(phi);
-            py = pt * std::sin(phi);
-            pz = pt * std::sinh(eta);
+            vec.SetPtEtaPhiM(pt, eta, phi, particle->GetPDGMass());
         }
         else if (energy_bin_idx != (std::size_t)-1 && theta_bin_idx != (std::size_t)-1 && phi_bin_idx != (std::size_t)-1)
         {
-            px = energy * std::sin(theta) * std::cos(phi);
-            py = energy * std::sin(theta) * std::sin(phi);
-            pz = energy * std::cos(theta);
+            vec.SetE(energy);
+            vec.SetTheta(theta);
+            vec.SetPhi(phi);
         }
         else
             throw std::runtime_error("pTokenizer: untokenizer: Cannot calculate linear momentum.");
 
-        if (energy_bin_idx == (std::size_t)-1)
-        {
-            //@TODO: find a way to get the mass from the pdgid. Particle in python can do this, but not sure how to do it in C++.
-            double mass = 0.0f;
-            energy = std::sqrt(px * px + py * py + pz * pz + mass * mass);
-        }
-
         untokenized_event.push_back(pdgid);
-        untokenized_event.push_back(energy);
-        untokenized_event.push_back(px);
-        untokenized_event.push_back(py);
-        untokenized_event.push_back(pz);
+        untokenized_event.push_back(vec.Energy());
+        untokenized_event.push_back(vec.Px());
+        untokenized_event.push_back(vec.Py());
+        untokenized_event.push_back(vec.Pz());
     }
     return untokenized_event;
 }

@@ -1,6 +1,7 @@
 
 import json
 import math
+import pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ import jetnet.evaluation
 
 import pUtil
 from dictionary import Dictionary
+import data_manager
 
 class dataset:
     @staticmethod
@@ -30,7 +32,7 @@ class dataset:
             found_ids = set()
             for particle in event:
                 pdgid = particle[0]
-                if pdgid == 0.0:
+                if pdgid == 0.0 or pdgid == np.nan:
                     continue
                 freq[pdgid] += 1
                 found_ids.add(pdgid)
@@ -82,11 +84,11 @@ class plotting:
     All plotting functions will follow a similar API. This allows easy intuitive generation
     of various types of plots.
     
-    normalized: (optional: False) bool, should the values be normalized to a area of 1 before plotting?
-    use_log: (optional: False) bool, should the dependent axis be log scaled.
+    normalized: (optional: False) bool, should the values be normalized to an area of 1 before plotting?
+    use_log: (optional: False) bool, should the dependent axis be log scaled?
     juxtaposed: (optional: False) bool, if input contains multiple values (array) should all be plotted on the same
-        figure should different figures be used side-by-side.
-    out_file: (optional) pathlib.Path, file to save figure to. show will always be called since it
+        axis or should different axes be used side-by-side.
+    out_file: (optional) pathlib.Path, file to save figure to. plt.show will always be called since it
         naturally only works if there is a way to show the figures.
     """
     
@@ -97,6 +99,10 @@ class plotting:
     distributions_per_row = 3
     
     columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
+    
+    """
+    Generic plotting functions.
+    """
     
     @staticmethod
     def set_labels(x_label, y_label, in_fig=None):
@@ -111,7 +117,7 @@ class plotting:
             in_fig.supylabel(y_label) 
     
     @staticmethod
-    def plot_hist(all_data, n_bins=10, min=None, max=None, label='unspecified', color=None, normalized=False, use_log=False, out_file=None, in_ax=None):
+    def plot_hist(all_data, n_bins=10, range_min=None, range_max=None, label='unspecified', color=None, normalized=False, use_log=False, out_file=None, in_ax=None):
         """Generates distributions (histogram) for the provided data. This works for any "continuous" data, i.e.
             energy, momentum, etc. distributions. This will not work for "discrete" data, like pdgid distributions.
 
@@ -123,8 +129,10 @@ class plotting:
         """
         
         color = color or plotting.colors[0]
-        min = min or min(all_data.flatten())
-        max = min or max(all_data.flatten())
+        if range_min == None:
+            range_min = np.min(all_data)
+        if range_max == None:
+            range_max = np.max(all_data)
         
         weights = None
         if normalized:
@@ -136,8 +144,8 @@ class plotting:
             fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
         if use_log:
             ax.set_yscale('log')
-        ax.set_xlim([min, max])
-        ax.hist(all_data, bins=n_bins, weights=weights, range=(min, max), alpha=0.7, color=color, label=label)
+        # ax.set_xlim([range_min, range_max])
+        ax.hist(all_data, bins=n_bins, weights=weights, range=(range_min, range_max), alpha=0.7, color=color, label=label)
         ax.legend()
         plt.grid(axis="y", linestyle="--", alpha=0.7)
         
@@ -160,7 +168,8 @@ class plotting:
                 be extracted from that. Defaults to None.
         """
         
-        color = color or plotting.colors[0]
+        if color is None:
+            color = plotting.colors[0]
         
         # freq_dist can be a list, or a Counter object.
         if normalized and isinstance(freq_dist, list):
@@ -260,6 +269,10 @@ class plotting:
             ax.show()
         
         return fig, ax
+
+    """
+    Plotting training runs and distributions of leading particles.
+    """
     
     @staticmethod
     def plot_training_run(model_names, y_lim=None, use_log=False, out_file=None):
@@ -300,20 +313,22 @@ class plotting:
         sampled_leading_particles_filename = pUtil.get_latest_sampling_dir(model_name) / 'sampled_leading_particles.csv'
         
         dictionary = Dictionary(dictionary_filename)
-            
+        
         def get_bin_count(type_str):
             step_size = dictionary.token_step_size(type_str)
             if step_size == 0:
                 return 0
+            if type_str in ['eta', 'theta', 'phi']:
+                step_size = 0.05
             return int(dictionary.token_range(type_str) // step_size)
         
         columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
         bin_settings = {
             "num_particles": { "min": 0,                             "max": 50,                            "bins": 50 },
-            "e":             { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": get_bin_count('e') },
-            "px":            { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": int(dictionary.token_range('e') // 1000) },
-            "py":            { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": int(dictionary.token_range('e') // 1000) },
-            "pz":            { "min": dictionary.token_min('e'),     "max": dictionary.token_max('e'),     "bins": int(dictionary.token_range('e') // 1000) },
+            "e":             { "min": 0,                             "max": 35000,                         "bins": 350 },
+            "px":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
+            "py":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
+            "pz":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
             "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": get_bin_count('eta') },
             "theta":         { "min": dictionary.token_min('theta'), "max": dictionary.token_max('theta'), "bins": get_bin_count('theta') },
             "phi":           { "min": dictionary.token_min('phi'),   "max": dictionary.token_max('phi'),   "bins": get_bin_count('phi') },
@@ -325,7 +340,7 @@ class plotting:
         return bin_settings, real_df, sampled_df
 
     @staticmethod
-    def plot_distribution(model_names, column_name=None, use_log=False, out_file=None):
+    def plot_distribution_leading(model_names, column_name=None, normalized=False, use_log=False, out_file=None):
         unit = ''
         if column_name in ['e', 'pt', 'px', 'py', 'pz']:
             unit = '(MeV)'
@@ -336,12 +351,14 @@ class plotting:
         fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
         fig.suptitle(f'{column_name} Distribution for Leading Particles')
         plotting.set_labels(f'{column_name} {unit}', 'Frequency', in_fig=fig)
-        for ax, model_name in zip(axes, model_names):
+        for ax, model_name in zip([axes], model_names):
             bin_settings, real_df, sampled_df = plotting._get_common_data(model_name)
-            if bin_settings[column_name]['bins'] == 0:
-                return
-            plotting.plot_hist(real_df[column_name], min=bin_settings[column_name]['min'], max=bin_settings[column_name]['max'], n_bins=bin_settings[column_name]['bins'], normalized=True, label=f'Input ({model_name})', color=plotting.colors[0], use_log=use_log, in_ax=ax)
-            plotting.plot_hist(sampled_df[column_name], min=bin_settings[column_name]['min'], max=bin_settings[column_name]['max'], n_bins=bin_settings[column_name]['bins'], normalized=True, label=f'Sampled ({model_name})', color=plotting.colors[1], use_log=use_log, in_ax=ax)
+            range_min = bin_settings[column_name]['min']
+            range_max = bin_settings[column_name]['max']
+            n_bins = bin_settings[column_name]['bins']
+            
+            plotting.plot_hist(real_df[column_name], range_min=range_min, range_max=range_max, n_bins=n_bins, normalized=normalized, label=f'Input ({model_name})', color=plotting.colors[0], use_log=use_log, in_ax=ax)
+            plotting.plot_hist(sampled_df[column_name], range_min=range_min, range_max=range_max, n_bins=n_bins, normalized=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], use_log=use_log, in_ax=ax)
         fig.tight_layout()
         if out_file != None:
             fig.savefig(out_file, bbox_inches='tight')
@@ -350,7 +367,7 @@ class plotting:
         return fig, ax
     
     @staticmethod
-    def plot_pdgid_distribution(model_names, normalized=False, use_log=False, out_file=None):
+    def plot_pdgid_distribution_leading(model_names, normalized=False, use_log=False, out_file=None):
         model_name = model_names[0]
         
         _, real_df, sampled_df = plotting._get_common_data(model_name)
@@ -381,10 +398,50 @@ class plotting:
         
         return fig, ax
 
+    @staticmethod
+    def plot_pdgid_distribution_all(model_names, normalized=False, use_log=False, out_file=None):
+        model_name = model_names[0]
+        
+        meta_data = tables.get_meta_data(model_name)
+        
+        testing_bin_filename = pUtil.get_model_preparation_dir(model_name) / 'test_real.bin'
+        generated_samples_filename = pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples.csv'
+        
+        num_tokens_per_particle_raw = 5
+        testing_real_data = np.memmap(testing_bin_filename, dtype=np.float64, mode='r')
+        testing_real_data = testing_real_data.reshape(-1, int((meta_data.max_sequence_length - 2) / num_tokens_per_particle_raw), num_tokens_per_particle_raw)
+        generated_sample_data = data_manager.load_geant4_dataset(generated_samples_filename, pad_token=0.0)
+        
+        real_pdgid_freq_dist, _ = dataset.get_pdgid_frequency_distribution(testing_real_data)
+        sampled_pdgid_freq_dist, _ = dataset.get_pdgid_frequency_distribution(generated_sample_data)
+        real_freq, sampled_freq = real_pdgid_freq_dist, sampled_pdgid_freq_dist
+        
+        # Union of all particle labels from both histograms
+        all_particles = sorted(set(real_freq.keys()).union(sampled_freq.keys()))
+        # Sorting them by frequency in real leading particles to ensure a legible plot
+        sorted_particles = sorted(all_particles, key=lambda p: real_freq[p], reverse=True)
+        # Build aligned values for both histograms
+        real_values = [real_freq.get(p, 0) for p in sorted_particles]
+        sampled_values = [sampled_freq.get(p, 0) for p in sorted_particles]
+        
+        fig, ax = plt.subplots(figsize=(21, 8), dpi=plotting.default_dpi)
+        fig.suptitle("Normalized Particle Type Distributions")
+        plotting.set_labels("Particle Type", "Frequency", in_fig=fig)
+        plotting.plot_bar(real_values, label=f'Input ({model_name})', color=plotting.colors[0], normalized=normalized, use_log=use_log, in_ax=ax)
+        plotting.plot_bar(sampled_values, label=f'Sampled ({model_name})', color=plotting.colors[1], normalized=normalized, use_log=use_log, in_ax=ax)
+        x = range(len(sorted_particles))
+        ax.set_xticks(x, sorted_particles, rotation=45, ha='right')
+        ax.legend()
+        fig.tight_layout()
+        if out_file != None:
+            fig.savefig(out_file, bbox_inches='tight')
+        fig.show()
+        
+        return fig, ax
+
 class tables:
     """
-    Tables are basically data in pandas formats (dataframes and series).
-    This class handles the generation of tables for analysis.
+    This class primary aggregates all the data from the model meta, config, training and metrics files into various useful formats.
     """
     
     model_metadata_columns          = ['vocab_size', 'max_sequence_length', 'num_train_tokens', 'num_val_tokens']
@@ -394,7 +451,7 @@ class tables:
     model_metrics_columns_verbose   = ['kpd_error', 'fpd_error', 'w1m_score_std', 'w1p_avg_eta_std', 'w1p_avg_phi_std', 'w1p_avg_pt_std']
     model_all_columns               = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns
     model_all_columns_verbose       = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns + model_metrics_columns_verbose
-
+    
     @staticmethod
     def get_meta_data(model_name):
         meta_filename = pUtil.get_model_meta_filename(model_name)

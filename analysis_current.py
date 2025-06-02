@@ -2,14 +2,7 @@ import sys
 import json
 import pickle
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import concurrent.futures
 from pathlib import Path
-from collections import Counter
-
-import jetnet
-from particle import Particle
 
 import configurator as conf
 from dictionary import Dictionary
@@ -151,43 +144,13 @@ class Analyzer:
     
     def generate_distributions(self):
         self.filter_data()
-        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.dictionary.scheme, self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
+        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
         self.generate_leading_particle_information()
         
-        def get_bin_count(type_str):
-            step_size = self.dictionary.token_step_size(type_str)
-            if step_size == 0:
-                return 0
-            # Make angular look nice by binning to a minimum of 0.1
-            if type_str in ['eta', 'theta', 'phi']:
-                step_size = max(step_size, 0.05)
-            return int(self.dictionary.token_range(type_str) // step_size)
-                
-        columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
-        real_df = pd.read_csv(self.real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
-        sampled_df = pd.read_csv(self.sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
-        
-        freq_dists = [Counter(real_df['pdgid']), Counter(sampled_df['pdgid'])]
-        anal.plotting.plot_bar(
-            all_freq_dists=freq_dists,
-            all_labels=['Input', 'Sampled'],
-            name="Particle IDs",
-            use_log=True,
-            out_file=self.latest_sampling_dir / f'histogram_pdgid.png')
-
-        for column in columns:
-            type_str = 'pt' if column in ['e', 'px', 'py', 'pz'] else column
-            if get_bin_count(type_str) == 0:
-                continue
-            anal.plotting.plot_hist(
-                all_data=[real_df[column].to_list(), sampled_df[column].to_list()],
-                all_labels=['Input', 'Sampled'],
-                name=column,
-                min=self.dictionary.token_min(type_str),
-                max=self.dictionary.token_max(type_str),
-                n_bins=get_bin_count(type_str),
-                normalized=True,
-                out_file=self.latest_sampling_dir / f'histogram_{column}.png')
+        anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
+        anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
+        for column_name in ['num_particles', 'e', 'px', 'py', 'pz', 'pt', 'eta', 'phi']:
+            anal.plotting.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_{column_name}.png')
 
     def get_real_jets(self):
         # -------------------------------------------------------------------------------
@@ -242,7 +205,7 @@ class Analyzer:
         # Coverage and MMD
         # -------------------------------------------------------------------------------
 
-        cov, mmd = jetnet.evaluation.cov_mmd(real_jets, generated_jets)
+        cov, mmd = anal.metrics.jetnet_eval_cov_mmd(real_jets, generated_jets)
 
         # -------------------------------------------------------------------------------
         # FPD and KPD
@@ -284,14 +247,14 @@ class Analyzer:
             "coverage": cov,
             "mmd": mmd,
             "kpd_median": kpd_median,
-            "kpd_error": kpd_error,
             "fpd_value": fpd_value,
             "fpd_error": fpd_error,
             "w1m_score": w1m_score,
-            "w1m_score_std": w1m_score_std,
             "w1p_avg_eta": w1p_avg_eta,
             "w1p_avg_phi": w1p_avg_phi,
             "w1p_avg_pt": w1p_avg_pt,
+            "kpd_error": kpd_error,
+            "w1m_score_std": w1m_score_std,
             "w1p_avg_eta_std": w1p_avg_eta_std,
             "w1p_avg_phi_std": w1p_avg_phi_std,
             "w1p_avg_pt_std": w1p_avg_pt_std,
@@ -300,34 +263,35 @@ class Analyzer:
         with open(self.metrics_results_filename, "w") as opt_file:
             json.dump(metrics_results_dict, opt_file, indent=4)
 
-def analyze_dataset_worker(model_name):
-    sampling_dir = pUtil.get_latest_sampling_dir(model_name)
-    if not sampling_dir.exists():
-        return
-    
-    print(f'Analyzing model {model_name}')
-
-    # Extract dataset name from sampling info
-    preparation_name = pUtil.get_model_preparation_name(model_name)
-    
-    # Run the analysis
-    dataset_analyzer = Analyzer(model_name, preparation_name)
-    dataset_analyzer.generate_distributions()
-    dataset_analyzer.calculate_metrics()
-
-def analyze_dataset():
+if __name__ == "__main__":
     # If argument 'all' is provided, generate distributions and metrics for all sampled datasets' latest sampling.
     # JetNet does not enjoy multi-threading (it already uses it internally to speed up calculations).
     if 'all' in sys.argv:
         print('Generating distributions and metrics for all datasets.')
-        all_model_names = pUtil.get_all_model_names()
-        for model_name in all_model_names:
-            analyze_dataset_worker(model_name)
-        print('Distributions and metrics generated successfully for all datasets.')
+        models_to_analyze = pUtil.get_all_model_names()
     else:
         print(f'Generating distributions and metrics for dataset {conf.generic.preparation_name}.')
-        analyze_dataset_worker(conf.generic.model_name)
-        print('Distributions and metrics generated successfully.')
-
-if __name__ == "__main__":
-    analyze_dataset()
+        models_to_analyze = [conf.generic.model_name]
+        
+    failed_models = []
+    for model_name in models_to_analyze:
+        print(f'Analyzing model {model_name}')
+        
+        sampling_dir = pUtil.get_latest_sampling_dir(model_name)
+        if not sampling_dir.exists():
+            print(f'Analysis for model {model_name} cannot be performed, because no sampling data is available.')
+            failed_models.append(model_name)
+            continue
+        
+        # Extract dataset name from sampling info
+        preparation_name = pUtil.get_model_preparation_name(model_name)
+        
+        # Run the analysis
+        dataset_analyzer = Analyzer(model_name, preparation_name)
+        dataset_analyzer.generate_distributions()
+        # dataset_analyzer.calculate_metrics()
+    
+    print('Distributions and metrics generated successfully.')
+    
+    if len(models_to_analyze) > 1:
+        print('Failed models:', ", ".join(failed_models))

@@ -183,7 +183,7 @@ def prepare_dataset():
     global num_features_per_particle
     
     if dictionary.scheme == '':
-        num_features_per_particle = 5
+        num_features_per_particle = 4
         num_tokens_per_particle = num_features_per_particle
     if dictionary.scheme == 'standard':
         num_features_per_particle = 5
@@ -223,22 +223,22 @@ def prepare_dataset():
                 print("Data already prepared")
                 return
 
-    dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
-    dictionary.output_humanized_dictionary(humanized_dictionary_filename)
-    pTokenizer.tokenize_data(dictionary_filename.as_posix(), dictionary.scheme, input_data_filename.as_posix(), temp_data_dir.as_posix())
+    # dictionary.update_dictionary_particle_list(input_data_filename, dictionary_filename)
+    # dictionary.output_humanized_dictionary(humanized_dictionary_filename)
+    # pTokenizer.tokenize_data(dictionary_filename.as_posix(), input_data_filename.as_posix(), temp_data_dir.as_posix())
 
-    # The tokenizer generates a bunch of files which need to be concatenated
-    print('Started concatenating tokenized files.')
-    tokenized_csv_files = sorted(
-        [
-            Path(temp_data_dir, f.name)
-            for f in temp_data_dir.iterdir()
-            if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
-        ],
-        key=lambda x: int(x.stem.split('_')[-1])
-    )
-    pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
-    print('Finished concatenating tokenized files.')
+    # # The tokenizer generates a bunch of files which need to be concatenated
+    # print('Started concatenating tokenized files.')
+    # tokenized_csv_files = sorted(
+    #     [
+    #         Path(temp_data_dir, f.name)
+    #         for f in temp_data_dir.iterdir()
+    #         if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
+    #     ],
+    #     key=lambda x: int(x.stem.split('_')[-1])
+    # )
+    # pUtil.concat_csv_files(tokenized_csv_files, tokenized_data_filename)
+    # print('Finished concatenating tokenized files.')
     
     # Then we go through and bin the concatenated file
     bin_data()

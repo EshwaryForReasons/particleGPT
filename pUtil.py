@@ -20,6 +20,9 @@ def get_training_dir(model_name):
 def get_preparation_dir(preparation_name):
     return script_dir / DATASETS_DIR_NAME / preparation_name
 
+def get_data_dir():
+    return script_dir / DATASETS_DIR_NAME
+
 # If model_name is None, it returns the global temp directory
 def get_temp_dir(model_name=None):
     if model_name is None:
@@ -71,6 +74,14 @@ def get_model_preparation_name(model_name):
     
     preparation_name = atlas['models'][model_name]['preparation_name']
     return preparation_name
+
+def get_model_dataset_name(model_name):
+    atlas_filename = script_dir / 'atlas.json'
+    with open(atlas_filename, 'r') as f:
+        atlas = json.load(f)
+    
+    dataset_name = atlas['models'][model_name]['dataset_name']
+    return dataset_name
 
 # Sampling
 

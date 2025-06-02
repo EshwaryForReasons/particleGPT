@@ -5,7 +5,7 @@ set -e  # Exit immediately if a command exits with a non-zero status
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------------------------------------
-# Function: Install Required Libraries
+# Function: Install Required Python Libraries
 # ---------------------------------------
 install_dependencies() {
     echo "Installing required Python libraries..."
@@ -25,29 +25,42 @@ install_dependencies() {
 # ---------------------------------------
 # Function: Build and Install pTokenizer
 # ---------------------------------------
+# grab_ROOT() {
+#     echo "Setting up ROOT..."
+
+#     mkdir -p "$script_dir/third_party/ROOT"
+#     cd "$script_dir/third_party/ROOT"
+
+#     # wget https://root.cern/download/root_v6.24.08.Linux-centos7-x86_64-gcc4.8.tar.gz
+#     # tar -xzvf root_v6.24.08.Linux-centos7-x86_64-gcc4.8.tar.gz
+#     # rm root_v6.24.08.Linux-centos7-x86_64-gcc4.8.tar.gz
+#     source root/bin/thisroot.sh
+
+#     # Env variable used for CMake to locate custom ROOT installation
+#     export particleGPT_ROOT="$script_dir/third_party/ROOT/root"
+# }
+
+# ---------------------------------------
+# Function: Build and Install pTokenizer
+# ---------------------------------------
 build_pTokenizer() {
     echo "Building and installing pTokenizer..."
 
-    # Ensure build directory exists
     mkdir -p "$script_dir/pTokenizer/build"
-
-    # Change to pTokenizer directory
     cd "$script_dir/pTokenizer"
 
-    # Build python module
     python setup.py bdist_wheel
-
-    # Install the built wheel (handles different versions dynamically)
-    pip install dist/pTokenizer-*.whl --force-reinstall
+    pip install dist/ptokenizer-*.whl --force-reinstall
 }
 
 # ---------------------------------------
 # Main Logic
 # ---------------------------------------
 if [[ "$1" == "pTokenizer" ]]; then
-    echo "Argument 'pTokenizer' provided — skipping dependency installation."
+    echo "Argument 'pTokenizer' provided — skipping dependency installations."
     build_pTokenizer
 else
     install_dependencies
+    # grab_ROOT
     build_pTokenizer
 fi

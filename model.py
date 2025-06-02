@@ -237,8 +237,9 @@ class GPT(nn.Module):
     reasonable and acceptable tokens with 81 being the best (what our training data would have).
     """
     @staticmethod
-    def classic_cross_entropy(self, logits, target_idxs, ignore_index=-1):
+    def classic_cross_entropy(logits, target_idxs, ignore_index=-1):
         loss = F.cross_entropy(logits, target_idxs, ignore_index=ignore_index)
+        return loss
     
     """
     Custom loss function

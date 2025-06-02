@@ -157,7 +157,7 @@ class Dictionary():
         return self.dictionary_data['special_tokens']['particle_end']
     @property
     def scheme(self):
-        return self.dictionary_data.get('scheme', 'standard')
+        return self.dictionary_data.get('scheme', '')
     
     # Returns token type given the current token value (uses token range for evaluation)
     def get_token_type(self, token):

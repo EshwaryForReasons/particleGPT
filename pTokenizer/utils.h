@@ -108,7 +108,7 @@ namespace pMath
     inline int digitize(double value, const BinData& bin_data)
     {
         if (bin_data.transform_type == "log")
-            value = std::log10(value);
+            value = std::log(value);
 
         //Fit it in the middle
         for (int i = 1; i <= bin_data.bins.size(); ++i)

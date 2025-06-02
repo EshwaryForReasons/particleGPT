@@ -35,13 +35,15 @@
   },
   "eta_bin_data": {
     "min": -4,
-    "max": 4.01,
-    "step_size": 0.001
+    "max": 4.001,
+    "step_size": 0.001,
+    "transform": "log"
   },
   "phi_bin_data": {
     "min": -3.15,
     "max": 3.15,
-    "step_size": 0.001
+    "step_size": 0.001,
+    "transform": "log"
   },
   "pt_bin_data": {
     "min": 0,
