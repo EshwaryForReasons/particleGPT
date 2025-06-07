@@ -106,8 +106,11 @@ def get_batch(split):
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-        num_train_samples = len(data)
-        conf.training.iterations_per_epoch = num_train_samples // (conf.training.batch_size * conf.training.block_size)
+        
+        # Calculate iterations_per_epoch
+        num_train_samples = len(data) // conf.training.block_size
+        effective_batch_size = conf.training.batch_size * conf.training.gradient_accumulation_steps * ddp_world_size
+        conf.training.iterations_per_epoch = int(num_train_samples // effective_batch_size)
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
     ix = torch.randint(len(data) - conf.training.block_size, (conf.training.batch_size,))
@@ -150,6 +153,7 @@ pLogging.info(logger_idx, "Training configuration", {
     "n_embd": conf.training.n_embd,
     "dropout": conf.training.dropout,
     "bias": conf.training.bias,
+    "scheduler": conf.training.lr_scheduler,
     "learning_rate": conf.training.learning_rate,
     "max_iters": conf.training.max_iters,
     "weight_decay": conf.training.weight_decay,
@@ -168,7 +172,15 @@ best_ckpt_path = Path(out_dir, 'ckpt.pt')
 running_ckpt_path = Path(out_dir, 'ckpt_running.pt')
 
 # model init; start with model_args from command line
-model_args = dict(n_layer=conf.training.n_layer, n_head=conf.training.n_head, n_embd=conf.training.n_embd, block_size=conf.training.block_size,bias=conf.training.bias, vocab_size=None, dropout=conf.training.dropout)
+model_args = dict(
+    n_layer=conf.training.n_layer, 
+    n_head=conf.training.n_head, 
+    n_embd=conf.training.n_embd, 
+    block_size=conf.training.block_size,
+    bias=conf.training.bias, 
+    vocab_size=None, 
+    dropout=conf.training.dropout
+)
 if conf.training.init_from == 'scratch':
     # Init a new model from scratch
     pLogging.info(logger_idx, "Training progress", {"info": "Initializing a new model from scratch"})
@@ -239,22 +251,25 @@ def estimate_loss():
     model.train()
     return out
 
-# learning rate decay scheduler (cosine with warmup)
+# learning rate decay scheduler
 def get_lr(it):
-    # 1) linear warmup for warmup_iters steps
-    if it < conf.training.warmup_iters:
-        return conf.training.learning_rate * it / conf.training.warmup_iters
-    # 2) if it > lr_decay_iters, return min learning rate
-    if it >= conf.training.lr_decay_iters:
-        return conf.training.min_lr
-    # 3) in between, use cosine decay down to min learning rate
-    # Edge case: if lr_decay_iters == warmup_iters we get a division by zero error
-    # I have patched this so far changing the second if to it >= lr_decay_iters (opposed so it < lr_decay_iters)
-    # That not being the case was probably a bug anyway, but I'll keep track of notable changes to that.
-    decay_ratio = (it - conf.training.warmup_iters) / (conf.training.lr_decay_iters - conf.training.warmup_iters)
-    assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-    return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
+    if conf.training.lr_scheduler == 'cosine_annealing_with_warmup':
+        # 1) linear warmup for warmup_iters steps
+        if it < conf.training.warmup_iters:
+            return conf.training.learning_rate * it / conf.training.warmup_iters
+        # 2) if it > lr_decay_iters, return min learning rate
+        if it >= conf.training.lr_decay_iters:
+            return conf.training.min_lr
+        # 3) in between, use cosine decay down to min learning rate
+        # Edge case: if lr_decay_iters == warmup_iters we get a division by zero error
+        # I have patched this so far changing the second if to it >= lr_decay_iters (opposed so it < lr_decay_iters)
+        # That not being the case was probably a bug anyway, but I'll keep track of notable changes to that.
+        decay_ratio = (it - conf.training.warmup_iters) / (conf.training.lr_decay_iters - conf.training.warmup_iters)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+        return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
+    elif conf.training.lr_scheduler == 'cosine_annealing_with_warm_restarts':
+        pass
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch

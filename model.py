@@ -131,17 +131,19 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x, new_kv_cache
 
+# The defaults are not GPT-2, which is irrelevant for us.
 @dataclass
 class GPTConfig:
     block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    vocab_size: int = 50304
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
     dropout: float = 0.0
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    bias: bool = True
     num_token_types: int = len(ETokenTypes)
 
+# Helper for batch sampling. Needs to be outside any class due to python forking rules.
 def batched_multiGPU_worker(device_id, model_config, model_state_dict, starters_chunk, max_new_tokens, temperature, top_k, batch_size, return_queue):
     torch.cuda.set_device(device_id)
     device = torch.device(f'cuda:{device_id}')

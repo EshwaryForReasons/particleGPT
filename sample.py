@@ -138,7 +138,7 @@ if __name__ == "__main__":
     
     test_data = np.memmap(test_bin_filename, dtype=np.uint16, mode='r')
     test_data = test_data.reshape(-1, max_sequence_len)
-    sampling_starters = [event[:8] for event in test_data]
+    sampling_starters = [event[:5] for event in test_data]
         
     pLogging.info(logger_idx, 'Generating samples.')
     

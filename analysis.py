@@ -93,183 +93,13 @@ class plotting:
     """
     
     # Colors in the order they will be used for overlapping graphs.
-    colors = ['blue', 'orange', 'purple', 'green', 'red']
+    colors = ['blue', 'orange', 'purple', 'green', 'red', 'yellow', 'brown', 'pink', 'gray', 'cyan', 'magenta']
     default_figsize = (21, 6)
     default_dpi = 300
     distributions_per_row = 3
     
     columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     
-    """
-    Generic plotting functions.
-    """
-    
-    @staticmethod
-    def set_labels(x_label, y_label, in_fig=None):
-        """
-        Sets the x and y labels for the current plot.
-        """
-        if in_fig is None:
-            plt.xlabel(x_label)
-            plt.ylabel(y_label)
-        else:
-            in_fig.supxlabel(x_label)
-            in_fig.supylabel(y_label) 
-    
-    @staticmethod
-    def plot_hist(all_data, n_bins=10, range_min=None, range_max=None, label='unspecified', color=None, normalized=False, use_log=False, out_file=None, in_ax=None):
-        """Generates distributions (histogram) for the provided data. This works for any "continuous" data, i.e.
-            energy, momentum, etc. distributions. This will not work for "discrete" data, like pdgid distributions.
-
-        Args:
-            all_data (array_like or array of array_like): data to plot distributions for
-            min (int, optional): Min value for the histogram, use min(data) if not provided. Defaults to None.
-            max (int, optional): Max value for the histogram, use max(data) if not provided. Defaults to None.
-            n_bins (int, optional): Number of bins for histogram. Defaults to 10.
-        """
-        
-        color = color or plotting.colors[0]
-        if range_min == None:
-            range_min = np.min(all_data)
-        if range_max == None:
-            range_max = np.max(all_data)
-        
-        weights = None
-        if normalized:
-            weights = np.ones_like(all_data) / len(all_data)
-        
-        fig = None
-        ax = in_ax
-        if not in_ax:
-            fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        if use_log:
-            ax.set_yscale('log')
-        # ax.set_xlim([range_min, range_max])
-        ax.hist(all_data, bins=n_bins, weights=weights, range=(range_min, range_max), alpha=0.7, color=color, label=label)
-        ax.legend()
-        plt.grid(axis="y", linestyle="--", alpha=0.7)
-        
-        if not in_ax:
-            plt.tight_layout()
-            if out_file != None:
-                plt.savefig(out_file, bbox_inches='tight')
-            plt.show()
-        
-        return fig, ax
-    
-    @staticmethod
-    def plot_bar(freq_dist, x_ticks=None, label="unspecified", color=None, normalized=False, use_log=False, out_file=None, in_ax=None):
-        """Generates distributions (histogram) for the provided data. This works for any "discrete" data, i.e.
-            pdgid distributions. This will not work for "continuous" data, like energy or momentum distributions.
-
-        Args:
-            all_freq_dists (array_like or Counter): data to plot distributions for
-            x_ticks (array_like, optional): x-axis labels for the histogram. If freq_dist is a Counter object, item names will
-                be extracted from that. Defaults to None.
-        """
-        
-        if color is None:
-            color = plotting.colors[0]
-        
-        # freq_dist can be a list, or a Counter object.
-        if normalized and isinstance(freq_dist, list):
-            freq_dist = [count / sum(freq_dist) for count in freq_dist]
-        elif normalized and isinstance(freq_dist, Counter):
-            freq_dist = {item: count / sum(freq_dist.values()) for item, count in freq_dist.items()}
-        
-        x = range(len(freq_dist))
-        
-        fig = None
-        ax = in_ax
-        if not in_ax:
-            fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        if use_log:
-            ax.set_yscale('log')
-        ax.bar(x, freq_dist, label=label, color=color, alpha=0.7)
-        if x_ticks:
-            ax.set_xticks(x, x_ticks, rotation=45, ha='right')
-        elif isinstance(freq_dist, Counter):
-            ax.set_xticks(x, list(freq_dist.keys()), rotation=45, ha='right')
-        ax.legend()
-        
-        if not in_ax:
-            plt.tight_layout()
-            if out_file != None:
-                plt.savefig(out_file, bbox_inches='tight')
-            plt.show()
-    
-        return fig, ax
-    
-    @staticmethod
-    def plot_line(x, y, label='unspecified', color=None, type='solid', y_lim=None, use_log=False, out_file=None, in_ax=None):
-        """Generates line graph of the provided data. This works for any "discrete" data, i.e.
-            training data (iter vs. val loss). This will not work for "continuous" data, like energy or momentum distributions.
-
-        Args:
-            all_data (array_like or array of array_like): data to plot distributions for. Each data should have format [[label, x, y, color_override, type_override], ...]
-                which should an x vs. y array_like.
-            all_labels (array_like or array of array_like): labels for the data to plot distributions for.
-        """
-        
-        if color is None:
-            color = plotting.colors[0]
-        
-        fig = None
-        ax = in_ax
-        # Padding in_plt only makes since if the figure already exists.
-        if not in_ax:
-            fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        if use_log:
-            ax.set_yscale('log')
-        if y_lim:
-            ax.set_ylim(y_lim)
-        ax.plot(x, y, label=label, color=color, linestyle=type, linewidth=0.5)
-        ax.legend()
-
-        # If a axis object was provided, we assume we are constructing a larger figure and do not show or save yet.
-        if not in_ax:
-            plt.tight_layout()
-            if out_file != None:
-                plt.savefig(out_file, bbox_inches='tight')
-            plt.show()
-        
-        return fig, ax
-
-    @staticmethod
-    def plot_scat(x, y, label='unspecified', color=None, type='o', y_lim=None, use_log=False, out_file=None, in_ax=None):
-        """Generates a scatter plot of the provided data. This works for any "discrete" data, i.e.
-            training data (iter vs. val loss). This will not work for "continuous" data, like energy or momentum distributions.
-
-        Args:
-            all_data (array_like or array of array_like): data to plot distributions for. Each data should have format [[label, x, y], ...]
-                which should an x vs. y array_like.
-            all_labels (array_like or array of array_like): labels for the data to plot distributions for.
-        """
-        
-        if color is None:
-            color = plotting.colors[0]
-        
-        fig = None
-        ax = in_ax
-        # Padding in_plt only makes since if the figure already exists.
-        if not in_ax:
-            fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        if use_log:
-            ax.set_yscale('log')
-        if y_lim:
-            ax.set_ylim(y_lim)
-        ax.scatter(x, y, label=label, color=color, marker=type, s=50)
-        ax.legend()
-
-        # If a plt object was provided, we assume we are constructing a larger figure and do not show or save yet.
-        if not in_ax:
-            ax.tight_layout()
-            if out_file != None:
-                ax.savefig(out_file, bbox_inches='tight')
-            ax.show()
-        
-        return fig, ax
-
     """
     Plotting training runs and distributions of leading particles.
     """
@@ -283,19 +113,31 @@ class plotting:
         if not isinstance(model_names, list):
             model_names = [model_names]
         
+        # Set up plot
         fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        plotting.set_labels("Iteration", "Loss", in_fig=fig)
+        fig.suptitle(f'Training Progress for {model_names}')
+        fig.supxlabel("Iteration")
+        fig.supylabel("Loss")
+        if y_lim is not None:
+            ax.set_ylim(y_lim)
+        if use_log:
+            ax.set_yscale('log')
+            
         for idx, model_name in enumerate(model_names):
+            # Parse model data
             model_data = tables.get_all_data(model_name)
             min_val_row = model_data.checkpointed_df.loc[model_data.checkpointed_df['val_loss'].idxmin()]
-            
-            plotting.plot_line(model_data.running_df['iter'], model_data.running_df['train_loss'], label=f'Training Loss ({model_name})', color=plotting.colors[idx], type='solid', use_log=use_log, y_lim=y_lim, in_ax=ax)
-            plotting.plot_line(model_data.running_df['iter'], model_data.running_df['val_loss'], label=f'Validation Loss ({model_name})', color=plotting.colors[idx], type='dashed', use_log=use_log, y_lim=y_lim, in_ax=ax)
-            plotting.plot_scat(min_val_row['iter'], min_val_row['train_loss'], label=f'Min Saved Train Loss ({model_name}; {min_val_row["train_loss"]:.4f})', color=plotting.colors[idx], type='s', use_log=use_log, y_lim=y_lim, in_ax=ax)
-            plotting.plot_scat(min_val_row['iter'], min_val_row['val_loss'], label=f'Min Saved Val Loss ({model_name}; {min_val_row["val_loss"]:.4f})', color=plotting.colors[idx], type='o', use_log=use_log, y_lim=y_lim, in_ax=ax)
             final_row = model_data.running_df.iloc[-1]
+            
+            # Do plot
+            ax.plot(model_data.running_df['iter'], model_data.running_df['train_loss'], label=f'Training Loss ({model_name})', color=plotting.colors[idx], linestyle='solid', linewidth=0.5)
+            ax.plot(model_data.running_df['iter'], model_data.running_df['val_loss'], label=f'Validation Loss ({model_name})', color=plotting.colors[idx], linestyle='dashed', linewidth=0.5)
+            ax.scatter(min_val_row['iter'], min_val_row['train_loss'], label=f'Min Saved Train Loss ({model_name}; {min_val_row["train_loss"]:.4f})', color=plotting.colors[idx], marker='s')
+            ax.scatter(min_val_row['iter'], min_val_row['val_loss'], label=f'Min Saved Val Loss ({model_name}; {min_val_row["val_loss"]:.4f})', color=plotting.colors[idx], marker='o')
             ax.annotate(model_name, xy=(final_row['iter'], final_row['val_loss']), xytext=(final_row['iter'] * 1.005, final_row['val_loss'] - 0.02), fontsize=9, color=plotting.colors[idx])
-        fig.suptitle(f"Training progress for {model_names}")
+
+        # Final touches and show and/or save
+        fig.legend(loc='center left', bbox_to_anchor=(1.02, 0.5))
         fig.tight_layout()
         if out_file != None:
             fig.savefig(out_file, bbox_inches='tight')
@@ -324,7 +166,7 @@ class plotting:
         
         columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
         bin_settings = {
-            "num_particles": { "min": 0,                             "max": 50,                            "bins": 50 },
+            "num_particles": { "min": -0.5,                             "max": 50.5,                            "bins": 51 },
             "e":             { "min": 0,                             "max": 35000,                         "bins": 350 },
             "px":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
             "py":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
@@ -347,18 +189,25 @@ class plotting:
         elif column_name in ['eta', 'theta', 'phi']:
             unit = '(angular)'
         
+        # Set up plot
         num_horizontal, num_vertical = min(len(model_names), plotting.distributions_per_row), (math.ceil(1 / plotting.distributions_per_row))
         fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
         fig.suptitle(f'{column_name} Distribution for Leading Particles')
-        plotting.set_labels(f'{column_name} {unit}', 'Frequency', in_fig=fig)
+        fig.supxlabel(f'{column_name} {unit}')
+        fig.supylabel('Frequency')
+        
         for ax, model_name in zip([axes], model_names):
+            # Parse data
             bin_settings, real_df, sampled_df = plotting._get_common_data(model_name)
-            range_min = bin_settings[column_name]['min']
-            range_max = bin_settings[column_name]['max']
+            range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
             n_bins = bin_settings[column_name]['bins']
             
-            plotting.plot_hist(real_df[column_name], range_min=range_min, range_max=range_max, n_bins=n_bins, normalized=normalized, label=f'Input ({model_name})', color=plotting.colors[0], use_log=use_log, in_ax=ax)
-            plotting.plot_hist(sampled_df[column_name], range_min=range_min, range_max=range_max, n_bins=n_bins, normalized=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], use_log=use_log, in_ax=ax)
+            # Do plot
+            ax.hist(real_df[column_name], range=range, bins=n_bins, density=normalized, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7)
+            ax.hist(sampled_df[column_name], range=range, bins=n_bins, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
+            
+        # Finishing touches and show and/or save
+        fig.legend()
         fig.tight_layout()
         if out_file != None:
             fig.savefig(out_file, bbox_inches='tight')
@@ -372,7 +221,6 @@ class plotting:
         
         _, real_df, sampled_df = plotting._get_common_data(model_name)
         real_pdgids, sampled_pdgids = real_df['pdgid'], sampled_df['pdgid']
-        sampled_pdgids = sampled_pdgids
         real_freq, sampled_freq = Counter(real_pdgids), Counter(sampled_pdgids)
         
         # Union of all particle labels from both histograms
@@ -381,16 +229,28 @@ class plotting:
         sorted_particles = sorted(all_particles, key=lambda p: real_freq[p], reverse=True)
         # Build aligned values for both histograms
         real_values = [real_freq.get(p, 0) for p in sorted_particles]
-        sampeld_values = [sampled_freq.get(p, 0) for p in sorted_particles]
+        sampled_values = [sampled_freq.get(p, 0) for p in sorted_particles]
         
-        fig, ax = plt.subplots(figsize=(21, 8), dpi=plotting.default_dpi)
-        fig.suptitle("Normalized Particle Type Distributions")
-        plotting.set_labels("Particle Type", "Frequency", in_fig=fig)
-        plotting.plot_bar(real_values, label=f'Input ({model_name})', color=plotting.colors[0], normalized=normalized, use_log=use_log, in_ax=ax)
-        plotting.plot_bar(sampeld_values, label=f'Sampled ({model_name})', color=plotting.colors[1], normalized=normalized, use_log=use_log, in_ax=ax)
-        x = range(len(sorted_particles))
-        ax.set_xticks(x, sorted_particles, rotation=45, ha='right')
-        ax.legend()
+        # Set up plot
+        fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
+        fig.suptitle('Normalized Particle Type Distributions')
+        fig.supxlabel('Particle Type')
+        fig.supylabel('Frequency')
+        if use_log:
+            ax.set_yscale('log')
+        if normalized:
+            total_real = sum(real_values)
+            total_sampled = sum(sampled_values)
+            real_values = [v / total_real for v in real_values]
+            sampled_values = [v / total_sampled for v in sampled_values]
+        
+        # Do plot
+        ax.bar(range(len(sorted_particles)), real_values, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7, width=0.9, align='center')
+        ax.bar(range(len(sorted_particles)), sampled_values, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7, width=0.9, align='center')
+        ax.set_xticks(range(len(sorted_particles)), sorted_particles, rotation=45, ha='right')
+        
+        # Finishing touches and show and/or save
+        fig.legend()
         fig.tight_layout()
         if out_file != None:
             fig.savefig(out_file, bbox_inches='tight')
@@ -424,14 +284,26 @@ class plotting:
         real_values = [real_freq.get(p, 0) for p in sorted_particles]
         sampled_values = [sampled_freq.get(p, 0) for p in sorted_particles]
         
-        fig, ax = plt.subplots(figsize=(21, 8), dpi=plotting.default_dpi)
-        fig.suptitle("Normalized Particle Type Distributions")
-        plotting.set_labels("Particle Type", "Frequency", in_fig=fig)
-        plotting.plot_bar(real_values, label=f'Input ({model_name})', color=plotting.colors[0], normalized=normalized, use_log=use_log, in_ax=ax)
-        plotting.plot_bar(sampled_values, label=f'Sampled ({model_name})', color=plotting.colors[1], normalized=normalized, use_log=use_log, in_ax=ax)
-        x = range(len(sorted_particles))
-        ax.set_xticks(x, sorted_particles, rotation=45, ha='right')
-        ax.legend()
+        # Set up plot
+        fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
+        fig.suptitle('Normalized Particle Type Distributions')
+        fig.supxlabel('Particle Type')
+        fig.supylabel('Frequency')
+        if use_log:
+            ax.set_yscale('log')
+        if normalized:
+            total_real = sum(real_values)
+            total_sampled = sum(sampled_values)
+            real_values = [v / total_real for v in real_values]
+            sampled_values = [v / total_sampled for v in sampled_values]
+        
+        # Do plot
+        ax.bar(range(len(sorted_particles)), real_values, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7, width=0.9, align='center')
+        ax.bar(range(len(sorted_particles)), sampled_values, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7, width=0.9, align='center')
+        ax.set_xticks(range(len(sorted_particles)), sorted_particles, rotation=45, ha='right')
+        
+        # Finishing touches and show and/or save
+        fig.legend()
         fig.tight_layout()
         if out_file != None:
             fig.savefig(out_file, bbox_inches='tight')
@@ -579,6 +451,6 @@ class tables:
     @staticmethod
     def get_default_df(model_names):
         columns = tables.model_all_columns
-        model_data_list = [row for name in model_names if (row := tables.get_all_data(name)) is not None]
+        model_data_list = [row for name in model_names if (row := vars(tables.get_all_data(name))) is not None]
         model_data_df = pd.DataFrame(model_data_list, columns=columns)
         return model_data_df

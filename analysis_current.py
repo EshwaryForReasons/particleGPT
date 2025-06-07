@@ -248,12 +248,12 @@ class Analyzer:
             "mmd": mmd,
             "kpd_median": kpd_median,
             "fpd_value": fpd_value,
-            "fpd_error": fpd_error,
             "w1m_score": w1m_score,
             "w1p_avg_eta": w1p_avg_eta,
             "w1p_avg_phi": w1p_avg_phi,
             "w1p_avg_pt": w1p_avg_pt,
             "kpd_error": kpd_error,
+            "fpd_error": fpd_error,
             "w1m_score_std": w1m_score_std,
             "w1p_avg_eta_std": w1p_avg_eta_std,
             "w1p_avg_phi_std": w1p_avg_phi_std,
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         # Run the analysis
         dataset_analyzer = Analyzer(model_name, preparation_name)
         dataset_analyzer.generate_distributions()
-        # dataset_analyzer.calculate_metrics()
+        dataset_analyzer.calculate_metrics()
     
     print('Distributions and metrics generated successfully.')
     

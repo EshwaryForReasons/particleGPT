@@ -44,6 +44,7 @@ class TrainingConfiguration:
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
+    lr_scheduler: str = "cosine_annealing_with_warmup" # cosine_annealing_with_warmup, cosine_annealing_with_warm_restarts
 
     # learning rate decay
     decay_lr: bool = True
