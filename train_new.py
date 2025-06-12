@@ -65,6 +65,24 @@ meta_vocab_size = meta['vocab_size']
 # If block_size is not set, then use context_particles to set it
 if conf.training.block_size == -1 and conf.training.context_events != -1:
     conf.training.block_size = conf.training.context_events * meta['max_sequence_length']
+    
+def setup_ddp():
+    global master_process, seed_offset, ddp_rank, ddp_local_rank, ddp_world_size
+    
+    init_process_group(backend=conf.training.backend)
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    conf.training.device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(conf.training.device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+    # if not master_process:
+    #     logger_idx = -1 # disable logging for non-master processes
+    seed_offset = ddp_rank # each process gets a different seed
+    # world_size number of processes will be training simultaneously, so we can scale
+    # down the desired gradient accumulation iterations per process proportionally
+    assert conf.training.gradient_accumulation_steps % ddp_world_size == 0
+    conf.training.gradient_accumulation_steps //= ddp_world_size
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -101,10 +119,9 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 class pDataset(Dataset):
-    def __init__(self, split):
-        assert split in ['train', 'val'], "Split must be either 'train' or 'val'"
-        self.split = split
-        self.data_filepath = data_dir / ('train.bin' if split == 'train' else 'val.bin')
+    def __init__(self, dataset_filepath):
+        self.data_filepath = dataset_filepath
+        assert dataset_filepath.exists(), f"Dataset file {dataset_filepath} does not exist!"
         data = np.memmap(self.data_filepath, dtype=np.uint16, mode='r')
         assert len(data) % conf.training.block_size == 0, "Data length is not a multiple of block_size!"
         self.num_samples = len(data) // conf.training.block_size
@@ -133,18 +150,32 @@ class pDataset(Dataset):
     def __len__(self):
         return self.num_samples
 
-train_dataset = pDataset('train')
-val_dataset = pDataset('val')
-train_dataloader = DataLoader(train_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(train_dataset) if ddp else None)
-# For loss estimation
-le_train_dataloader = DataLoader(train_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(train_dataset) if ddp else None)
-val_dataloader = DataLoader(val_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(val_dataset) if ddp else None)
+train_dataset = pDataset(data_dir / 'train.bin')
+val_dataset = pDataset(data_dir / 'val.bin')
+# Data loader used for training.
+train_dataloader = DataLoader(
+    train_dataset,
+    batch_size=conf.training.batch_size,
+    shuffle=False,
+    drop_last=True,
+    sampler=DistributedSampler(train_dataset) if ddp else None
+)
+# Data loaders for loss estimations so the training loaders remain unaffected.
+le_train_dataloader = DataLoader(
+    train_dataset,
+    batch_size=conf.training.batch_size,
+    shuffle=False,
+    drop_last=True,
+    sampler=DistributedSampler(train_dataset) if ddp else None
+)
+le_val_dataloader = DataLoader(
+    val_dataset,
+    batch_size=conf.training.batch_size,
+    shuffle=False,
+    drop_last=True,
+    sampler=DistributedSampler(val_dataset) if ddp else None
+)
 
-# init these up here, can override if init_from='resume' (i.e. from a checkpoint)
-iter_num = 0
-best_val_loss = 1e9
-num_failed_checkpoint_checks = 0
-    
 pLogging.info(logger_idx, "Training configuration", {
     "config_file_path": conf.generic.config_file_path,
     "preparation": conf.generic.preparation_name,
@@ -252,187 +283,196 @@ if conf.training.compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
-# helps estimate an arbitrarily accurate loss over either split using many batches
-@torch.no_grad()
-def estimate_loss():
-    out = {}
-    model.eval()
-    for split, dataloader in zip(['train', 'val'], [le_train_dataloader, val_dataloader]):
-        data_loader_iter = iter(dataloader)
-        losses = torch.zeros(conf.training.eval_iters)
-        for k in range(conf.training.eval_iters):
-            x, y = next(data_loader_iter)
-            with ctx:
-                logits, loss, _ = model(x, y)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
-    model.train()
-    return out
 
-# learning rate decay scheduler
-def get_lr(it):
-    if conf.training.lr_scheduler == 'cosine_annealing_with_warmup':
-        # 1) linear warmup for warmup_iters steps
-        if it < conf.training.warmup_iters:
-            return conf.training.learning_rate * it / conf.training.warmup_iters
-        # 2) if it > lr_decay_iters, return min learning rate
-        if it >= conf.training.lr_decay_iters:
-            return conf.training.min_lr
-        # 3) in between, use cosine decay down to min learning rate
-        # Edge case: if lr_decay_iters == warmup_iters we get a division by zero error
-        # I have patched this so far changing the second if to it >= lr_decay_iters (opposed so it < lr_decay_iters)
-        # That not being the case was probably a bug anyway, but I'll keep track of notable changes to that.
-        decay_ratio = (it - conf.training.warmup_iters) / (conf.training.lr_decay_iters - conf.training.warmup_iters)
-        assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-        return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
-    elif conf.training.lr_scheduler == 'cosine_annealing_with_warm_restarts':
-        pass
 
 # training loop
 pLogging.info(logger_idx, f'Iterations per epoch is {conf.training.iterations_per_epoch}')
 pLogging.info(logger_idx, 'iterations_per_epoch', {"iterations_per_epoch": conf.training.iterations_per_epoch})
-t0 = time.time()
-local_iter_num = 0 # number of iterations in the lifetime of this process
-trained_epochs = 0 # number of epochs trained in the lifetime of this process
+ 
 raw_model = model.module if ddp else model # unwrap DDP container if needed
-running_mfu = -1.0
 
-b_early_stop_flag = False
+class Trainer:
+    def __init__(self):
+        self.running_mfu = -1.0
+        self.t0 = time.time()
+        self.local_iter_num = 0 # number of iterations in the lifetime of this process
+        self.trained_epochs = 0 # number of epochs trained in the lifetime of this process
+        self.best_val_loss = 1e9 # best validation loss seen so far
+        self.loss = None # last loss value
+        self.iter_num = iter_num # global iteration number, shared across processes
+        self.num_failed_checkpoint_checks = 0
+        self.b_early_stop_flag = False
+        
+    @torch.no_grad()
+    def estimate_loss():
+        """
+        Estimate an arbitrarily accurate loss over either split using many batches.
+        """
+        out = {}
+        model.eval()
+        for split, dataloader in zip(['train', 'val'], [le_train_dataloader, le_val_dataloader]):
+            data_loader_iter = iter(dataloader)
+            losses = torch.zeros(conf.training.eval_iters)
+            for k in range(conf.training.eval_iters):
+                x, y = next(data_loader_iter)
+                with ctx:
+                    logits, loss, _ = model(x, y)
+                losses[k] = loss.item()
+            out[split] = losses.mean()
+        model.train()
+        return out
 
-def log_training_progress():
-    global t0
-    global running_mfu
-    
-    if iter_num % conf.training.log_interval != 0 or not master_process:
-        return
-    
-    t1 = time.time()
-    dt = t1 - t0
-    t0 = t1
-    # Get loss as float. Note: this is a CPU-GPU sync point
-    # Scale up to undo the division in loss from the training loop, approximating the true
-    # total loss (exact would have been a sum)
-    lossf = loss.item() * conf.training.gradient_accumulation_steps
-    # Let the training loop settle a bit before estimating MFU
-    if local_iter_num >= 5:
-        mfu = raw_model.estimate_mfu(conf.training.batch_size * conf.training.gradient_accumulation_steps, dt)
-        running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-    
-    losses = estimate_loss()
-    pLogging.info(logger_idx, "Training progress", {
-        "iter": iter_num,
-        "loss": lossf,
-        "train_loss": losses['train'].item(),
-        "val_loss": losses['val'].item(),
-        "time": dt * 1000,
-        "mfu": running_mfu
-    })
+    def get_lr(it):
+        if conf.training.lr_scheduler == 'cosine_annealing_with_warmup':
+            # 1) linear warmup for warmup_iters steps
+            if it < conf.training.warmup_iters:
+                return conf.training.learning_rate * it / conf.training.warmup_iters
+            # 2) if it > lr_decay_iters, return min learning rate
+            if it >= conf.training.lr_decay_iters:
+                return conf.training.min_lr
+            # 3) in between, use cosine decay down to min learning rate
+            # Edge case: if lr_decay_iters == warmup_iters we get a division by zero error
+            # I have patched this so far changing the second if to it >= lr_decay_iters (opposed so it < lr_decay_iters)
+            # That not being the case was probably a bug anyway, but I'll keep track of notable changes to that.
+            decay_ratio = (it - conf.training.warmup_iters) / (conf.training.lr_decay_iters - conf.training.warmup_iters)
+            assert 0 <= decay_ratio <= 1
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
+        elif conf.training.lr_scheduler == 'cosine_annealing_with_warm_restarts':
+            pass
+        
+    def log_training_progress(self):
+        # Ensure logging is restricted to the master process
+        if not master_process:
+            return
+        
+        t1 = time.time()
+        dt = t1 - self.t0
+        self.t0 = t1
+        # Get loss as float. Note: this is a CPU-GPU sync point
+        # Scale up to undo the division in loss from the training loop, approximating the true
+        # total loss (exact would have been a sum)
+        lossf = self.loss.item() * conf.training.gradient_accumulation_steps
+        # Let the training loop settle a bit before estimating MFU
+        if self.local_iter_num >= 5:
+            mfu = raw_model.estimate_mfu(conf.training.batch_size * conf.training.gradient_accumulation_steps, dt)
+            self.running_mfu = mfu if self.running_mfu == -1.0 else 0.9 * self.running_mfu + 0.1 * mfu
+        
+        losses = self.estimate_loss()
+        pLogging.info(logger_idx, "Training progress", {
+            "iter": iter_num,
+            "loss": lossf,
+            "train_loss": losses['train'].item(),
+            "val_loss": losses['val'].item(),
+            "time": dt * 1000,
+            "mfu": self.running_mfu
+        })
 
-def save_checkpoint():
-    global b_early_stop_flag
-    global best_val_loss
-    global num_failed_checkpoint_checks
-    
-    # Evaluate the loss on train/val sets and write checkpoints
-    # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
-    # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
-    if iter_num % conf.training.eval_interval != 0 or not master_process:
-        return
-    
-    b_save_best = False
-    losses = estimate_loss()
-    if losses['val'] < best_val_loss:
-        b_save_best = True
-        best_val_loss = losses['val']
-    
-    checkpoint = {
-        'model': raw_model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'model_args': model_args,
-        'iter_num': iter_num,
-        'best_val_loss': best_val_loss,
-        'config': config
-    }
-    
-    pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {
-        "step": iter_num,
-        "train_loss": losses['train'].item(),
-        "val_loss": losses['val'].item()
-    })
-    
-    if b_save_best and iter_num > 0:
-        num_failed_checkpoint_checks = 0
-        pLogging.info(logger_idx, f"Training progress: saving best checkpoint @ val_loss {losses['val'].item()}")
-        torch.save(checkpoint, best_ckpt_path)
-    else:
-        # On the max_num_failed_checkpoint_checks-th failure, we end training
-        num_failed_checkpoint_checks += 1
-        if num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:
-            b_early_stop_flag = True
-    
-    # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
-    # without having to redo iterations.
-    pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
-    torch.save(checkpoint, running_ckpt_path)
-
-# One run of this loop is essentially a micro step
-for num_micro_steps, (X, Y) in enumerate(train_dataloader):
-    # Termination conditions
-    if b_early_stop_flag or iter_num > conf.training.max_iters or (iter_num == 0 and conf.training.eval_only):
-        break
-    
-    # Get learning rate for this iteration
-    lr = get_lr(iter_num) if conf.training.decay_lr else conf.training.learning_rate
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-    
-    # ----------------------------------------------------------------------
-    # Perform training.
-    # ----------------------------------------------------------------------
-    
-    b_grad_accum_steps_completed = (num_micro_steps + 1) % conf.training.gradient_accumulation_steps == 0
-    
-    # in DDP training we only need to sync gradients at the last micro step.
-    # the official way to do this is with model.no_sync() context manager, but
-    # I really dislike that this bloats the code and forces us to repeat code
-    # looking at the source of that context manager, it just toggles this variable
-    if ddp:
-        model.require_backward_grad_sync = b_grad_accum_steps_completed
-    
-    with ctx:
-        logits, loss, _ = model(X, Y)
-        # scale the loss to account for gradient accumulation
-        loss = loss / conf.training.gradient_accumulation_steps 
-    
-    # backward pass, with gradient scaling if training in fp16
-    scaler.scale(loss).backward()
-    
-    # ----------------------------------------------------------------------
-    # Update gradients and optimizer every gradient_accumulation_steps micro steps.
-    # ----------------------------------------------------------------------
-    
-    if b_grad_accum_steps_completed:
-        # clip the gradient
-        if conf.training.grad_clip != 0.0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), conf.training.grad_clip)
+    def save_checkpoint(self):
+        """
+        Evaluate the loss on train/val sets and write checkpoints
+        We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
+        This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
+        """
         
-        # step the optimizer and scaler if training in fp16
-        scaler.step(optimizer)
-        scaler.update()
+        # Ensure checkpointing is restricted to the master process
+        if not master_process:
+            return
         
-        # flush the gradients as soon as we can, no need for this memory anymore
-        optimizer.zero_grad(set_to_none=True)
+        b_save_best = False
+        losses = self.estimate_loss()
+        if losses['val'] < self.best_val_loss:
+            b_save_best = True
+            self.best_val_loss = losses['val']
         
-        if iter_num % conf.training.eval_interval == 0 and master_process:
-            save_checkpoint()
+        checkpoint = {
+            'model': raw_model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'model_args': model_args,
+            'iter_num': iter_num,
+            'best_val_loss': self.best_val_loss,
+            'config': config
+        }
         
-        if iter_num % conf.training.log_interval == 0 and master_process:
-            log_training_progress()
+        pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {
+            "step": iter_num,
+            "train_loss": losses['train'].item(),
+            "val_loss": losses['val'].item()
+        })
         
-        iter_num += 1
-        local_iter_num += 1
+        if b_save_best and iter_num > 0:
+            self.num_failed_checkpoint_checks = 0
+            pLogging.info(logger_idx, f"Training progress: saving best checkpoint @ val_loss {losses['val'].item()}")
+            torch.save(checkpoint, best_ckpt_path)
+        else:
+            # On the max_num_failed_checkpoint_checks-th failure, we end training
+            self.num_failed_checkpoint_checks += 1
+            if self.num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:
+                self.b_early_stop_flag = True
+        
+        # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
+        # without having to redo iterations.
+        pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
+        torch.save(checkpoint, running_ckpt_path)
+        
+    def do_training(self):
+        # One run of this loop is essentially a micro step
+        for num_micro_steps, (X, Y) in enumerate(train_dataloader):
+            # Termination conditions
+            if self.b_early_stop_flag or iter_num > conf.training.max_iters or (iter_num == 0 and conf.training.eval_only):
+                break
+            
+            # Get learning rate for this iteration
+            lr = self.get_lr(iter_num) if conf.training.decay_lr else conf.training.learning_rate
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+            
+            # ----------------------------------------------------------------------
+            # Perform training.
+            # ----------------------------------------------------------------------
+            
+            b_grad_accum_steps_completed = (num_micro_steps + 1) % conf.training.gradient_accumulation_steps == 0
+            
+            # in DDP training we only need to sync gradients at the last micro step.
+            # the official way to do this is with model.no_sync() context manager, but
+            # I really dislike that this bloats the code and forces us to repeat code
+            # looking at the source of that context manager, it just toggles this variable
+            if ddp:
+                model.require_backward_grad_sync = b_grad_accum_steps_completed
+            
+            with ctx:
+                logits, loss, _ = model(X, Y)
+                # scale the loss to account for gradient accumulation
+                loss = loss / conf.training.gradient_accumulation_steps 
+            
+            # backward pass, with gradient scaling if training in fp16
+            scaler.scale(loss).backward()
+            
+            # ----------------------------------------------------------------------
+            # Update gradients and optimizer every gradient_accumulation_steps micro steps.
+            # ----------------------------------------------------------------------
+            
+            if b_grad_accum_steps_completed:
+                # clip the gradient
+                if conf.training.grad_clip != 0.0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), conf.training.grad_clip)
+                
+                # step the optimizer and scaler if training in fp16
+                scaler.step(optimizer)
+                scaler.update()
+                
+                # flush the gradients as soon as we can, no need for this memory anymore
+                optimizer.zero_grad(set_to_none=True)
+                
+                if iter_num % conf.training.eval_interval == 0 and master_process:
+                    self.save_checkpoint()
+                
+                if iter_num % conf.training.log_interval == 0 and master_process:
+                    self.log_training_progress()
+                
+                iter_num += 1
+                local_iter_num += 1
 
 pLogging.info(logger_idx, "Training finished.")
 

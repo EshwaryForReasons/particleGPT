@@ -100,6 +100,7 @@ device_type = 'cuda' if 'cuda' in conf.training.device else 'cpu' # for later us
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[conf.training.dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
+
 class pDataset(Dataset):
     def __init__(self, split):
         assert split in ['train', 'val'], "Split must be either 'train' or 'val'"
@@ -108,7 +109,9 @@ class pDataset(Dataset):
         data = np.memmap(self.data_filepath, dtype=np.uint16, mode='r')
         assert len(data) % conf.training.block_size == 0, "Data length is not a multiple of block_size!"
         self.num_samples = len(data) // conf.training.block_size
-    
+        
+        
+    # Effectively get_batch
     def __getitem__(self, index):
         # We recreate np.memmap every batch to avoid a memory leak, as per
         # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
@@ -135,10 +138,84 @@ class pDataset(Dataset):
 
 train_dataset = pDataset('train')
 val_dataset = pDataset('val')
-train_dataloader = DataLoader(train_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(train_dataset) if ddp else None)
-# For loss estimation
-le_train_dataloader = DataLoader(train_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(train_dataset) if ddp else None)
-val_dataloader = DataLoader(val_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(val_dataset) if ddp else None)
+train_dataloader = DataLoader(train_dataset, batch_size=conf.training.batch_size, shuffle=True, drop_last=True, sampler=DistributedSampler(train_dataset) if ddp else None)
+val_dataloader = DataLoader(val_dataset, batch_size=conf.training.batch_size, shuffle=False, drop_last=True, sampler=DistributedSampler(train_dataset) if ddp else None)
+
+for x, y in train_dataloader:
+    break
+
+print(x.device, x.shape, y.device, y.shape)
+
+import sys; sys.exit()
+
+iter_num = 0
+local_iter_num = 0
+data_retrieval_num = 0 # used to track how many times we retrieve data from the dataloader
+# Rich man's dataloader
+def get_batch_new(split):
+    global data_retrieval_num
+    
+    # This dataloader parses the data into batches of events, which is more efficient and 
+    # respects event boundaries.
+    
+    data_filepath = data_dir / ('train.bin' if split == 'train' else 'val.bin')
+    data = np.memmap(data_filepath, dtype=np.uint16, mode='r')
+    
+    # Our data is guaranteed to be a multiple of block_size, so we can reshape it.
+    assert len(data) % conf.training.block_size == 0, "Data length is not a multiple of block_size!"
+    data = data.reshape(-1, conf.training.block_size)
+    
+    read_start = data_retrieval_num * conf.training.batch_size
+    read_end = read_start + conf.training.batch_size - 1
+    x = torch.from_numpy(data[read_start:read_end].astype(np.int64)) # shape (batch_size, block_size).
+    y = torch.roll(x.clone(), shifts=-1, dims=1) # shape (batch_size, block_size), shifted by 1.
+    y[:, -1] = 0 # 0 is our padding token and it is ignored in the loss calculations.
+    
+    data_retrieval_num += 1
+    
+    pLogging.info(logger_idx, "Batch testing log", {
+        "iter_num": iter_num,
+        "local_iter_num": local_iter_num,
+        "data_retrieval_num": data_retrieval_num,
+        "ddp_rank": ddp_rank,
+        "ddp_local_rank": ddp_local_rank,
+        "read_start": read_start,
+        "read_end": read_end,
+        "batch_size": conf.training.batch_size,
+        "block_size": conf.training.block_size
+    })
+
+    if device_type == 'cuda':
+        x, y = x.pin_memory().to(conf.training.device, non_blocking=True), y.pin_memory().to(conf.training.device, non_blocking=True)
+    else:
+        x, y = x.to(conf.training.device), y.to(conf.training.device)
+
+    return x, y
+
+# poor man's data loader
+def get_batch(split):
+    global iterations_per_epoch
+    
+    # We recreate np.memmap every batch to avoid a memory leak, as per
+    # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
+    if split == 'train':
+        data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        
+        # Calculate iterations_per_epoch
+        num_train_samples = len(data) // conf.training.block_size
+        effective_batch_size = conf.training.batch_size * conf.training.gradient_accumulation_steps * ddp_world_size
+        conf.training.iterations_per_epoch = int(num_train_samples // effective_batch_size)
+    else:
+        data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    ix = torch.randint(len(data) - conf.training.block_size, (conf.training.batch_size,))
+    x = torch.stack([torch.from_numpy((data[i:i+conf.training.block_size]).astype(np.int64)) for i in ix])
+    y = torch.stack([torch.from_numpy((data[i+1:i+1+conf.training.block_size]).astype(np.int64)) for i in ix])
+    if device_type == 'cuda':
+        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+        x, y = x.pin_memory().to(conf.training.device, non_blocking=True), y.pin_memory().to(conf.training.device, non_blocking=True)
+    else:
+        x, y = x.to(conf.training.device), y.to(conf.training.device)
+    return x, y
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -257,13 +334,12 @@ if ddp:
 def estimate_loss():
     out = {}
     model.eval()
-    for split, dataloader in zip(['train', 'val'], [le_train_dataloader, val_dataloader]):
-        data_loader_iter = iter(dataloader)
+    for split in ['train', 'val']:
         losses = torch.zeros(conf.training.eval_iters)
         for k in range(conf.training.eval_iters):
-            x, y = next(data_loader_iter)
+            X, Y = get_batch_new(split)
             with ctx:
-                logits, loss, _ = model(x, y)
+                logits, loss, _ = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -290,6 +366,7 @@ def get_lr(it):
         pass
 
 # training loop
+# X, Y = get_batch_new('train') # fetch the very first batch
 pLogging.info(logger_idx, f'Iterations per epoch is {conf.training.iterations_per_epoch}')
 pLogging.info(logger_idx, 'iterations_per_epoch', {"iterations_per_epoch": conf.training.iterations_per_epoch})
 t0 = time.time()
@@ -297,143 +374,116 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 trained_epochs = 0 # number of epochs trained in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
-
-b_early_stop_flag = False
-
-def log_training_progress():
-    global t0
-    global running_mfu
-    
-    if iter_num % conf.training.log_interval != 0 or not master_process:
-        return
-    
-    t1 = time.time()
-    dt = t1 - t0
-    t0 = t1
-    # Get loss as float. Note: this is a CPU-GPU sync point
-    # Scale up to undo the division in loss from the training loop, approximating the true
-    # total loss (exact would have been a sum)
-    lossf = loss.item() * conf.training.gradient_accumulation_steps
-    # Let the training loop settle a bit before estimating MFU
-    if local_iter_num >= 5:
-        mfu = raw_model.estimate_mfu(conf.training.batch_size * conf.training.gradient_accumulation_steps, dt)
-        running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-    
-    losses = estimate_loss()
-    pLogging.info(logger_idx, "Training progress", {
-        "iter": iter_num,
-        "loss": lossf,
-        "train_loss": losses['train'].item(),
-        "val_loss": losses['val'].item(),
-        "time": dt * 1000,
-        "mfu": running_mfu
-    })
-
-def save_checkpoint():
-    global b_early_stop_flag
-    global best_val_loss
-    global num_failed_checkpoint_checks
-    
-    # Evaluate the loss on train/val sets and write checkpoints
-    # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
-    # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
-    if iter_num % conf.training.eval_interval != 0 or not master_process:
-        return
-    
-    b_save_best = False
-    losses = estimate_loss()
-    if losses['val'] < best_val_loss:
-        b_save_best = True
-        best_val_loss = losses['val']
-    
-    checkpoint = {
-        'model': raw_model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'model_args': model_args,
-        'iter_num': iter_num,
-        'best_val_loss': best_val_loss,
-        'config': config
-    }
-    
-    pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {
-        "step": iter_num,
-        "train_loss": losses['train'].item(),
-        "val_loss": losses['val'].item()
-    })
-    
-    if b_save_best and iter_num > 0:
-        num_failed_checkpoint_checks = 0
-        pLogging.info(logger_idx, f"Training progress: saving best checkpoint @ val_loss {losses['val'].item()}")
-        torch.save(checkpoint, best_ckpt_path)
-    else:
-        # On the max_num_failed_checkpoint_checks-th failure, we end training
-        num_failed_checkpoint_checks += 1
-        if num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:
-            b_early_stop_flag = True
-    
-    # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
-    # without having to redo iterations.
-    pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
-    torch.save(checkpoint, running_ckpt_path)
-
-# One run of this loop is essentially a micro step
-for num_micro_steps, (X, Y) in enumerate(train_dataloader):
-    # Termination conditions
-    if b_early_stop_flag or iter_num > conf.training.max_iters or (iter_num == 0 and conf.training.eval_only):
-        break
-    
-    # Get learning rate for this iteration
+# while True:
+for X, Y in train_dataloader:
+    # Determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if conf.training.decay_lr else conf.training.learning_rate
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-    
-    # ----------------------------------------------------------------------
-    # Perform training.
-    # ----------------------------------------------------------------------
-    
-    b_grad_accum_steps_completed = (num_micro_steps + 1) % conf.training.gradient_accumulation_steps == 0
-    
-    # in DDP training we only need to sync gradients at the last micro step.
-    # the official way to do this is with model.no_sync() context manager, but
-    # I really dislike that this bloats the code and forces us to repeat code
-    # looking at the source of that context manager, it just toggles this variable
-    if ddp:
-        model.require_backward_grad_sync = b_grad_accum_steps_completed
-    
-    with ctx:
-        logits, loss, _ = model(X, Y)
-        # scale the loss to account for gradient accumulation
-        loss = loss / conf.training.gradient_accumulation_steps 
-    
-    # backward pass, with gradient scaling if training in fp16
-    scaler.scale(loss).backward()
-    
-    # ----------------------------------------------------------------------
-    # Update gradients and optimizer every gradient_accumulation_steps micro steps.
-    # ----------------------------------------------------------------------
-    
-    if b_grad_accum_steps_completed:
-        # clip the gradient
-        if conf.training.grad_clip != 0.0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), conf.training.grad_clip)
-        
-        # step the optimizer and scaler if training in fp16
-        scaler.step(optimizer)
-        scaler.update()
-        
-        # flush the gradients as soon as we can, no need for this memory anymore
-        optimizer.zero_grad(set_to_none=True)
-        
-        if iter_num % conf.training.eval_interval == 0 and master_process:
-            save_checkpoint()
-        
-        if iter_num % conf.training.log_interval == 0 and master_process:
-            log_training_progress()
-        
-        iter_num += 1
-        local_iter_num += 1
 
+    # Evaluate the loss on train/val sets and write checkpoints
+    # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
+    # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
+    if iter_num % conf.training.eval_interval == 0 and master_process:
+        checkpoint = {
+            'model': raw_model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'model_args': model_args,
+            'iter_num': iter_num,
+            'best_val_loss': best_val_loss,
+            'config': config,
+        }
+        losses = estimate_loss()
+        pLogging.info(logger_idx, "Training progress: checking checkpoint conditions", {
+            "step": iter_num,
+            "train_loss": losses['train'].item(),
+            "val_loss": losses['val'].item()
+        })
+        
+        if losses['val'] < best_val_loss:
+            num_failed_checkpoint_checks = 0
+            best_val_loss = losses['val']
+            if iter_num > 0:
+                checkpoint = {
+                    'model': raw_model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'model_args': model_args,
+                    'iter_num': iter_num,
+                    'best_val_loss': best_val_loss,
+                    'config': config,
+                }
+                pLogging.info(logger_idx, f"Training progress: saving best checkpoint @ val_loss {losses['val'].item()}")
+                torch.save(checkpoint, best_ckpt_path)
+        else:
+            # On the max_num_failed_checkpoint_checks failure, we end training
+            num_failed_checkpoint_checks += 1
+            if num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:
+                break
+        
+        pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
+        torch.save(checkpoint, running_ckpt_path)
+
+    if iter_num == 0 and conf.training.eval_only:
+        break
+
+    # forward backward update, with optional gradient accumulation to simulate larger batch size
+    # and using the GradScaler if data type is float16
+    for micro_step in range(conf.training.gradient_accumulation_steps):
+        if ddp:
+            # in DDP training we only need to sync gradients at the last micro step.
+            # the official way to do this is with model.no_sync() context manager, but
+            # I really dislike that this bloats the code and forces us to repeat code
+            # looking at the source of that context manager, it just toggles this variable
+            model.require_backward_grad_sync = (micro_step == conf.training.gradient_accumulation_steps - 1)
+        with ctx:
+            logits, loss, _ = model(X, Y)
+            loss = loss / conf.training.gradient_accumulation_steps # scale the loss to account for gradient accumulation
+        # immediately async prefetch next batch while model is doing the forward pass on the GPU
+        X, Y = get_batch_new('train')
+        # backward pass, with gradient scaling if training in fp16
+        scaler.scale(loss).backward()
+    # clip the gradient
+    if conf.training.grad_clip != 0.0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), conf.training.grad_clip)
+    # step the optimizer and scaler if training in fp16
+    scaler.step(optimizer)
+    scaler.update()
+    # flush the gradients as soon as we can, no need for this memory anymore
+    optimizer.zero_grad(set_to_none=True)
+
+    if iter_num % conf.training.log_interval == 0 and master_process:
+        t1 = time.time()
+        dt = t1 - t0
+        t0 = t1
+        # Get loss as float. Note: this is a CPU-GPU sync point
+        # Scale up to undo the division above, approximating the true total loss (exact would have been a sum)
+        lossf = loss.item() * conf.training.gradient_accumulation_steps
+        if local_iter_num >= 5: # Let the training loop settle a bit
+            mfu = raw_model.estimate_mfu(conf.training.batch_size * conf.training.gradient_accumulation_steps, dt)
+            running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+            
+        losses = estimate_loss()
+        pLogging.info(logger_idx, "Training progress", {
+            "iter": iter_num,
+            "loss": lossf,
+            "train_loss": losses['train'].item(),
+            "val_loss": losses['val'].item(),
+            "time": dt * 1000,
+            "mfu": running_mfu
+        })
+        
+    iter_num += 1
+    local_iter_num += 1
+    
+    # if iter_num % conf.training.iterations_per_epoch == 0:
+    #     trained_epochs += 1
+    #     pLogging.info(logger_idx, f"Training progress: Finished training epoch", {"epochs_trained": trained_epochs})
+
+    # termination conditions
+    if iter_num > conf.training.max_iters:
+        break
+    
 pLogging.info(logger_idx, "Training finished.")
 
 if ddp:
