@@ -1,5 +1,23 @@
 {
-  "scheme": "paddingv2",
+  "dataset": "dataset_5.csv",
+  "tokenization": {
+    "0": "particle_start",
+    "1": "pdgid",
+    "2": "energy",
+    "3": "eta",
+    "4": "theta",
+    "5": "phi",
+    "6": "particle_end"
+  },
+  "padding": {
+    "0": "padding",
+    "1": "padding",
+    "2": "padding",
+    "3": "padding",
+    "4": "padding",
+    "5": "padding",
+    "6": "padding"
+  },
   "special_tokens": {
     "padding": 0,
     "event_start": 1,

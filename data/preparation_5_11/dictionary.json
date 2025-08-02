@@ -1,5 +1,17 @@
 {
-  "scheme": "neov2",
+  "dataset": "dataset_5.csv",
+  "tokenization": {
+    "0": "pdgid",
+    "1": "pt",
+    "2": "eta",
+    "3": "phi"
+  },
+  "padding": {
+    "0": "padding",
+    "1": "padding",
+    "2": "padding",
+    "3": "padding"
+  },
   "special_tokens": {
     "padding": 0,
     "event_start": 1,
@@ -25,17 +37,25 @@
   "eta_bin_data": {
     "min": -4,
     "max": 4.01,
-    "step_size": 0.001
+    "tokenization": "gaussian",
+    "gaussian_center": 0.8,
+    "gaussian_sigma": 1.2,
+    "n_bins": 8000
   },
   "phi_bin_data": {
     "min": -3.15,
     "max": 3.15,
-    "step_size": 0.001
+    "tokenization": "gaussian",
+    "gaussian_center": 0.8,
+    "gaussian_sigma": 1.2,
+    "n_bins": 8000
   },
   "pt_bin_data": {
     "min": 0,
     "max": 35000,
-    "step_size": 100
+    "tokenization": "quantile",
+    "n_quantile_bins": 3500,
+    "b_bins": 3500
   },
   "pdgids": {
     "0": 1000030080,

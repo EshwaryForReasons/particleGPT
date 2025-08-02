@@ -6,6 +6,8 @@ from particle import Particle
 def load_geant4_dataset(dataset_filepath, flattened_events=False, pad_token=np.nan):
     """
     Ultra-fast loader for Geant4 MC dataset files.
+    a Geant4 dataset refers to data in the format "pdgid e px py pz; pdgid e px py pz; ...".
+    Each event is a line in the file, and each particle in the event is separated by a semicolon.
     """
     
     if not dataset_filepath.exists():
@@ -14,6 +16,49 @@ def load_geant4_dataset(dataset_filepath, flattened_events=False, pad_token=np.n
     all_data = []
     lengths = []
     num_features = 5
+
+    with open(dataset_filepath, 'r') as f:
+        for line in f:
+            if ';' not in line:
+                continue
+
+            line = line.replace(';', ' ').strip()
+            floats = np.fromstring(line, sep=' ')
+            if floats.size == 0:
+                continue
+
+            reshaped = floats.reshape(-1, num_features)
+            all_data.append(reshaped)
+            lengths.append(reshaped.shape[0])
+
+    if not all_data:
+        return np.empty((0, 0, num_features), dtype=np.float64)
+
+    max_particles = max(lengths)
+    n_events = len(all_data)
+
+    # Preallocate final array and copy using slice assignment
+    result = np.full((n_events, max_particles, num_features), pad_token, dtype=np.float64)
+    for i, (ev, length) in enumerate(zip(all_data, lengths)):
+        result[i, :length, :] = ev
+
+    if flattened_events:
+        return result.reshape(n_events, -1)
+    return result
+
+def load_verbose_dataset(dataset_filepath, flattened_events=False, pad_token=np.nan):
+    """
+    Ultra-fast loader for verbose dataset files.
+    A verbose dataset file refers to data in the format "pdgid e px py pz pt eta theta phi; pdgid e px py pz pt eta theta phi; ...".
+    Each event is a line in the file, and each particle in the event is separated by a semicolon.
+    """
+    
+    if not dataset_filepath.exists():
+        return np.empty((0, 0, 5), dtype=np.float64)
+
+    all_data = []
+    lengths = []
+    num_features = 9
 
     with open(dataset_filepath, 'r') as f:
         for line in f:

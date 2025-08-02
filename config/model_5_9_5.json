@@ -1,6 +1,6 @@
 {
-    "preparation_name": "preparation_6_1",
-    "dataset": "dataset_6.csv",
+    "preparation_name": "preparation_5_9",
+    "dataset": "dataset_5.csv",
     "training_config": {
         "eval_interval": 250,
         "eval_iters": 200,

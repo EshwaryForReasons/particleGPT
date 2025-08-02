@@ -9,6 +9,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
+from particle import Particle
+import vector
+
 import jetnet
 import jetnet.evaluation
 
@@ -98,6 +101,7 @@ class plotting:
     default_dpi = 300
     distributions_per_row = 3
     
+    verbose_columns = ["pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     
     """
@@ -105,7 +109,7 @@ class plotting:
     """
     
     @staticmethod
-    def plot_training_run(model_names, y_lim=None, use_log=False, out_file=None):
+    def plot_training_run(model_names, y_lim=None, x_lim=None, use_log=False, out_file=None):
         """
         Wrapper to plot a training run. Handles plotting lines and markers for training and validation loss.
         """
@@ -120,6 +124,8 @@ class plotting:
         fig.supylabel("Loss")
         if y_lim is not None:
             ax.set_ylim(y_lim)
+        if x_lim is not None:
+            ax.set_xlim(x_lim)
         if use_log:
             ax.set_yscale('log')
             
@@ -156,33 +162,54 @@ class plotting:
         
         dictionary = Dictionary(dictionary_filename)
         
-        def get_bin_count(type_str):
-            step_size = dictionary.token_step_size(type_str)
-            if step_size == 0:
-                return 0
-            if type_str in ['eta', 'theta', 'phi']:
-                step_size = 0.05
-            return int(dictionary.token_range(type_str) // step_size)
+        # Legacy NO NOT DELETE. Using the bin counts as specified in the tokenization is ideal but not always possible.
+        
+        # def get_bin_count(type_str):
+        #     step_size = dictionary.token_step_size(type_str)
+        #     if step_size == 0:
+        #         return 0
+        #     if type_str in ['eta', 'theta', 'phi']:
+        #         step_size = 0.05
+        #     return int(dictionary.token_range(type_str) // step_size)
+        
+        # For now, I have replaced those with hard coded values.
+        # bin_settings = {
+        #     "num_particles": { "min": -0.5,                          "max": 50.5,                          "bins": 51 },
+        #     "e":             { "min": 0,                             "max": 35000,                         "bins": 350 },
+        #     "px":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
+        #     "py":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
+        #     "pz":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
+        #     "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": get_bin_count('eta') },
+        #     "theta":         { "min": dictionary.token_min('theta'), "max": dictionary.token_max('theta'), "bins": get_bin_count('theta') },
+        #     "phi":           { "min": dictionary.token_min('phi'),   "max": dictionary.token_max('phi'),   "bins": get_bin_count('phi') },
+        #     "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": get_bin_count('pt') },
+        # }
+        
+        theta_min = 0 if dictionary.token_min('theta') == 0 else dictionary.token_min('theta')
+        theta_max = np.pi if dictionary.token_max('theta') == 0 else dictionary.token_max('theta')
+        phi_min = -np.pi if dictionary.token_min('phi') == 0 else dictionary.token_min('phi')
+        phi_max = np.pi if dictionary.token_max('phi') == 0 else dictionary.token_max('phi')
         
         columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
         bin_settings = {
-            "num_particles": { "min": -0.5,                             "max": 50.5,                            "bins": 51 },
+            "num_particles": { "min": -0.5,                          "max": 50.5,                          "bins": 51 },
             "e":             { "min": 0,                             "max": 35000,                         "bins": 350 },
             "px":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
             "py":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
             "pz":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
-            "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": get_bin_count('eta') },
-            "theta":         { "min": dictionary.token_min('theta'), "max": dictionary.token_max('theta'), "bins": get_bin_count('theta') },
-            "phi":           { "min": dictionary.token_min('phi'),   "max": dictionary.token_max('phi'),   "bins": get_bin_count('phi') },
-            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": get_bin_count('pt') },
+            "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": 400 },
+            "theta":         { "min": theta_min,                     "max": theta_max,                     "bins": 400 },
+            "phi":           { "min": phi_min,                       "max": phi_max,                       "bins": 400 },
+            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": 400 },
         }
 
-        real_df = pd.read_csv(real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
-        sampled_df = pd.read_csv(sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
-        return bin_settings, real_df, sampled_df
+        # real_df = pd.read_csv(real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
+        # sampled_df = pd.read_csv(sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
+        return bin_settings #, real_df, sampled_df
 
     @staticmethod
     def plot_distribution_leading(model_names, column_name=None, normalized=False, use_log=False, out_file=None):
+        assert column_name in plotting.verbose_columns, f"Invalid column name: {column_name}. Must be one of {plotting.verbose_columns}."
         unit = ''
         if column_name in ['e', 'pt', 'px', 'py', 'pz']:
             unit = '(MeV)'
@@ -192,19 +219,91 @@ class plotting:
         # Set up plot
         num_horizontal, num_vertical = min(len(model_names), plotting.distributions_per_row), (math.ceil(1 / plotting.distributions_per_row))
         fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
-        fig.suptitle(f'{column_name} Distribution for Leading Particles')
+        fig.suptitle(f'{column_name} Distribution for Leading Particles {"(Normalized)" if normalized else ""}')
         fig.supxlabel(f'{column_name} {unit}')
-        fig.supylabel('Frequency')
+        fig.supylabel('log(Frequency)' if use_log else 'Frequency')
         
         for ax, model_name in zip([axes], model_names):
             # Parse data
-            bin_settings, real_df, sampled_df = plotting._get_common_data(model_name)
+            bin_settings = plotting._get_common_data(model_name)
             range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
             n_bins = bin_settings[column_name]['bins']
             
+            relevant_column_pos = plotting.verbose_columns.index(column_name)
+            real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
+            all_instances_of_this_column_real = []
+            for event in real_verbose_data:
+                secondaries = event[1:]
+                # Find index of particle with the highest energy
+                leading_particle_idx = np.nanargmax(secondaries[:, 1])
+                leading_particle = secondaries[leading_particle_idx]
+                all_instances_of_this_column_real.append(leading_particle[relevant_column_pos])
+            
+            sampled_verbose_data = data_manager.load_verbose_dataset(pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples_verbose.csv', pad_token = np.nan)
+            all_instances_of_this_column_sampled = []
+            for event in sampled_verbose_data:
+                secondaries = event[1:]
+                # Find index of particle with the highest energy
+                leading_particle_idx = np.nanargmax(secondaries[:, 1])
+                leading_particle = secondaries[leading_particle_idx]
+                all_instances_of_this_column_sampled.append(leading_particle[relevant_column_pos])
+            
             # Do plot
-            ax.hist(real_df[column_name], range=range, bins=n_bins, density=normalized, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7)
-            ax.hist(sampled_df[column_name], range=range, bins=n_bins, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
+            ax.set_yscale('log' if use_log else 'linear')
+            ax.hist(all_instances_of_this_column_real, range=range, bins=n_bins, density=normalized, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7)
+            ax.hist(all_instances_of_this_column_sampled, range=range, bins=n_bins, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
+            
+        # Finishing touches and show and/or save
+        fig.legend()
+        fig.tight_layout()
+        if out_file != None:
+            fig.savefig(out_file, bbox_inches='tight')
+        fig.show()
+        
+        return fig, ax
+    
+    @staticmethod
+    def plot_distribution_all(model_names, column_name=None, normalized=False, use_log=False, out_file=None):
+        unit = ''
+        if column_name in ['e', 'pt', 'px', 'py', 'pz']:
+            unit = '(MeV)'
+        elif column_name in ['eta', 'theta', 'phi']:
+            unit = '(angular)'
+        
+        # Set up plot
+        num_horizontal, num_vertical = min(len(model_names), plotting.distributions_per_row), (math.ceil(1 / plotting.distributions_per_row))
+        fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
+        fig.suptitle(f'{column_name} Distribution for All Outgoing Particles {"(Normalized)" if normalized else ""}')
+        fig.supxlabel(f'{column_name} {unit}')
+        fig.supylabel('log(Frequency)' if use_log else 'Frequency')
+        
+        for ax, model_name in zip([axes], model_names):
+            # Parse data
+            bin_settings = plotting._get_common_data(model_name)
+            range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
+            n_bins = bin_settings[column_name]['bins']
+            
+            relevant_column_pos = plotting.verbose_columns.index(column_name)
+            real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
+            all_instances_of_this_column_real = []
+            for event in real_verbose_data:
+                secondaries = event[1:]
+                for particle in secondaries:
+                    if not np.isnan(particle[relevant_column_pos]):
+                        all_instances_of_this_column_real.append(particle[relevant_column_pos])
+            
+            sampled_verbose_data = data_manager.load_verbose_dataset(pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples_verbose.csv', pad_token = np.nan)
+            all_instances_of_this_column_sampled = []
+            for event in sampled_verbose_data:
+                secondaries = event[1:]
+                for particle in secondaries:
+                    if not np.isnan(particle[relevant_column_pos]):
+                        all_instances_of_this_column_sampled.append(particle[relevant_column_pos])
+            
+            # Do plot
+            ax.set_yscale('log' if use_log else 'linear')
+            ax.hist(all_instances_of_this_column_real, range=range, bins=n_bins, density=normalized, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7)
+            ax.hist(all_instances_of_this_column_sampled, range=range, bins=n_bins, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
             
         # Finishing touches and show and/or save
         fig.legend()
@@ -219,9 +318,27 @@ class plotting:
     def plot_pdgid_distribution_leading(model_names, normalized=False, use_log=False, out_file=None):
         model_name = model_names[0]
         
-        _, real_df, sampled_df = plotting._get_common_data(model_name)
-        real_pdgids, sampled_pdgids = real_df['pdgid'], sampled_df['pdgid']
-        real_freq, sampled_freq = Counter(real_pdgids), Counter(sampled_pdgids)
+        relevant_column_pos = plotting.verbose_columns.index('pdgid')
+        real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
+        all_instances_of_this_column_real = []
+        for event in real_verbose_data:
+            secondaries = event[1:]
+            # Find index of particle with the highest energy
+            leading_particle_idx = np.nanargmax(secondaries[:, 1])
+            leading_particle = secondaries[leading_particle_idx]
+            all_instances_of_this_column_real.append(leading_particle[relevant_column_pos])
+        
+        sampled_verbose_data = data_manager.load_verbose_dataset(pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples_verbose.csv', pad_token = np.nan)
+        all_instances_of_this_column_sampled = []
+        for event in sampled_verbose_data:
+            secondaries = event[1:]
+            # Find index of particle with the highest energy
+            leading_particle_idx = np.nanargmax(secondaries[:, 1])
+            leading_particle = secondaries[leading_particle_idx]
+            all_instances_of_this_column_sampled.append(leading_particle[relevant_column_pos])
+            
+        # real_pdgids, sampled_pdgids = real_df['pdgid'], sampled_df['pdgid']
+        real_freq, sampled_freq = Counter(all_instances_of_this_column_real), Counter(all_instances_of_this_column_sampled)
         
         # Union of all particle labels from both histograms
         all_particles = sorted(set(real_freq.keys()).union(sampled_freq.keys()))
@@ -233,9 +350,9 @@ class plotting:
         
         # Set up plot
         fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        fig.suptitle('Normalized Particle Type Distributions')
+        fig.suptitle(f'Particle Type Distributions {"(Normalized)" if normalized else ""}')
         fig.supxlabel('Particle Type')
-        fig.supylabel('Frequency')
+        fig.supylabel('log(Frequency)' if use_log else 'Frequency')
         if use_log:
             ax.set_yscale('log')
         if normalized:
@@ -286,9 +403,9 @@ class plotting:
         
         # Set up plot
         fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        fig.suptitle('Normalized Particle Type Distributions')
+        fig.suptitle(f'Particle Type Distributions {"(Normalized)" if normalized else ""}')
         fig.supxlabel('Particle Type')
-        fig.supylabel('Frequency')
+        fig.supylabel('log(Frequency)' if use_log else 'Frequency')
         if use_log:
             ax.set_yscale('log')
         if normalized:
@@ -310,6 +427,91 @@ class plotting:
         fig.show()
         
         return fig, ax
+
+    def plot_energy_conservation(model_names, normalized=False, use_log=False, out_file=None):
+        MASS_CARBON = 931.5 * 12 # MeV
+        generated_samples_data = data_manager.load_geant4_dataset(pUtil.get_latest_sampling_dir(model_names[0]) / 'untokenized_samples.csv', pad_token=0.0)
+
+        # Perform computation
+        computed_data = np.full(shape=(len(generated_samples_data), 2), fill_value=np.nan)
+        for idx, event in enumerate(generated_samples_data):
+            # Input vector
+            primary_particle = Particle.from_pdgid(event[0][0])
+            in_particle_vec = vector.obj(mass=primary_particle.mass, px=event[0][2], py=event[0][3], pz=event[0][4])
+            in_material_vec = vector.obj(mass=MASS_CARBON, px=0.0, py=0.0, pz=0.0)
+            in_vec = in_particle_vec + in_material_vec
+            
+            # Output vector
+            out_vec = vector.obj(mass=0.0, px=0.0, py=0.0, pz=0.0)
+            for particle in event[1:]:
+                if particle[0] == 0.0:
+                    continue
+                i_particle = Particle.from_pdgid(int(particle[0]))
+                i_vec = vector.obj(mass=i_particle.mass, px=particle[2], py=particle[3], pz=particle[4])
+                out_vec += i_vec
+            
+            computed_data[idx] = in_vec.e, out_vec.e
+        
+        # Set up plot
+        num_horizontal, num_vertical = min(len(model_names), plotting.distributions_per_row), (math.ceil(1 / plotting.distributions_per_row))
+        fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
+        fig.suptitle(f'Energy conservation for {model_names}')
+        fig.supxlabel(f'Delta Energy (MeV)')
+        fig.supylabel('Frequency')
+        
+        for ax, model_name in zip([axes], model_names):
+            # Do plot
+            ax.set_yscale('log' if use_log else 'linear')
+            ax.hist(computed_data[:,0], bins=50, density=normalized, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7)
+            ax.hist(computed_data[:,1], bins=50, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
+
+        # Finishing touches and show and/or save
+        fig.legend()
+        fig.tight_layout()
+        if out_file != None:
+            fig.savefig(out_file, bbox_inches='tight')
+        fig.show()
+        
+    def plot_num_particles(model_names, normalized=False, use_log=False, out_file=None):
+        model_name = model_names[0]
+        
+        MASS_CARBON = 931.5 * 12 # MeV
+        
+        real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
+        real_num_particle_data = np.full(shape=(len(real_verbose_data)), fill_value=np.nan)
+        for idx, event in enumerate(real_verbose_data):
+            secondaries = event[1:]
+            secondaries = [secondary for secondary in secondaries if not np.isnan(secondary[0])]
+            num_secondaries = len(secondaries)
+            real_num_particle_data[idx] = num_secondaries
+        
+        generated_samples_data = data_manager.load_geant4_dataset(pUtil.get_latest_sampling_dir(model_names[0]) / 'untokenized_samples.csv', pad_token = np.nan)
+        sampled_num_particle_data = np.full(shape=(len(generated_samples_data)), fill_value=np.nan)
+        for idx, event in enumerate(generated_samples_data):
+            secondaries = event[1:]
+            secondaries = [secondary for secondary in secondaries if not np.isnan(secondary[0])]
+            num_secondaries = len(secondaries)
+            sampled_num_particle_data[idx] = num_secondaries
+
+        # Set up plot
+        num_horizontal, num_vertical = min(len(model_names), plotting.distributions_per_row), (math.ceil(1 / plotting.distributions_per_row))
+        fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
+        fig.suptitle(f'Num particles per event for {model_names}')
+        fig.supxlabel(f'Number of particles')
+        fig.supylabel('Frequency')
+        
+        for ax, model_name in zip([axes], model_names):
+            # Do plot
+            ax.set_yscale('log' if use_log else 'linear')
+            ax.hist(real_num_particle_data, range=(0, 50), bins=50, density=normalized, label=f'Input ({model_name})', color=plotting.colors[0], alpha=0.7)
+            ax.hist(sampled_num_particle_data, range=(0, 50), bins=50, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
+            
+        # Finishing touches and show and/or save
+        fig.legend()
+        fig.tight_layout()
+        if out_file != None:
+            fig.savefig(out_file, bbox_inches='tight')
+        fig.show()
 
 class tables:
     """

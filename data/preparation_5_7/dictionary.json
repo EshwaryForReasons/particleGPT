@@ -1,5 +1,19 @@
 {
-  "scheme": "neo_no_particle_boundaries",
+  "dataset": "dataset_5.csv",
+  "tokenization": {
+    "0": "pdgid",
+    "1": "energy",
+    "2": "pt",
+    "3": "eta",
+    "4": "phi"
+  },
+  "padding": {
+    "0": "padding",
+    "1": "padding",
+    "2": "padding",
+    "3": "padding",
+    "4": "padding"
+  },
   "special_tokens": {
     "padding": 0,
     "event_start": 1,

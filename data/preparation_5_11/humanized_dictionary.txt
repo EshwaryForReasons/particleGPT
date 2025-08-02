@@ -3,10 +3,10 @@ Special tokens   |  10     |  0 - 9           |  N/A     |  N/A     |  N/A      
 Particles        |  75     |  10 - 84         |  N/A     |  N/A     |  N/A         |  
 Materials        |  8      |  85 - 92         |  N/A     |  N/A     |  N/A         |  
 Energy bins      |  0      |  93 - 92         |  0       |  0       |  0           |  
-Eta bins         |  8011   |  93 - 8103       |  -4      |  4.01    |  0.001       |  
-Theta bins       |  0      |  8104 - 8103     |  0       |  0       |  0           |  
-Phi bins         |  6301   |  8104 - 14404    |  -3.15   |  3.15    |  0.001       |  
-Pt bins          |  350    |  14405 - 14754   |  0       |  35000   |  100         |  
+Eta bins         |  8000   |  93 - 8092       |  -4      |  4.01    |  None        |  
+Theta bins       |  0      |  8093 - 8092     |  0       |  0       |  0           |  
+Phi bins         |  8000   |  8093 - 16092    |  -3.15   |  3.15    |  None        |  
+Pt bins          |  3499   |  16093 - 19591   |  0       |  35000   |  None        |  
 
 Special Token - Token Value
 padding - 0

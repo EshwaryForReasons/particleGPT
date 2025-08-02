@@ -18,23 +18,11 @@ In this project:
 - `tokenized` data refers to data that has been tokenized per that dataset's specifications
 - `untokenized` data refers to data that was previously tokenized and has since been untokenized
 
-### Environment setup ###
-
-Install all correct dependencies. Also builds pTokenizerModule
-```shell
-bash setup.sh
-```
-
-Build pTokenizerModule only. This must be run for any changes to the pTokenizer code.
-```shell
-bash setup.sh pTokenizer
-```
-
 ### Preparing the dataset ###
 
 - The dataset should be in `data/dataset_name.csv`.
-- `dictionary.json` must exist per preparation and defines the tokenization for that preparation. The particles list (`particles_id` and `particles_index`) is auto populated based on information in the dataset during the preparation phase. This is to ensure only relevant particles (those present in the dataset) are included in the vocabulary.
-- The preparation only needs to be done once.
+- `dictionary.json` must exist per "preparation" and defines the tokenization for that preparation. The particles list (`particles_id` and `particles_index`) is auto populated based on information in the dataset during the preparation phase. This is to ensure only relevant particles (those present in the dataset) are included in the vocabulary.
+- The preparation only needs to be done once per tokenization per dataset.
     - IMPORTANT: If there are any changes to the dataset or dictionary (for example to change the tokenization) then be sure to reprepare the data.
 
 The preparation and dataset used in the config file will be prepared.
@@ -65,7 +53,7 @@ python analysis.py config/model_to_analyze.json
 
 - Trained models are stored in `trained_models/model_name/ckpt.pt`.
 - Generated samples are stored in `generated_samples/model_name/sampling_index/generated_samples.csv`.
-- Generated distributions are stored in `generated_samples/model_name/sampling_index/` within their respective files.
+- Generated distributions are stored in `generated_samples/model_name/sampling_index/*.png` within their respective files.
 
 ## Notes ##
 
@@ -74,6 +62,7 @@ python analysis.py config/model_to_analyze.json
 srun -C "gpu" -q interactive -N 1 -G 1 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 srun -C "gpu" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 srun -C "gpu&hbm80g" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
+srun -C "cpu" -q interactive -N 1 -c 128 -t 4:00:00 -A m3443 --pty /bin/bash -l
 
 # Training on a specified GPU
 CUDA_VISIBLE_DEVICES=0 python train.py config/model_to_train.json

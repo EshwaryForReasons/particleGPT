@@ -1,4 +1,5 @@
 {
+  "dataset": "dataset_6.csv",
   "tokenization": {
     "0": "pdgid",
     "1": "pt",

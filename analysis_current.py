@@ -11,6 +11,7 @@ import pUtil
 import pTokenizerModule as pTokenizer
 import data_manager
 import analysis as anal
+import untokenizer
 
 script_dir = Path(__file__).resolve().parent
 
@@ -28,6 +29,7 @@ class Analyzer:
         self.generated_samples_filename           = self.latest_sampling_dir / 'generated_samples.csv'
         self.filtered_samples_filename            = self.latest_sampling_dir / 'filtered_samples.csv'
         self.sampled_leading_particles_filename   = self.latest_sampling_dir / 'sampled_leading_particles.csv'
+        self.verbose_particles_filename           = self.latest_sampling_dir / 'untokenized_samples_verbose.csv'
         self.untokenized_samples_filename         = self.latest_sampling_dir / 'untokenized_samples.csv'
         self.metrics_results_filename             = self.latest_sampling_dir / 'metrics_results.json'
         
@@ -39,48 +41,39 @@ class Analyzer:
             meta = pickle.load(f)
             self.num_particles_per_event = meta['num_particles_per_event']
             
-        self.dictionary = Dictionary(self.dictionary_filename.as_posix())
+        self.dictionary = Dictionary(self.dictionary_filename)
         
-    def generate_leading_particle_information(self):
+    def generate_verbose_particle_information(self):
         # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
 
-        untokenized_samples_data = []
-        with open(self.untokenized_samples_filename, 'r') as in_file:
-            for event in in_file:
-                particles = event.strip().split(';')
-                event_arr = []
-                for particle in particles:
-                    particle = [float(x) for x in particle.strip().split()]
-                    event_arr.extend(particle)
-                untokenized_samples_data.append(event_arr)
+        untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=np.nan)
         
-        with open(self.sampled_leading_particles_filename, 'w') as out_file:
-            for event in untokenized_samples_data:
-                if len(event) == 0:
+        NUM_FEATURES_PER_PARTICLE_VERBOSE = 9
+        verbose_data = np.full(shape=(untokenized_data.shape[0], untokenized_data.shape[1], NUM_FEATURES_PER_PARTICLE_VERBOSE), fill_value=np.nan, dtype=np.float64)
+        for idx_e, event in enumerate(untokenized_data):
+            for idx_p, particle in enumerate(event):
+                if particle[0] == np.nan:
+                    verbose_data[idx_e, idx_p] = [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan]
                     continue
-                event = np.array(event)
-                num_particles = len(event) // 5
-                particles = event.reshape((num_particles, 5))
-                secondaries = particles[1:]
-                # Find index of particle with the highest energy
-                leading_particle_idx = np.argmax(secondaries[:, 1])
-                leading_particle = secondaries[leading_particle_idx]
-                secondaries = [s for s in secondaries if s[0] != 0]
                 
-                pdgid = leading_particle[0]
-                e = leading_particle[1]
-                px = leading_particle[2]
-                py = leading_particle[3]
-                pz = leading_particle[4]
-                
+                pdgid, e, px, py, pz = particle
                 r = np.sqrt(px * px + py * py + pz * pz)
                 pt = np.sqrt(px * px + py * py)
-                theta = np.arccos(pz / r)
+                theta = np.arccos(pz / r) if r != 0 else 0
                 phi = np.arctan2(py, px)
                 eta = -np.log(np.tan(theta / 2))
                 
-                out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {pt} {eta:.5f} {theta:.5f} {phi:.5f}\n')
-    
+                verbose_data[idx_e, idx_p] = [pdgid, e, px, py, pz, pt, eta, theta, phi]
+        
+        with open(self.verbose_particles_filename, 'w') as out_file:
+            for event in verbose_data:
+                for particle in event:
+                    pdgid, e, px, py, pz, pt, eta, theta, phi = particle
+                    if np.isnan(pdgid):
+                        continue
+                    out_file.write(f'{int(pdgid)} {e:.5f} {px:.5f} {py:.5f} {pz:.5f} {pt:.5f} {eta:.5f} {theta:.5f} {phi:.5f};')
+                out_file.write('\n')
+        
     def filter_data(self):
         num_features_per_particle = 4
         
@@ -143,14 +136,22 @@ class Analyzer:
                 filtered_file.write(event + '\n')
     
     def generate_distributions(self):
-        self.filter_data()
-        pTokenizer.untokenize_data(self.dictionary_filename.as_posix(), self.filtered_samples_filename.as_posix(), self.untokenized_samples_filename.as_posix())
-        self.generate_leading_particle_information()
+        # self.filter_data()
+        # untokenizer.untokenize_data(self.filtered_samples_filename, self.untokenized_samples_filename)
+        # self.generate_verbose_particle_information()
         
-        anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
-        anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
-        for column_name in ['num_particles', 'e', 'px', 'py', 'pz', 'pt', 'eta', 'phi']:
+        anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
+        anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid_log.png')
+        anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
+        anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_all_pdgid_log.png')
+        anal.plotting.plot_energy_conservation([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_energy_conservation_log.png')
+        anal.plotting.plot_energy_conservation([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_energy_conservation.png')
+        anal.plotting.plot_num_particles([self.model_name], normalized=False, use_log=False, out_file=self.latest_sampling_dir / 'distribution_num_particles.png')
+        for column_name in ['e', 'px', 'py', 'pz', 'pt', 'eta', 'theta', 'phi']:
             anal.plotting.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_{column_name}.png')
+            anal.plotting.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_log_{column_name}.png', use_log=True)
+            anal.plotting.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_{column_name}.png')
+            anal.plotting.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_log_{column_name}.png', use_log=True)
 
     def get_real_jets(self):
         # -------------------------------------------------------------------------------

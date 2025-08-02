@@ -21,7 +21,7 @@ class TrainingConfiguration:
     log_interval: int = 1
     eval_iters: int = 200
     eval_only: bool = False
-    init_from: str = 'scratch'  # 'scratch', 'resume', or 'gpt2*'
+    init_from: str = ''  # 'scratch', 'resume', or 'gpt2*'
 
     # data
     gradient_accumulation_steps: int = field(default=5 * 8)

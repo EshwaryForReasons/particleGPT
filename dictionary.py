@@ -6,6 +6,11 @@ from pathlib import Path
 from particle import Particle
 from enum import Enum
 
+from scipy.stats import norm
+from scipy.interpolate import interp1d
+
+import data_manager as dm
+
 script_dir = Path(__file__).resolve().parent
 
 class ETokenTypes(Enum):
@@ -20,10 +25,9 @@ class ETokenTypes(Enum):
     PT = 8
 
 # Custom arange because np.arange and np.linspace suffer from floating point precision issues.
-# This is needed so the C++ version matches.
-def custom_arange(start, stop, step_size):
+def arange(start, stop, step_size):
     if step_size <= 0:
-        return []
+        return np.array([], dtype=np.float64)
     
     decimal_places = int(np.ceil(np.log10(1 / step_size)))
     result = []
@@ -31,11 +35,11 @@ def custom_arange(start, stop, step_size):
     while i < stop:
         result.append(round(i, decimal_places))
         i += step_size
-    return result
+    return np.array(result, dtype=np.float64)
 
-def custom_linspace(start, stop, n_bins):
+def linear_space(start, stop, n_bins):
     if n_bins == 0:
-        return []
+        return np.array([], dtype=np.float64)
     
     step_size = (stop - start) / n_bins
     decimal_places = int(np.ceil(np.log10(1 / step_size)))
@@ -45,7 +49,101 @@ def custom_linspace(start, stop, n_bins):
     while i < stop:
         result.append(round(i, decimal_places))
         i += step_size
-    return result
+    return np.array(result, dtype=np.float64)
+
+# Gaussian tokenization
+def gaussian_space(start, stop, num, center, sigma=1.0):
+    """
+    More advanced Gaussian spacing with peak control
+    
+    Generate a Gaussian-spaced array of points between start and stop,
+    with the highest density of points near `center`.
+
+    Parameters:
+        start (float): Start of range.
+        stop (float): End of range.
+        num (int): Number of points to generate.
+        center (float): Location where spacing is most dense.
+        sigma (float): Controls sharpness of peak (standard deviation of Gaussian).
+
+    Returns:
+        np.ndarray: Array of values spaced according to a Gaussian profile.
+    """
+    # Create a fine-grained range to define the target density
+    x_fine = np.linspace(start, stop, 10_000)
+    pdf = norm.pdf(x_fine, loc=center, scale=sigma)
+    cdf = np.cumsum(pdf)
+    cdf = (cdf - cdf.min()) / (cdf.max() - cdf.min())  # normalize to [0, 1]
+
+    # Invert CDF: get target values from uniform
+    inv_cdf = interp1d(cdf, x_fine, bounds_error=False, fill_value=(start, stop))
+    uniform_probs = np.linspace(0, 1, num)
+    return inv_cdf(uniform_probs)
+
+# Detokenization of gaussian bins using bin medians
+def detokenize_gaussian_bins(tokens, bin_edges):
+    """
+    Decode tokenized values back to approximate original values
+    using bin centers.
+
+    Parameters:
+        tokens (np.ndarray): Array of token indices (0-based).
+        bin_edges (np.ndarray): Bin edges used during digitization.
+
+    Returns:
+        np.ndarray: Decoded values.
+    """
+    # Bin centers: len = len(bin_edges) + 1 - 1 = len(bin_edges)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    # Clip tokens to valid range
+    tokens = np.clip(tokens, 0, len(bin_centers) - 1)
+    return bin_centers[tokens]
+
+# Helper for detokenization of gaussian bins using bin means
+def build_gaussian_bin_means(values, bin_edges):
+    bin_indices = np.digitize(values, bin_edges[1:-1], right=True)  # tokens range from 0 to len(bin_edges) - 2
+    num_bins = len(bin_edges) - 1  # Number of actual bins
+    bin_means = np.zeros(num_bins)
+    for i in range(num_bins):
+        in_bin = values[bin_indices == i]
+        if len(in_bin) > 0:
+            bin_means[i] = in_bin.mean()
+        else:
+            bin_means[i] = 0.5 * (bin_edges[i] + bin_edges[i + 1])
+    return bin_means
+
+# Quantile binning
+def quantile_detokenize(tokens, bin_edges, token_min=0):
+    indices = tokens - token_min
+    # Clip just in case
+    indices = np.clip(indices, 0, len(bin_edges) - 2)
+    # Use bin centers (can replace with per-bin means for more precision)
+    return 0.5 * (bin_edges[indices] + bin_edges[indices + 1])
+
+def build_quantile_bin_means(values, bin_edges):
+    bin_indices = np.digitize(values, bin_edges[1:-1], right=True)
+    bin_means = np.zeros(len(bin_edges) - 1)
+    for i in range(len(bin_means)):
+        in_bin = values[bin_indices == i]
+        bin_means[i] = in_bin.mean() if len(in_bin) > 0 else 0.5 * (bin_edges[i] + bin_edges[i + 1])
+    return bin_means
+
+def truncate_quantiles(quantile_tokens, original_bin_size, truncated_bin_size):
+    quan_bin_bins = np.linspace(0, original_bin_size, truncated_bin_size)
+    quan_bin_bin_tokenized = np.digitize(quantile_tokens, quan_bin_bins)
+    return quan_bin_bin_tokenized
+
+# Creates a list of all values of a given type from the dataset (i.e. energy, eta, etc.).
+# This is used to create quantile bins.
+def get_all_of(dictionary, input_data_filepath, type_str):
+    type_idx = dictionary.tokenization_schema.index(type_str)
+    in_dataset = dm.load_geant4_dataset(input_data_filepath, flattened_events=False, pad_token=np.nan)
+    all_of_type = []
+    for event in in_dataset:
+        for particle in event:
+            if not np.isnan(particle[type_idx]):
+                all_of_type.append(particle[type_idx])
+    return all_of_type
 
 class Dictionary():
     def __init__(self, dictionary_filename):
@@ -53,40 +151,29 @@ class Dictionary():
         
         with open(dictionary_filename, 'r') as f:
             self.dictionary_data = json.load(f)
-            
+        
+        self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']
+        assert self.dataset_filepath.exists(), f"Dataset file {self.dataset_filepath} does not exist."
+        
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles      = len(self.dictionary_data['pdgids'])
         self.num_materials      = len(self.dictionary_data['materials_named'])
         
-        def create_bins(type_str):
-            def ret_same(x):
-                return x
-            def ret_log(x):
-                return np.log(max(1, x))
-            
-            token_bin_jey_name = f'{type_str}_bin_data'
-            if token_bin_jey_name not in self.dictionary_data:
-                return []
-            
-            # See if we should use arange or linspace. step_size implies arange and n_bins implies linspace.
-            b_use_linspace = 'n_bins' in self.dictionary_data[token_bin_jey_name]
-            bin_generation_func = custom_linspace if b_use_linspace else custom_arange
-            spacing_func = self.token_n_bins if b_use_linspace else self.token_step_size
-            
-            # Determine the transform function.
-            transform_type = 'linear'
-            if 'transform' in self.dictionary_data[token_bin_jey_name]:
-                transform_type = self.dictionary_data[token_bin_jey_name]['transform']
-            transform_func = ret_log if transform_type == 'log' else ret_same
-            
-            local_bins = bin_generation_func(transform_func(self.token_min(type_str)), transform_func(self.token_max(type_str)), spacing_func(type_str))
-            return local_bins
+        self.tokenization_schema = [''] * len(self.dictionary_data['tokenization'])
+        for pos_str, tokenization_type_str in self.dictionary_data['tokenization'].items():
+            self.tokenization_schema[int(pos_str)] = tokenization_type_str
         
-        self.e_bins     = create_bins('e')
-        self.eta_bins   = create_bins('eta')
-        self.theta_bins = create_bins('theta')
-        self.phi_bins   = create_bins('phi')
-        self.pt_bins    = create_bins('pt')
+        self.padding_sequence = [''] * len(self.dictionary_data['padding'])
+        for pos_str, padding_str in self.dictionary_data['padding'].items():
+            self.padding_sequence[int(pos_str)] = padding_str
+        
+        self.num_tokens_per_particle = len(self.tokenization_schema)
+        
+        self.e_bins     = self._create_bins('e')
+        self.eta_bins   = self._create_bins('eta')
+        self.theta_bins = self._create_bins('theta')
+        self.phi_bins   = self._create_bins('phi')
+        self.pt_bins    = self._create_bins('pt')
         
         self.vocab_size = self.num_special_tokens + self.num_particles + self.num_materials + len(self.e_bins) + len(self.eta_bins) + len(self.theta_bins) + len(self.phi_bins) + len(self.pt_bins)
         
@@ -115,6 +202,61 @@ class Dictionary():
             ["Pt bins",         len(self.pt_bins),        self.token_range_str(self.PT_OFFSET, len(self.pt_bins)),                    self.token_min('pt'),     self.token_max('pt'),     self.token_step_size('pt')]
         ]
     
+    def _create_bins(self, type_str):
+        token_bin_key_name = f'{type_str}_bin_data'
+        if token_bin_key_name not in self.dictionary_data:
+            return np.array([], dtype=np.float64)
+        
+        # Figure out the spacing function.
+        tokenization_function = 'linear'
+        if 'tokenization' in self.dictionary_data[token_bin_key_name]:
+            tokenization_function = self.dictionary_data[token_bin_key_name]['tokenization']
+        
+        if tokenization_function == 'linear':
+            # For linear determine if we need to use arange or linspace.
+            linear_spacing_function = None
+            if 'step_size' in self.dictionary_data[token_bin_key_name]:
+                linear_spacing_function = arange
+                spacing_val = self.dictionary_data[token_bin_key_name].get('step_size', None)
+            elif 'n_bins' in self.dictionary_data[token_bin_key_name]:
+                linear_spacing_function = linear_space
+                spacing_val = self.dictionary_data[token_bin_key_name].get('n_bins', None)
+            assert linear_spacing_function is not None, f"Invalid tokenization function for {type_str}."
+            assert spacing_val is not None and spacing_val > 0, f"Missing or invalid spacing value for {type_str}."
+            
+            return linear_spacing_function(self.token_min(type_str), self.token_max(type_str), spacing_val)
+        elif tokenization_function == 'gaussian':
+            gaussian_center = self.dictionary_data[token_bin_key_name].get('gaussian_center', None)
+            gaussian_sigma = self.dictionary_data[token_bin_key_name].get('gaussian_sigma', 1.0)
+            n_gaussian_bins = self.dictionary_data[token_bin_key_name].get('n_bins', None)
+            assert gaussian_center is not None, f"Missing Gaussian center for {type_str}: {tokenization_function}"
+            assert gaussian_sigma is not None and gaussian_sigma > 0, f"Missing or invalid Gaussian sigma for {type_str}: {gaussian_sigma}"
+            assert n_gaussian_bins is not None and n_gaussian_bins > 0, f"Missing or invalid number of Gaussian bins for {type_str}: {n_gaussian_bins}"
+            
+            return gaussian_space(self.token_min(type_str), self.token_max(type_str), n_gaussian_bins, gaussian_center, gaussian_sigma)
+        elif tokenization_function == 'quantile':
+            quantile_edges_filepath = self.dictionary_filename.parent / f'{type_str}_quantile_edges.npy'
+            
+            # Retrieve from cache if exists
+            if quantile_edges_filepath.exists():
+                quantile_edges = np.load(quantile_edges_filepath)
+                return quantile_edges
+            
+            # Quantile bins are created in the tokenizer for speed reasons as they require reading all the data.
+            n_quantile_bins = self.dictionary_data[token_bin_key_name].get('n_quantile_bins', None)
+            assert n_quantile_bins is not None and n_quantile_bins > 0, f"Missing or invalid number of quantile bins for {type_str}: {n_quantile_bins}"
+
+            # To create quantile bins, we need a list of every possible value in the range.
+            all_values = get_all_of(self, self.dataset_filepath, type_str)
+            quantile_edges = np.quantile(all_values, q=np.linspace(0, 1, n_quantile_bins + 1))
+            quantile_edges = quantile_edges[1:-1] # Remove first and last edges to get actual bins
+            
+            # Since this takes a while, we only want to do this once.
+            np.save(quantile_edges_filepath, quantile_edges)
+            return quantile_edges
+
+        return np.array([], dtype=np.float64)
+            
     # Functions to make the table look nicer
     def token_min(self, type_str):
         if f'{type_str}_bin_data' not in self.dictionary_data:
@@ -127,7 +269,7 @@ class Dictionary():
     def token_step_size(self, type_str):
         if f'{type_str}_bin_data' not in self.dictionary_data:
             return 0
-        return self.dictionary_data[f'{type_str}_bin_data'].get('step_size', 'none')
+        return self.dictionary_data[f'{type_str}_bin_data'].get('step_size', None)
     def token_n_bins(self, type_str):
         if f'{type_str}_bin_data' not in self.dictionary_data:
             return 0
@@ -158,6 +300,22 @@ class Dictionary():
     @property
     def scheme(self):
         return self.dictionary_data.get('scheme', '')
+    
+    @property
+    def pdgids_to_index(self):
+        # Return reversed pdgids. This maps PDGIDs to their index in the dictionary.
+        return {v: k for k, v in self.pdgids.items() if v != 0}
+    
+    def get_padding_sequence(self):
+        padding_sequence = []
+        for padding_str in self.padding_sequence:
+            if padding_str == 'padding':
+                padding_sequence.append(self.padding_token)
+            elif padding_str == 'particle_start':
+                padding_sequence.append(self.particle_start_token)
+            elif padding_str == 'particle_end':
+                padding_sequence.append(self.particle_end_token)
+        return padding_sequence
     
     # Returns token type given the current token value (uses token range for evaluation)
     def get_token_type(self, token):

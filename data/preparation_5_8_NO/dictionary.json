@@ -3,8 +3,8 @@
   "tokenization": {
     "0": "pdgid",
     "1": "energy",
-    "2": "eta",
-    "3": "theta",
+    "2": "pt",
+    "3": "eta",
     "4": "phi"
   },
   "padding": {
@@ -39,22 +39,23 @@
   "e_bin_data": {
     "min": 0,
     "max": 35000,
-    "step_size": 100
+    "n_bins": 350,
+    "transform": "log"
   },
   "eta_bin_data": {
     "min": -4,
     "max": 4.01,
     "step_size": 0.01
   },
-  "theta_bin_data": {
-    "min": 0,
-    "max": 3.15,
-    "step_size": 0.01
-  },
   "phi_bin_data": {
     "min": -3.15,
     "max": 3.15,
     "step_size": 0.01
+  },
+  "pt_bin_data": {
+    "min": 0,
+    "max": 35000,
+    "step_size": 100
   },
   "pdgids": {
     "0": 1000030080,
@@ -124,6 +125,13 @@
     "64": -3212,
     "65": 1000030070,
     "66": 3322,
-    "67": 1000040060
+    "67": 1000040060,
+    "68": -1,
+    "69": -1,
+    "70": -1,
+    "71": -1,
+    "72": -1,
+    "73": -1,
+    "74": -1
   }
 }

@@ -1,6 +1,6 @@
 {
-    "preparation_name": "preparation_6_1",
-    "dataset": "dataset_6.csv",
+    "preparation_name": "preparation_5_9",
+    "dataset": "dataset_5.csv",
     "training_config": {
         "eval_interval": 250,
         "eval_iters": 200,
@@ -8,9 +8,9 @@
         "gradient_accumulation_steps": 80,
         "batch_size": 128,
         "context_events": 1,
-        "n_layer": 48,
-        "n_head": 128,
-        "n_embd": 1024,
+        "n_layer": 4,
+        "n_head": 2,
+        "n_embd": 512,
         "dropout": 0.1,
         "learning_rate": 0.001,
         "max_iters": 1000000,
@@ -18,7 +18,7 @@
         "min_lr": 1e-05,
         "beta2": 0.98,
         "warmup_iters": 250,
-        "max_num_failed_checkpoint_checks": 8
+        "max_num_failed_checkpoint_checks": 4
     },
     "sampling_config": {
         "temperature": 0.8,

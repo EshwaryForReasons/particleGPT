@@ -147,13 +147,13 @@ void Tokenizer::tokenize_events_in_range(const std::string& input_data_path, con
         
         //Skip to start_idx
         if (i < start_idx)
-        continue;
+            continue;
         
         std::replace(event.begin(), event.end(), ';', ' ');
         const std::vector<std::string_view> event_split_str = Utils::split(event, ' ');
         std::vector<double> event_split;
         for (auto event_split_single : event_split_str)
-        event_split.push_back(std::stod(event_split_single.data()));
+            event_split.push_back(std::stod(event_split_single.data()));
         
         const std::vector<int> tokenized_event = tokenize_event(event_split);
         if (!tokenized_event.empty())

@@ -1,0 +1,118 @@
+Tue Jul  8 17:00:33 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.163.01             Driver Version: 550.163.01     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  |   00000000:03:00.0 Off |                    0 |
+| N/A   28C    P0             63W /  500W |       1MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA A100-SXM4-80GB          On  |   00000000:41:00.0 Off |                    0 |
+| N/A   28C    P0             62W /  500W |       1MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA A100-SXM4-80GB          On  |   00000000:82:00.0 Off |                    0 |
+| N/A   30C    P0             61W /  500W |       1MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA A100-SXM4-80GB          On  |   00000000:C1:00.0 Off |                    0 |
+| N/A   27C    P0             64W /  500W |       1MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+W0708 17:00:51.122000 140092226803520 torch/distributed/run.py:779] 
+W0708 17:00:51.122000 140092226803520 torch/distributed/run.py:779] *****************************************
+W0708 17:00:51.122000 140092226803520 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0708 17:00:51.122000 140092226803520 torch/distributed/run.py:779] *****************************************
+Configurator found file config/model_6_1_1.json.
+Configurator found file config/model_6_1_1.json.
+Configurator found file config/model_6_1_1.json.
+Configurator found file config/model_6_1_1.json.
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/train_new.py", line 33, in <module>
+  File "/pscratch/sd/e/eshy/particleGPT/train_new.py", line 33, in <module>
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/train_new.py", line 33, in <module>
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/train_new.py", line 33, in <module>
+        import model
+import model
+    import model
+  File "/pscratch/sd/e/eshy/particleGPT/model.py", line 26, in <module>
+  File "/pscratch/sd/e/eshy/particleGPT/model.py", line 26, in <module>
+  File "/pscratch/sd/e/eshy/particleGPT/model.py", line 26, in <module>
+    import model
+  File "/pscratch/sd/e/eshy/particleGPT/model.py", line 26, in <module>
+            dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')
+
+
+                                               ^  ^  ^    ^^^dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^ ^^^ ^^^ ^^^ ^^^ ^^ ^^^ ^^^ ^^^^ ^^ ^^^ ^^^ ^^^ ^^ ^^^^ ^ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^
+^^^^^^^
+  File "/pscratch/sd/e/eshy/particleGPT/dictionary.py", line 155, in __init__
+  File "/pscratch/sd/e/eshy/particleGPT/dictionary.py", line 155, in __init__
+^^^  File "/pscratch/sd/e/eshy/particleGPT/dictionary.py", line 155, in __init__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/pscratch/sd/e/eshy/particleGPT/dictionary.py", line 155, in __init__
+        self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']    
+
+self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']
+                                                                                                                 self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']    
+                                          ~~~  ~~~ ~~ ~~~~ ~~~ ~~~~ ~~~~~ ~~~ ~~~~ ~~ ~~~ ~~~~ ~~~~ ~~~ ~~~~ ~~~ ~~~ ~^^~ ^^~ ^^ ^^^ ^ ^^^ ^^ ^^^ ^^^^ ^^^ ^^^ ^^^
+ ^
+ ^ 
+KeyError  KeyError:  KeyError 'dataset':  : 'dataset'
+ 'dataset'
+ 
+              ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+KeyError: 'dataset'
+W0708 17:01:05.275000 140092226803520 torch/distributed/elastic/multiprocessing/api.py:858] Sending process 1913382 closing signal SIGTERM
+W0708 17:01:05.275000 140092226803520 torch/distributed/elastic/multiprocessing/api.py:858] Sending process 1913383 closing signal SIGTERM
+W0708 17:01:05.275000 140092226803520 torch/distributed/elastic/multiprocessing/api.py:858] Sending process 1913384 closing signal SIGTERM
+E0708 17:01:06.322000 140092226803520 torch/distributed/elastic/multiprocessing/api.py:833] failed (exitcode: 1) local_rank: 0 (pid: 1913381) of binary: /global/common/software/nersc9/pytorch/2.6.0/bin/python3.12
+Traceback (most recent call last):
+  File "/global/homes/e/eshy/.local/perlmutter/pytorch2.6.0/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/global/homes/e/eshy/.local/perlmutter/pytorch2.6.0/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 348, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/global/homes/e/eshy/.local/perlmutter/pytorch2.6.0/lib/python3.12/site-packages/torch/distributed/run.py", line 901, in main
+    run(args)
+  File "/global/homes/e/eshy/.local/perlmutter/pytorch2.6.0/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in run
+    elastic_launch(
+  File "/global/homes/e/eshy/.local/perlmutter/pytorch2.6.0/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 133, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/global/homes/e/eshy/.local/perlmutter/pytorch2.6.0/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 264, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+train_new.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-07-08_17:01:05
+  host      : nid008605-hsn0
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1913381)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+srun: error: nid008605: task 0: Exited with exit code 1
+srun: Terminating StepId=40209411.0
