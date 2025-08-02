@@ -8,7 +8,6 @@ import configurator as conf
 from dictionary import Dictionary
 from dictionary import ETokenTypes
 import pUtil
-import pTokenizerModule as pTokenizer
 import data_manager
 import analysis as anal
 import untokenizer
@@ -85,12 +84,12 @@ class Analyzer:
                 tokenized_data.append(event)
         
         # Ensure valid borders
-        tokenized_data = [e for e in tokenized_data if e[0] == 1 and e[-1] == 2]
+        tokenized_data = [e for e in tokenized_data if e[0] == self.dictionary.event_start_token and e[-1] == self.dictionary.event_end_token]
         
         # Remove special tokens
-        tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4]] for e in tokenized_data]
+        tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]] for e in tokenized_data]
             
-        # Ensure events are well formed
+        # Ensure events are well formed (at least num_features_per_particle features per particle and an number of particles)
         tokenized_data = [e for e in tokenized_data if len(e) > num_features_per_particle and len(e) % num_features_per_particle == 0]
         
         # Util function; works on non-uniform 2D lists.
@@ -136,10 +135,6 @@ class Analyzer:
                 filtered_file.write(event + '\n')
     
     def generate_distributions(self):
-        # self.filter_data()
-        # untokenizer.untokenize_data(self.filtered_samples_filename, self.untokenized_samples_filename)
-        # self.generate_verbose_particle_information()
-        
         anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
         anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid_log.png')
         anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
@@ -265,34 +260,25 @@ class Analyzer:
             json.dump(metrics_results_dict, opt_file, indent=4)
 
 if __name__ == "__main__":
-    # If argument 'all' is provided, generate distributions and metrics for all sampled datasets' latest sampling.
-    # JetNet does not enjoy multi-threading (it already uses it internally to speed up calculations).
-    if 'all' in sys.argv:
-        print('Generating distributions and metrics for all datasets.')
-        models_to_analyze = pUtil.get_all_model_names()
-    else:
-        print(f'Generating distributions and metrics for dataset {conf.generic.preparation_name}.')
-        models_to_analyze = [conf.generic.model_name]
+    print(f'Generating distributions and metrics for dataset {conf.generic.preparation_name}.')
+    model_to_analyze = conf.generic.model_name
         
-    failed_models = []
-    for model_name in models_to_analyze:
-        print(f'Analyzing model {model_name}')
-        
-        sampling_dir = pUtil.get_latest_sampling_dir(model_name)
-        if not sampling_dir.exists():
-            print(f'Analysis for model {model_name} cannot be performed, because no sampling data is available.')
-            failed_models.append(model_name)
-            continue
-        
-        # Extract dataset name from sampling info
-        preparation_name = pUtil.get_model_preparation_name(model_name)
-        
-        # Run the analysis
-        dataset_analyzer = Analyzer(model_name, preparation_name)
-        dataset_analyzer.generate_distributions()
-        dataset_analyzer.calculate_metrics()
+    print(f'Analyzing model {model_to_analyze}')
+    
+    sampling_dir = pUtil.get_latest_sampling_dir(model_to_analyze)
+    if not sampling_dir.exists():
+        print(f'Analysis for model {model_to_analyze} cannot be performed, because no sampling data is available.')
+        sys.exit()
+    
+    # Extract dataset name from sampling info
+    preparation_name = pUtil.get_model_preparation_name(model_to_analyze)
+    
+    # Run the analysis
+    dataset_analyzer = Analyzer(model_to_analyze, preparation_name)
+    # dataset_analyzer.filter_data()
+    # untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
+    # dataset_analyzer.generate_verbose_particle_information()
+    dataset_analyzer.generate_distributions()
+    dataset_analyzer.calculate_metrics()
     
     print('Distributions and metrics generated successfully.')
-    
-    if len(models_to_analyze) > 1:
-        print('Failed models:', ", ".join(failed_models))

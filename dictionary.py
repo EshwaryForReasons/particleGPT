@@ -154,7 +154,9 @@ class Dictionary():
         
         self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']
         assert self.dataset_filepath.exists(), f"Dataset file {self.dataset_filepath} does not exist."
-        
+        self.preparation_name   = self.dictionary_data.get('preparation_name', None)
+        assert self.preparation_name is not None, "preparation_name must be defined in the dictionary."
+
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles      = len(self.dictionary_data['pdgids'])
         self.num_materials      = len(self.dictionary_data['materials_named'])

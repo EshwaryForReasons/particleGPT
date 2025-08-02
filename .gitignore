@@ -6,6 +6,12 @@ temp/
 trained_models/
 generated_samples/
 
+data/preparation_2_4/
+data/preparation_2_4_backup/
+data/preparation_2_4_schemes/
+data/preparation_5_8_NO/
+data/preparation_5_9_testing/
+
 data/*/temp/
 data/*/*.csv
 data/*/*.bin
@@ -15,3 +21,5 @@ data/*.csv
 pTokenizer/build/
 pTokenizer/dist/
 pTokenizer/pTokenizer.egg-info/
+
+setup.sh

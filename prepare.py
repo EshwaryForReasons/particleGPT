@@ -5,9 +5,9 @@ from pathlib import Path
 from file_read_backwards import FileReadBackwards
 import time
 from dataclasses import dataclass
+import sys
 
 from dictionary import Dictionary
-import configurator as conf
 import pUtil
 import tokenizer
 
@@ -33,7 +33,7 @@ def get_dataset_info():
     """
     
     assert dictionary != None, "Dictionary must be initialized before preparing the dataset."
-    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
+    tokenized_data_filename = script_dir / 'data' / dictionary.preparation_name / 'tokenized_data.csv'
     
     num_events_total = pUtil.count_rows(tokenized_data_filename)
     # create the train, val, and test splits
@@ -61,10 +61,10 @@ def bin_data_fast():
     Much faster than bin_data_in_place, but requires a lot of memory (depending on the dataset).
     This should be used by default whenever memory is not a concern.
     """
-    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
-    train_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'train.bin'
-    val_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'val.bin'
-    test_tokenized_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_tokenized.bin'
+    tokenized_data_filename = script_dir / 'data' / dictionary.preparation_name / 'tokenized_data.csv'
+    train_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'train.bin'
+    val_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'val.bin'
+    test_tokenized_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'test_tokenized.bin'
     
     dataset_info = get_dataset_info()
     print(f'Starting fast bin over {dataset_info.num_train_events + dataset_info.num_val_events + dataset_info.num_test_events} events.')
@@ -90,10 +90,10 @@ def bin_data_in_place():
     Bins in place so doesn't require much memory, but is much slower than bin_data_fast.
     This should only be used for large datasets where memory is a concern.
     """
-    tokenized_data_filename = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
-    train_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'train.bin'
-    val_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'val.bin'
-    test_tokenized_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_tokenized.bin'
+    tokenized_data_filename = script_dir / 'data' / dictionary.preparation_name / 'tokenized_data.csv'
+    train_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'train.bin'
+    val_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'val.bin'
+    test_tokenized_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'test_tokenized.bin'
     
     dataset_info = get_dataset_info()
     
@@ -111,8 +111,8 @@ def bin_data_in_place():
     print('Finished in-place binning.')
 
 def bin_data():
-    input_data_filename = script_dir / 'data' / conf.generic.dataset
-    test_real_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_real.bin'
+    input_data_filename = dictionary.dataset_filepath
+    test_real_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'test_real.bin'
     
     bin_data_fast()
     
@@ -152,42 +152,12 @@ def bin_data():
         padded_accumulated_data = [row + [0] * ((dataset_info.max_num_particles * 5) - len(row)) for row in accumulated_data]
         padded_accumulated_data_np = np.array(padded_accumulated_data)
         padded_accumulated_data_np.flatten().tofile(test_real_bin_filename)
-
-# def generate_leading_particle_information():
-#     # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
-#     test_real_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_real.bin'
-#     real_leading_test_particles_filename = script_dir / 'data' / conf.generic.preparation_name / 'real_leading_test_particles.csv'
-    
-#     dataset_info = get_dataset_info()
-#     real_bin_data = np.memmap(test_real_bin_filename, dtype=float, mode='r', shape=(dataset_info.num_test_events, dataset_info.max_num_particles * NUM_FEATURES_IN_RAW_PARTICLE))
-#     with open(real_leading_test_particles_filename, 'w') as out_file:
-#         for event in real_bin_data:
-#             particles = event.reshape((dataset_info.max_num_particles, NUM_FEATURES_IN_RAW_PARTICLE))
-#             secondaries = particles[1:]
-#             # Find index of particle with the highest energy
-#             leading_particle_idx = np.argmax(secondaries[:, 1])
-#             leading_particle = secondaries[leading_particle_idx]
-#             secondaries = [s for s in secondaries if s[0] != 0]
-            
-#             pdgid = leading_particle[0]
-#             e = leading_particle[1]
-#             px = leading_particle[2]
-#             py = leading_particle[3]
-#             pz = leading_particle[4]
-            
-#             r = np.sqrt(px * px + py * py + pz * pz)
-#             pt = np.sqrt(px * px + py * py)
-#             theta = np.arccos(pz / r)
-#             phi = np.arctan2(py, px)
-#             eta = -np.log(np.tan(theta / 2))
-            
-#             out_file.write(f'{len(secondaries)} {int(pdgid)} {e} {px} {py} {pz} {pt} {eta:.5f} {theta:.5f} {phi:.5f}\n')
             
 def generate_verbose_particle_information():
     # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
     
-    test_real_bin_filename = script_dir / 'data' / conf.generic.preparation_name / 'test_real.bin'
-    real_verbose_test_particles_filename = script_dir / 'data' / conf.generic.preparation_name / 'real_verbose_test_particles.csv'
+    test_real_bin_filename = script_dir / 'data' / dictionary.preparation_name / 'test_real.bin'
+    real_verbose_test_particles_filename = script_dir / 'data' / dictionary.preparation_name / 'real_verbose_test_particles.csv'
     
     dataset_info = get_dataset_info()
     real_bin_data = np.memmap(test_real_bin_filename, dtype=float, mode='r', shape=(dataset_info.num_test_events, dataset_info.max_num_particles, NUM_FEATURES_IN_RAW_PARTICLE))
@@ -222,11 +192,11 @@ def generate_verbose_particle_information():
 def prepare_dataset():
     assert dictionary != None, "Dictionary must be initialized before preparing the dataset."
     # Ensure the outputs directory exists
-    input_data_filepath            = script_dir / 'data' / conf.generic.dataset
-    meta_filepath                  = script_dir / 'data' / conf.generic.preparation_name / 'meta.pkl'
-    dictionary_filepath            = script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json'
-    humanized_dictionary_filepath  = script_dir / 'data' / conf.generic.preparation_name / 'humanized_dictionary.txt'
-    temp_data_dir                  = script_dir / 'data' / conf.generic.preparation_name / 'temp'
+    input_data_filepath            = dictionary.dataset_filepath
+    meta_filepath                  = script_dir / 'data' / dictionary.preparation_name / 'meta.pkl'
+    dictionary_filepath            = script_dir / 'data' / dictionary.preparation_name / 'dictionary.json'
+    humanized_dictionary_filepath  = script_dir / 'data' / dictionary.preparation_name / 'humanized_dictionary.txt'
+    temp_data_dir                  = script_dir / 'data' / dictionary.preparation_name / 'temp'
     Path(meta_filepath).parent.mkdir(parents=True, exist_ok=True)
     Path(temp_data_dir).mkdir(parents=True, exist_ok=True)
     
@@ -280,5 +250,6 @@ def prepare_dataset():
         pickle.dump(meta, f)
         
 if __name__ == "__main__":
-    dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')
+    dictionary_filepath = sys.argv[1]
+    dictionary = Dictionary(dictionary_filepath)
     prepare_dataset()

@@ -4,9 +4,10 @@ GPT based on nanoGPT for generating particle collision data.
 
 ## Dependencies ##
 
-https://github.com/karpathy/nanoGPT is the base project.
-https://github.com/scikit-hep/particle used for PDGID conversions.
-https://github.com/pybind/pybind11 used to C++ to python bindinds for pTokenizer.
+- https://github.com/karpathy/nanoGPT is the base project.
+- https://github.com/scikit-hep/particle used for PDGID conversions.
+- https://github.com/scikit-hep/vector used for vector things.
+- https://github.com/jet-net/JetNet/tree/main is used for numeric metrics.
 
 ## Usage ##
 
@@ -20,19 +21,25 @@ In this project:
 
 ### Preparing the dataset ###
 
-- The dataset should be in `data/dataset_name.csv`.
+- The preparation phase:
+  - Tokenizes and bins the dataset so it is usable for training.
+  - Creates some intermediary files for quicker analysis later.
+- To prepare the data.
+  1. Ensure the dataset (as a .csv file) is present in the `data/` directory.
+  2. Run prepare.py with the dictionary file as an argument.
+  3. IMPORTANT: The data will be prepared in the same directory as the dictionary.json file.
+
+```shell
+python prepare.py data/preparation_dir_name/dictionary.json
+```
+
 - `dictionary.json` must exist per "preparation" and defines the tokenization for that preparation. The particles list (`particles_id` and `particles_index`) is auto populated based on information in the dataset during the preparation phase. This is to ensure only relevant particles (those present in the dataset) are included in the vocabulary.
 - The preparation only needs to be done once per tokenization per dataset.
     - IMPORTANT: If there are any changes to the dataset or dictionary (for example to change the tokenization) then be sure to reprepare the data.
 
-The preparation and dataset used in the config file will be prepared.
-```shell
-python prepare.py config/model_to_prepare.json
-```
-
 ### Using the model ###
 
-Training the model
+#### Training. ####
 ```shell
 # Single node, single GPU
 python train.py config/model_to_train.json
@@ -40,20 +47,37 @@ python train.py config/model_to_train.json
 torchrun --standalone --nproc_per_node=4 train.py config/model_to_train.json
 ```
 
-Sampling
-```shell
-# Sampling:
-python sample.py config/model_to_sample.json
+- Trained model data will be stored in `trained_models/model_name/`.
+  - Training log.
+    - Stores log output as the model trains.
+  - The trained model.
+    - Will be stored as `ckpt.pt`.
+    - Used for inference and later model usage.
+  - The "running" model.
+    - Will be stored as `ckpt_running.pt`.
+    - This is a checkpoint stored during training used for when resuming training.
+    - This is saved more often then the main model (`ckpt.pt`).
 
-# Generate distributions and calculate metrics using JetNet:
-python analysis.py config/model_to_analyze.json
+#### Inference. ####
+
+- Inference will naturally use all available GPUs.
+- GPUs can be restricted using CUDA_VISIBLE_DEVICES.
+
+```shell
+# Use all available GPUs:
+python sample.py config/model_to_sample.json
+# Restrict to certain GPUs (will only use GPU 0 and 2):
+CUDA_VISIBLE_DEVICES=0,2 python sample.py config/model_to_sample.json
 ```
 
-### Model outputs ###
+#### Analysis. ####
 
-- Trained models are stored in `trained_models/model_name/ckpt.pt`.
-- Generated samples are stored in `generated_samples/model_name/sampling_index/generated_samples.csv`.
-- Generated distributions are stored in `generated_samples/model_name/sampling_index/*.png` within their respective files.
+- `analysis_current.py` filters and untokenizes the data, generates distributions, and calculates numeric metrics.
+- All generated data will be stored in `generated_samples/model_name/sampling_index/`
+
+```shell
+python analysis_current.py config/model_to_analyze.json
+```
 
 ## Notes ##
 
@@ -82,7 +106,5 @@ dataset_2 has 100,000 events
 dataset_3 has 10,000 events
 dataset_4 had 1,000,000 events
 dataset_5 has 10,000,000 events
-dataset_6 has 10,000 events
-dataset_7 has 100,000,000 events
-dataset_8 has 1,000,000,000 events
+dataset_6 has 100,000,000 events
 ```
