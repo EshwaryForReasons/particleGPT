@@ -55,8 +55,7 @@
     "min": 0,
     "max": 35000,
     "tokenization": "quantile",
-    "n_quantile_bins": 35000,
-    "b_bins": 3500
+    "n_quantile_bins": 35000
   },
   "pdgids": {
     "0": 1000030080,
