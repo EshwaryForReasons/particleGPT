@@ -24,3 +24,4 @@ pTokenizer/dist/
 pTokenizer/pTokenizer.egg-info/
 
 setup.sh
+*.out
