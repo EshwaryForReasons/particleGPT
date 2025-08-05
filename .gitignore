@@ -5,6 +5,7 @@ logs/
 temp/
 trained_models/
 generated_samples/
+job_scripts/
 
 data/preparation_2_4/
 data/preparation_2_4_backup/

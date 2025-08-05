@@ -1,0 +1,148 @@
+W0804 00:49:35.129000 139672132540224 torch/distributed/run.py:779] 
+W0804 00:49:35.129000 139672132540224 torch/distributed/run.py:779] *****************************************
+W0804 00:49:35.129000 139672132540224 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0804 00:49:35.129000 139672132540224 torch/distributed/run.py:779] *****************************************
+Configurator found file config/model_5_9_9.json.
+Configurator found file config/model_5_9_9.json.
+Configurator found file config/model_5_9_9.json.
+Configurator found file config/model_5_9_9.json.
+AllOutput: Training started.
+AllOutput: Training started.
+AllOutput: Training started.
+AllOutput: Training started.
+AllOutput: Initializing a new model from scratch
+AllOutput: Initializing a new model from scratch
+AllOutput: Initializing a new model from scratch
+AllOutput: Initializing a new model from scratch
+AllOutput: Iterations per epoch is 863
+AllOutput: Iterations per epoch is 863
+AllOutput: Iterations per epoch is 863
+AllOutput: Iterations per epoch is 863
+AllOutput: Training progress: saving current checkpoint @ val_loss 9.721771240234375
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.848519325256348
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.848519325256348
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.726029872894287
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.726029872894287
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.679791450500488
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.679791450500488
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.660012722015381
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.660012722015381
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.63260555267334
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.63260555267334
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.627967357635498
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.627967357635498
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.615739822387695
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.615739822387695
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5938849449157715
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5938849449157715
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5959882736206055
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.585628509521484
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.585628509521484
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.569222927093506
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.569222927093506
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.556543350219727
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.556543350219727
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.554128646850586
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.554128646850586
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5446577072143555
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5446577072143555
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.538852214813232
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.538852214813232
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.535028457641602
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.535028457641602
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.532970428466797
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.532970428466797
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5321364402771
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5321364402771
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.530807018280029
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.530807018280029
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.530266761779785
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.530266761779785
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.530047416687012
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.530047416687012
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.529677867889404
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.529677867889404
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.529239654541016
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.529239654541016
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.528705596923828
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.528705596923828
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.527739524841309
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.527739524841309
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.527209281921387
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.527209281921387
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.527215480804443
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.528046131134033
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.528126239776611
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5271406173706055
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5271406173706055
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.527345657348633
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.525644302368164
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525644302368164
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525915145874023
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.525352954864502
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525352954864502
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525947570800781
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.526153087615967
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525934219360352
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.525259017944336
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525259017944336
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5254364013671875
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525424480438232
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.524982929229736
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.524982929229736
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525917053222656
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525567054748535
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.525567054748535
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.524937152862549
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.524937152862549
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.524764537811279
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.524764537811279
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.524714469909668
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.524714469909668
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.52450704574585
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.52450704574585
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.523550987243652
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.523550987243652
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.523421764373779
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.523421764373779
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.523449897766113
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.522934436798096
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522934436798096
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.522830963134766
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522830963134766
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.522676944732666
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522676944732666
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5227580070495605
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522877216339111
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.522156238555908
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522156238555908
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522386074066162
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.522089958190918
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.522089958190918
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5220112800598145
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5220112800598145
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.521498203277588
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.521498203277588
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5214009284973145
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5214009284973145
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5217814445495605
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.521788120269775
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.521463394165039
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.5201802253723145
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.5201802253723145
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.520256042480469
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.52012825012207
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.52012825012207
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.519890785217285
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.519890785217285
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.519548416137695
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.519548416137695
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.519712448120117
+AllOutput: Training progress: saving best checkpoint @ val_loss 4.519322395324707
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.519322395324707
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.520532131195068
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.520081996917725
+AllOutput: Training progress: saving current checkpoint @ val_loss 4.520491123199463
+slurmstepd: error: *** STEP 41251808.0 ON nid008232 CANCELLED AT 2025-08-05T00:22:40 ***
+slurmstepd: error: *** JOB 41251808 ON nid008232 CANCELLED AT 2025-08-05T00:22:40 ***
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.

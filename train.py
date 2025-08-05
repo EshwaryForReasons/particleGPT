@@ -328,7 +328,13 @@ def get_lr(it):
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
         return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
     elif conf.training.lr_scheduler == 'cosine_annealing_with_warm_restarts':
-        pass
+        # Cosine annealing with warm restarts
+        # https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.CosineAnnealingWarmRestarts.html
+        # This is a bit more complex, so we use PyTorch's built-in scheduler.
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=conf.training.warmup_iters, T_mult=1, eta_min=conf.training.min_lr)
+        scheduler.step(it)
+        return scheduler.get_last_lr()[0]
 
 # training loop
 pLogging.info(logger_idx, f'Iterations per epoch is {conf.training.iterations_per_epoch}')
@@ -343,7 +349,11 @@ running_mfu = -1.0
 epochs_trained_thus_far, iters_trained_thus_far = get_epoch_from_iter(iter_num)
 data_retrievals_so_far = iters_trained_thus_far * conf.training.gradient_accumulation_steps
 ARBITRARY_LARGE_NUMBER = int(10e9)
+continue_training = True
 for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
+    if not continue_training:
+        break
+    
     # Update epoch so the correct seed is used for shuffling.
     if ddp:
         train_dataloader.sampler.set_epoch(epoch_num)
@@ -436,6 +446,7 @@ for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
                     # On the max_num_failed_checkpoint_checks-th failure, we end training
                     num_failed_checkpoint_checks += 1
                     if num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:
+                        continue_training = False
                         break
                 
                 # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training

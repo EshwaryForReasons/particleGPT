@@ -66,7 +66,10 @@
                         "model_5_9_4",
                         "model_5_9_5",
                         "model_5_9_6",
-                        "model_5_9_7"
+                        "model_5_9_7",
+                        "model_5_9_8",
+                        "model_5_9_9",
+                        "model_5_9_10"
                     ]
                 },
                 "preparation_5_10": {
@@ -291,6 +294,21 @@
         },
         "model_5_9_7": {
             "config_file": "model_5_9_7.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_9"
+        },
+        "model_5_9_8": {
+            "config_file": "model_5_9_8.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_9"
+        },
+        "model_5_9_9": {
+            "config_file": "model_5_9_9.json",
+            "dataset_name": "dataset_5",
+            "preparation_name": "preparation_5_9"
+        },
+        "model_5_9_10": {
+            "config_file": "model_5_9_10.json",
             "dataset_name": "dataset_5",
             "preparation_name": "preparation_5_9"
         },

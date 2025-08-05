@@ -275,9 +275,9 @@ if __name__ == "__main__":
     
     # Run the analysis
     dataset_analyzer = Analyzer(model_to_analyze, preparation_name)
-    # dataset_analyzer.filter_data()
-    # untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
-    # dataset_analyzer.generate_verbose_particle_information()
+    dataset_analyzer.filter_data()
+    untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
+    dataset_analyzer.generate_verbose_particle_information()
     dataset_analyzer.generate_distributions()
     dataset_analyzer.calculate_metrics()
     
