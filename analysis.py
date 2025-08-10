@@ -5,6 +5,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,10 @@ import jetnet.evaluation
 import pUtil
 from dictionary import Dictionary
 import data_manager
+
+# Custom formatter to force scientific notation for small numbers
+def sci_notation(x, pos):
+    return f'{x:.0e}'  # or '{:.1e}' for 1 decimal
 
 class dataset:
     @staticmethod
@@ -108,8 +113,54 @@ class plotting:
     Plotting training runs and distributions of leading particles.
     """
     
+    # learning rate decay scheduler
     @staticmethod
-    def plot_training_run(model_names, y_lim=None, x_lim=None, use_log=False, out_file=None):
+    def _get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters, min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult):
+        if lr_scheduler == 'cosine_annealing_with_warmup':
+            # 1) linear warmup for warmup_iters steps
+            if it < warmup_iters:
+                return learning_rate * it / warmup_iters
+            # 2) if it > lr_decay_iters, return min learning rate
+            if it >= lr_decay_iters:
+                return min_lr
+            # 3) in between, use cosine decay down to min learning rate
+            decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+            assert 0 <= decay_ratio <= 1
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return min_lr + coeff * (learning_rate - min_lr)
+        elif lr_scheduler == 'cosine_with_warmup':
+            # 1) linear warmup for warmup_iters steps
+            if it < warmup_iters:
+                return learning_rate * it / warmup_iters
+            # 3) in between, use cosine decay down to min learning rate
+            decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return min_lr + coeff * (learning_rate - min_lr)
+        elif lr_scheduler == 'cosine_annealing_with_warm_restarts':
+            # 1) linear warmup for warmup_iters steps
+            if it < warmup_iters:
+                return learning_rate * (it / warmup_iters)
+            # Adjust iteration to account for warmup
+            it -= warmup_iters
+            # 2) Find current cycle and position in the cycle
+            cycle = 0
+            curr_cycle_len = lr_decay_iters
+            iter_in_cycle = it
+            while iter_in_cycle >= curr_cycle_len:
+                iter_in_cycle -= curr_cycle_len
+                cycle += 1
+                curr_cycle_len = int(curr_cycle_len * cycle_steps_mult)
+            # 3) Decay the base learning rate for the current cycle
+            curr_base_lr = learning_rate * (base_lr_decay_mult ** cycle)
+            # 4) Normalized progress within the cycle
+            t = iter_in_cycle / curr_cycle_len
+            # 5) Cosine annealing
+            lr = min_lr + 0.5 * (curr_base_lr - min_lr) * (1 + math.cos(math.pi * t))
+            return lr
+        raise ValueError(f"Unknown lr_scheduler {lr_scheduler}")
+    
+    @staticmethod
+    def plot_training_run(model_names, y_lim=None, x_lim=None, use_log=False, out_file=None, plot_lr_schedule=False):
         """
         Wrapper to plot a training run. Handles plotting lines and markers for training and validation loss.
         """
@@ -135,6 +186,28 @@ class plotting:
             min_val_row = model_data.checkpointed_df.loc[model_data.checkpointed_df['val_loss'].idxmin()]
             final_row = model_data.running_df.iloc[-1]
             
+            if plot_lr_schedule:
+                config_filepath = pUtil.get_model_config_filepath(model_name)
+                with open(config_filepath, 'r') as f:
+                    model_config = json.load(f)
+                    training_conf = model_config.get('training_config', {})
+                    lr_scheduler = training_conf.get('lr_scheduler', 'cosine_annealing_with_warmup')
+                    warmup_iters = training_conf .get('warmup_iters', 0)
+                    lr_decay_iters = training_conf .get('lr_decay_iters', 0)
+                    learning_rate = training_conf .get('learning_rate', 0)
+                    min_lr = training_conf .get('min_lr', 0)
+                    base_lr_decay_mult = training_conf .get('base_lr_decay_mult', 1)
+                    cycle_steps_mult = training_conf .get('cycle_steps_mult', 1)
+                iters = [i for i in range(model_data.running_df['iter'].max())]
+                lrs = [plotting._get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters, min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult) for it in iters]
+                
+                # Another y-axis for lr as otherwise it would be too small to see 
+                lrax = ax.twinx()
+                lrax.plot(iters, lrs, label=f'Learning rate', color="magenta", linestyle='solid', linewidth=1)
+                lrax.tick_params(axis='y', labelcolor="magenta")
+                # Decimal can be confusing so we switch to scientific
+                lrax.yaxis.set_major_formatter(FuncFormatter(sci_notation))
+
             # Do plot
             ax.plot(model_data.running_df['iter'], model_data.running_df['train_loss'], label=f'Training Loss ({model_name})', color=plotting.colors[idx], linestyle='solid', linewidth=0.5)
             ax.plot(model_data.running_df['iter'], model_data.running_df['val_loss'], label=f'Validation Loss ({model_name})', color=plotting.colors[idx], linestyle='dashed', linewidth=0.5)
@@ -528,7 +601,7 @@ class tables:
     
     @staticmethod
     def get_meta_data(model_name):
-        meta_filename = pUtil.get_model_meta_filename(model_name)
+        meta_filename = pUtil.get_model_meta_filepath(model_name)
         if not meta_filename.exists():
             return None
         
@@ -544,7 +617,7 @@ class tables:
     
     @staticmethod
     def get_config_data(model_name):
-        config_filename = pUtil.get_model_config_filename(model_name)
+        config_filename = pUtil.get_model_config_filepath(model_name)
         if not config_filename.exists():
             return None
         

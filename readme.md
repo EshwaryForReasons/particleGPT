@@ -26,6 +26,9 @@ srun -C "gpu" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash
 srun -C "gpu&hbm80g" -q interactive -N 1 -G 4 -c 32 -t 4:00:00 -A m3443 --pty /bin/bash -l
 srun -C "cpu" -q interactive -N 1 -c 128 -t 4:00:00 -A m3443 --pty /bin/bash -l
 
+# Training on a single node, multiple GPUs (4 here)
+torchrun --standalone --nproc_per_node=4 train.py config/model_to_train.json
+
 # Training on a specified GPU
 CUDA_VISIBLE_DEVICES=0 python train.py config/model_to_train.json
 

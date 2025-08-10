@@ -29,58 +29,76 @@ def get_temp_dir(model_name=None):
         return script_dir / TEMP_DIR_NAME
     raise ValueError("model_name must be None to get the global temp directory")
 
-# Gets the config file of a model given the model name
-def get_model_config_filename(model_name):
-    atlas_filename = script_dir / 'atlas.json'
-    with open(atlas_filename, 'r') as f:
-        atlas = json.load(f)
-    
-    config_filename = atlas['models'][model_name]['config_file']
-    config_filename = script_dir / CONFIG_DIR_NAME / config_filename
-    return config_filename
 
-# Gets the meta file of the preparation a model is trained on
-def get_model_meta_filename(model_name):
-    atlas_filename = script_dir / 'atlas.json'
-    with open(atlas_filename, 'r') as f:
-        atlas = json.load(f)
+
+
+def get_model_config_filepath(model_name):
+    # The model name will be the name of the config file unless specified otherwise within the file.
+    config_dir = script_dir / CONFIG_DIR_NAME
+    config_files = list(config_dir.glob("*.json"))
     
-    preparation_dirname = atlas['models'][model_name]['preparation_name']
-    meta_filename = script_dir / DATASETS_DIR_NAME / preparation_dirname / 'meta.pkl'
-    return meta_filename
+    correct_config_file = None
+    for config_file in config_files:
+        with open(config_file, "r") as f:
+            data = json.load(f)
+            if config_file.stem == model_name:
+                correct_config_file = config_file
+                break
+            elif 'model_name' in data and data['model_name'] == model_name:
+                correct_config_file = config_file
+                break
+    
+    if correct_config_file is None:
+        raise ValueError(f"No config file found for model name {model_name}.")
+    
+    return correct_config_file
+                    
+# Gets the meta file of the preparation a model is trained on
+def get_model_meta_filepath(model_name):
+    config_filepath = get_model_config_filepath(model_name)
+    with open(config_filepath, 'r') as f:
+        config = json.load(f)
+        preparation_name = config.get('preparation_name', None)
+    
+    if preparation_name is None:
+        raise ValueError(f"No preparation name found in config for model {model_name}.")
+
+    meta_filepath = script_dir / DATASETS_DIR_NAME / preparation_name / 'meta.pkl'
+    return meta_filepath
 
 # Gets the preparation directory of a model given the model name
 def get_model_preparation_dir(model_name):
-    atlas_filename = script_dir / 'atlas.json'
-    with open(atlas_filename, 'r') as f:
-        atlas = json.load(f)
+    config_filepath = get_model_config_filepath(model_name)
+    with open(config_filepath, 'r') as f:
+        config = json.load(f)
+        preparation_name = config.get('preparation_name', None)
     
-    preparation_dirname = atlas['models'][model_name]['preparation_name']
-    preparation_dir = script_dir / DATASETS_DIR_NAME / preparation_dirname
+    if preparation_name is None:
+        raise ValueError(f"No preparation name found in config for model {model_name}.")
+
+    preparation_dir = script_dir / DATASETS_DIR_NAME / preparation_name
     return preparation_dir
-
-def get_all_model_names():
-    atlas_filename = script_dir / 'atlas.json'
-    with open(atlas_filename, 'r') as f:
-        atlas = json.load(f)
     
-    model_names = list(atlas['models'].keys())
-    return model_names
-
 def get_model_preparation_name(model_name):
-    atlas_filename = script_dir / 'atlas.json'
-    with open(atlas_filename, 'r') as f:
-        atlas = json.load(f)
+    config_filepath = get_model_config_filepath(model_name)
+    with open(config_filepath, 'r') as f:
+        config = json.load(f)
+        preparation_name = config.get('preparation_name', None)
     
-    preparation_name = atlas['models'][model_name]['preparation_name']
+    if preparation_name is None:
+        raise ValueError(f"No preparation name found in config for model {model_name}.")
+
     return preparation_name
 
 def get_model_dataset_name(model_name):
-    atlas_filename = script_dir / 'atlas.json'
-    with open(atlas_filename, 'r') as f:
-        atlas = json.load(f)
+    config_filepath = get_model_config_filepath(model_name)
+    with open(config_filepath, 'r') as f:
+        config = json.load(f)
+        dataset_name = config.get('dataset', None)
     
-    dataset_name = atlas['models'][model_name]['dataset_name']
+    if dataset_name is None:
+        raise ValueError(f"No dataset name found in config for model {model_name}.")
+
     return dataset_name
 
 # Sampling

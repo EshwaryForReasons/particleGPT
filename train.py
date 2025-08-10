@@ -201,7 +201,6 @@ pLogging.info(logger_idx, "Training configuration", {
     "beta1": conf.training.beta1,
     "beta2": conf.training.beta2,
     "grad_clip": conf.training.grad_clip,
-    "decay_lr": conf.training.decay_lr,
     "warmup_iters": conf.training.warmup_iters,
     "lr_decay_iters": conf.training.lr_decay_iters,
     "min_lr": conf.training.min_lr,
@@ -320,21 +319,42 @@ def get_lr(it):
         if it >= conf.training.lr_decay_iters:
             return conf.training.min_lr
         # 3) in between, use cosine decay down to min learning rate
-        # Edge case: if lr_decay_iters == warmup_iters we get a division by zero error
-        # I have patched this so far changing the second if to it >= lr_decay_iters (opposed so it < lr_decay_iters)
-        # That not being the case was probably a bug anyway, but I'll keep track of notable changes to that.
         decay_ratio = (it - conf.training.warmup_iters) / (conf.training.lr_decay_iters - conf.training.warmup_iters)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
         return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
+    elif conf.training.lr_scheduler == 'cosine_with_warmup':
+        # 1) linear warmup for warmup_iters steps
+        if it < conf.training.warmup_iters:
+            return conf.training.learning_rate * it / conf.training.warmup_iters
+        # 2) in between, use cosine decay down to min learning rate
+        decay_ratio = (it - conf.training.warmup_iters) / (conf.training.lr_decay_iters - conf.training.warmup_iters)
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+        return conf.training.min_lr + coeff * (conf.training.learning_rate - conf.training.min_lr)
     elif conf.training.lr_scheduler == 'cosine_annealing_with_warm_restarts':
-        # Cosine annealing with warm restarts
-        # https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.CosineAnnealingWarmRestarts.html
-        # This is a bit more complex, so we use PyTorch's built-in scheduler.
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=conf.training.warmup_iters, T_mult=1, eta_min=conf.training.min_lr)
-        scheduler.step(it)
-        return scheduler.get_last_lr()[0]
+        # 1) linear warmup for warmup_iters steps
+        if it < conf.training.warmup_iters:
+            return conf.training.learning_rate * (it / conf.training.warmup_iters)
+        # Adjust iteration to account for warmup
+        it -= conf.training.warmup_iters
+        # 2) Find current cycle and position in the cycle
+        cycle = 0
+        curr_cycle_len = conf.training.lr_decay_iters
+        iter_in_cycle = it
+        while iter_in_cycle >= curr_cycle_len:
+            iter_in_cycle -= curr_cycle_len
+            cycle += 1
+            curr_cycle_len = int(curr_cycle_len * conf.training.cycle_steps_mult)
+        # 3) Decay the base learning rate for the current cycle
+        curr_base_lr = conf.training.learning_rate * (conf.training.base_lr_decay_mult ** cycle)
+        # 4) Normalized progress within the cycle
+        t = iter_in_cycle / curr_cycle_len
+        # 5) Cosine annealing
+        lr = conf.training.min_lr + 0.5 * (curr_base_lr - conf.training.min_lr) * (1 + math.cos(math.pi * t))
+        return lr
+    elif conf.training.lr_scheduler == 'constant':
+        return conf.training.learning_rate
+    raise ValueError(f"Unknown lr_scheduler {conf.training.lr_scheduler}")
 
 # training loop
 pLogging.info(logger_idx, f'Iterations per epoch is {conf.training.iterations_per_epoch}')
@@ -358,9 +378,10 @@ for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
     if ddp:
         train_dataloader.sampler.set_epoch(epoch_num)
 
-    # One run of this loop is essentially a micro step.
+    # One run of this loop is essentially a micro step (grad_accum micro steps form an iteration).
     for num_micro_steps, (X, Y) in enumerate(train_dataloader):
         # Skip over data_retrievals_so_far so we are at the correct point in the shuffle.
+        # This is for the case where we resume training from a checkpoint.
         if data_retrievals_so_far > 0:
             data_retrievals_so_far -= 1
             continue
@@ -370,9 +391,8 @@ for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
             break
         
         # Get learning rate for this iteration
-        lr = get_lr(iter_num) if conf.training.decay_lr else conf.training.learning_rate
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = get_lr(iter_num)
         
         # ----------------------------------------------------------------------
         # Perform training.

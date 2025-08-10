@@ -81,8 +81,8 @@ def get_metrics_for_model(model_name):
 
 # Returns all important data for a model in a dictionary
 def get_all_data_for_model(model_name):
-    meta_filename = pUtil.get_model_meta_filename(model_name)
-    config_filename = pUtil.get_model_config_filename(model_name)
+    meta_filename = pUtil.get_model_meta_filepath(model_name)
+    config_filename = pUtil.get_model_config_filepath(model_name)
     
     if not meta_filename.exists():
         return
