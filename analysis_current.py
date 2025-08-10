@@ -135,6 +135,11 @@ class Analyzer:
                 filtered_file.write(event + '\n')
     
     def generate_distributions(self):
+        # The full training run probably isn't too useful, but we plot it anyway.
+        anal.plotting.plot_training_run([self.model_name], out_file=self.latest_sampling_dir / 'training_run.png')
+        anal.plotting.plot_training_run([self.model_name], out_file=self.latest_sampling_dir / 'training_run_with_lr_schedule.png', plot_lr_schedule=True)
+        anal.plotting.plot_training_run([self.model_name], use_log=True, out_file=self.latest_sampling_dir / 'training_run_log.png')
+        anal.plotting.plot_training_run([self.model_name], use_log=True, out_file=self.latest_sampling_dir / 'training_run_log_with_lr_schedule.png', plot_lr_schedule=True)
         anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
         anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid_log.png')
         anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
