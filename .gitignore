@@ -7,11 +7,11 @@ trained_models/
 generated_samples/
 job_scripts/
 
-data/preparation_2_4/
-data/preparation_2_4_backup/
-data/preparation_2_4_schemes/
-data/preparation_5_8_NO/
-data/preparation_5_9_testing/
+data/preparation_100k_4/
+data/preparation_100k_4_backup/
+data/preparation_100k_4_schemes/
+data/preparation_10M_5_8_NO/
+data/preparation_10M_5_9_testing/
 
 data/*/temp/
 data/*/*.csv
