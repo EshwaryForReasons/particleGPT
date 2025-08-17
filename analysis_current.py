@@ -15,16 +15,16 @@ import untokenizer
 script_dir = Path(__file__).resolve().parent
 
 class Analyzer:
-    def __init__(self, model_name, preparation_name):
-        self.preparation = preparation_name
+    def __init__(self, model_name):
         self.model_name = model_name
         
+        preparation_dir = pUtil.get_model_preparation_dir(model_name)
         self.latest_sampling_dir = pUtil.get_latest_sampling_dir(model_name)
 
-        self.dictionary_filename                  = script_dir / 'data' / preparation_name / 'dictionary.json'
-        self.meta_filename                        = script_dir / 'data' / preparation_name / 'meta.pkl'
-        self.test_real_bin_filename               = script_dir / 'data' / preparation_name / 'test_real.bin'
-        self.real_leading_test_particles_filename = script_dir / 'data' / preparation_name / 'real_leading_test_particles.csv'
+        self.dictionary_filename                  = preparation_dir / 'dictionary.json'
+        self.meta_filename                        = preparation_dir / 'meta.pkl'
+        self.test_real_bin_filename               = preparation_dir / 'test_real.bin'
+        self.real_leading_test_particles_filename = preparation_dir / 'real_leading_test_particles.csv'
         self.generated_samples_filename           = self.latest_sampling_dir / 'generated_samples.csv'
         self.filtered_samples_filename            = self.latest_sampling_dir / 'filtered_samples.csv'
         self.sampled_leading_particles_filename   = self.latest_sampling_dir / 'sampled_leading_particles.csv'
@@ -275,11 +275,8 @@ if __name__ == "__main__":
         print(f'Analysis for model {model_to_analyze} cannot be performed, because no sampling data is available.')
         sys.exit()
     
-    # Extract dataset name from sampling info
-    preparation_name = pUtil.get_model_preparation_name(model_to_analyze)
-    
     # Run the analysis
-    dataset_analyzer = Analyzer(model_to_analyze, preparation_name)
+    dataset_analyzer = Analyzer(model_to_analyze)
     dataset_analyzer.filter_data()
     untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
     dataset_analyzer.generate_verbose_particle_information()

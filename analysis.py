@@ -225,7 +225,7 @@ class plotting:
         return fig, ax
 
     @staticmethod
-    def _get_common_data(model_name):
+    def get_common_data(model_name):
         """
         Retrieves bin widths and ranges for each feature and the real and sampled leading particles dataframes.
         """
@@ -273,7 +273,7 @@ class plotting:
             "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": 400 },
             "theta":         { "min": theta_min,                     "max": theta_max,                     "bins": 400 },
             "phi":           { "min": phi_min,                       "max": phi_max,                       "bins": 400 },
-            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": 400 },
+            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": 350 },
         }
 
         # real_df = pd.read_csv(real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
@@ -298,7 +298,7 @@ class plotting:
         
         for ax, model_name in zip([axes], model_names):
             # Parse data
-            bin_settings = plotting._get_common_data(model_name)
+            bin_settings = plotting.get_common_data(model_name)
             range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
             n_bins = bin_settings[column_name]['bins']
             
@@ -352,7 +352,7 @@ class plotting:
         
         for ax, model_name in zip([axes], model_names):
             # Parse data
-            bin_settings = plotting._get_common_data(model_name)
+            bin_settings = plotting.get_common_data(model_name)
             range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
             n_bins = bin_settings[column_name]['bins']
             

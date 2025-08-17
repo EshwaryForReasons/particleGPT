@@ -47,7 +47,26 @@ model_output_dir = script_dir / "trained_models" / conf.generic.model_name
 model_output_dir.mkdir(parents=True, exist_ok=True)
 
 best_ckpt_path = model_output_dir / 'ckpt.pt'
-running_ckpt_path = model_output_dir / 'ckpt_running.pt'
+
+# Checkpoints are stored as ckpt.pt (best val loss) and ckpt_running_idx.pt (in order of saving).
+# This function returns the latest running checkpoint filepath or None if there are none.
+def get_latest_checkpoint_filepath():
+    ckpt_map = {}
+    for path in model_output_dir.glob("ckpt_running_*.pt"):
+        idx_str = path.stem.split("_")[-1]
+        try:
+            idx = int(idx_str)
+            ckpt_map[idx] = path
+        except ValueError:
+            pass
+    
+    latest_idx = -1
+    latest_running_checkpoint = None
+    if ckpt_map:
+        latest_idx = max(ckpt_map)
+        latest_running_checkpoint = ckpt_map[latest_idx]
+    
+    return latest_idx, latest_running_checkpoint
 
 logger_idx = pLogging.create_training_logger(conf.generic.model_name, 1)
 model.set_logger(logger_idx)
@@ -222,7 +241,8 @@ model_args = dict(
 # Determine if we should resume or start from scratch
 # This is based on if a ckpt_running.pt file exists and if the resume behavior is overridden.
 init_training_from = 'scratch' # or 'resume'
-if running_ckpt_path.exists() and conf.training.init_from != 'scratch':
+latest_running_cktp_idx, latest_running_ckpt = get_latest_checkpoint_filepath()
+if latest_running_ckpt and conf.training.init_from != 'scratch':
     init_training_from = 'resume'
 
 if init_training_from == 'scratch':
@@ -236,7 +256,7 @@ elif init_training_from == 'resume':
     # Resume training from a checkpoint
     pLogging.info(logger_idx, f"Resuming training from {model_output_dir}")
     pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {model_output_dir}"})
-    checkpoint = torch.load(running_ckpt_path, map_location=conf.training.device)
+    checkpoint = torch.load(latest_running_ckpt, map_location=conf.training.device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
@@ -472,7 +492,10 @@ for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
                 # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
                 # without having to redo iterations.
                 pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
-                torch.save(checkpoint, running_ckpt_path)
+                latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_checkpoint_filepath()
+                new_running_ckpt_idx = latest_running_cktp_idx + 1
+                new_running_ckpt_path = model_output_dir / f'ckpt_running_{new_running_ckpt_idx}.pt'
+                torch.save(checkpoint, new_running_ckpt_path)
             
             # Log training progress
             if iter_num % conf.training.log_interval == 0 and master_process:

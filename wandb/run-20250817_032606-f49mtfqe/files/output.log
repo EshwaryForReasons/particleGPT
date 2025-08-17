@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/wandb_doer.py", line 84, in <module>
+    wandb.log({image.stem: wandb.Image(image)})
+                           ^^^^^^^^^^^^^^^^^^
+  File "/global/common/software/nersc9/pytorch/2.6.0/lib/python3.12/site-packages/wandb/sdk/data_types/image.py", line 179, in __init__
+    self._initialize_from_data(data_or_path, mode, file_type)
+  File "/global/common/software/nersc9/pytorch/2.6.0/lib/python3.12/site-packages/wandb/sdk/data_types/image.py", line 321, in _initialize_from_data
+    if data.ndim > 2:
+       ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute 'ndim'

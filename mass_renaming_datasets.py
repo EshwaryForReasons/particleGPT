@@ -119,3 +119,14 @@ for dir_path in models_dir.glob("*"):
     with open(dir_path / 'train_log_1.jsonl', 'w') as f:
         for line in modified_file:
             f.write(json.dumps(line) + '\n')
+
+# Rename the model names in the generated_samples directory
+generated_samples_dir = script_dir / "generated_samples"
+
+for old_prefix, new_prefix in model_rename_map.items():
+    for dir_path in generated_samples_dir.glob(f"{old_prefix}*"):
+        if dir_path.is_dir():  # ensure it's a directory
+            new_name = dir_path.name.replace(old_prefix, new_prefix, 1)
+            new_path = dir_path.with_name(new_name)
+            print(f"Renaming dir: {dir_path.name} → {new_name}")
+            dir_path.rename(new_path)

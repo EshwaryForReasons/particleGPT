@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/wandb_doer.py", line 88, in <module>
+    wandb.log({image.stem: wandb.Image(img_array)})
+               ^^^^^^^^^^
+AttributeError: 'PngImageFile' object has no attribute 'stem'

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/wandb_doer.py", line 133, in <module>
+    range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
+             ~~~~~~~~~~~~^^^^^^^^^^^^^
+KeyError: 'pdgid'

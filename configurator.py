@@ -5,8 +5,6 @@ import torch
 
 from dataclasses import dataclass, field
 
-config_file_path = sys.argv[1]
-
 @dataclass
 class GenericConfiguration:
     config_file_path:      str = ''
@@ -80,14 +78,14 @@ class SamplingConfiguration:
     dtype:                  str = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
     compile:                bool = True
 
-generic = GenericConfiguration()
-training = TrainingConfiguration()
-sampling = SamplingConfiguration()
+generic = None
+training = None
+sampling = None
 
-def perform_configuration():
-    global generic
-    global training
-    global sampling
+def perform_configuration(config_file_path):
+    generic = GenericConfiguration()
+    training = TrainingConfiguration()
+    sampling = SamplingConfiguration()
     
     print(f'Configurator found file {config_file_path}.')
     with open(config_file_path, 'r') as f:
@@ -123,9 +121,12 @@ def perform_configuration():
         config_file_name = os.path.basename(config_file_path)
         config_file_name_stripped = os.path.splitext(config_file_name)
         generic.model_name = config_file_name_stripped[0]
+    
+    return generic, training, sampling
 
 # Configurator should only run if a config file is provided as an argument.
 # All expected exceptions will be handled here.
 arg_one_exceptions = [ '--help', '-h', 'all', 'single_threaded']
 if len(sys.argv) > 1 and sys.argv[1] not in arg_one_exceptions:
-    perform_configuration()
+    config_file_path = sys.argv[1]
+    generic, training, sampling = perform_configuration(config_file_path)

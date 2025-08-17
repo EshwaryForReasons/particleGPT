@@ -1,0 +1,42 @@
+{
+  "os":  "Linux-5.14.21-150500.55.97_13.0.78-cray_shasta_c-x86_64-with-glibc2.31",
+  "python":  "CPython 3.12.9",
+  "startedAt":  "2025-08-17T09:33:05.347025Z",
+  "program":  "/pscratch/sd/e/eshy/particleGPT/wandb_doer.py",
+  "codePath":  "wandb_doer.py",
+  "git":  {
+    "remote":  "git@github.com:EshwaryForReasons/particleGPT.git",
+    "commit":  "41bdeebbf01e3e857860b49eeb053d34e32eae20"
+  },
+  "email":  "mishra.eshwary@gmail.com",
+  "root":  "/pscratch/sd/e/eshy/particleGPT",
+  "host":  "login16",
+  "executable":  "/global/common/software/nersc9/pytorch/2.6.0/bin/python",
+  "codePathLocal":  "wandb_doer.py",
+  "cpu_count":  128,
+  "cpu_count_logical":  256,
+  "gpu":  "NVIDIA A100-PCIE-40GB",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "270030716928",
+      "used":  "11712417792"
+    }
+  },
+  "memory":  {
+    "total":  "540061437952"
+  },
+  "cpu":  {
+    "count":  128,
+    "countLogical":  256
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA A100-PCIE-40GB",
+      "memoryTotal":  "42949672960",
+      "cudaCores":  6912,
+      "architecture":  "Ampere"
+    }
+  ],
+  "cudaVersion":  "12.4"
+}

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/wandb_doer.py", line 142, in <module>
+    real_data, sampled_data = get_all_column_data(model_name, column_name)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: get_all_column_data() takes 1 positional argument but 2 were given

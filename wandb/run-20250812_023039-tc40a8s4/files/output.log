@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/pscratch/sd/e/eshy/particleGPT/wandb_doer.py", line 30, in <module>
+    running_df, saved_df = anal.tables.get_training_run_data(model_name)
+    ^^^^^^^^^^^^^^^^^^^^
+TypeError: cannot unpack non-iterable types.SimpleNamespace object
