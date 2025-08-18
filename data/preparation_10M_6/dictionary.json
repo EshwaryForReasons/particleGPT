@@ -1,5 +1,5 @@
 {
-    "preparation_name": "preparation_5_6",
+    "preparation_name": "preparation_10M_6",
     "dataset": "dataset_10M.csv",
     "tokenization": {
         "0": "particle_start",

@@ -1,5 +1,5 @@
 {
-    "preparation_name": "preparation_5_7",
+    "preparation_name": "preparation_10M_7",
     "dataset": "dataset_10M.csv",
     "tokenization": {
         "0": "pdgid",

@@ -1,5 +1,5 @@
 {
-    "preparation_name": "preparation_10M_11",
+    "preparation_name": "preparation_10M_12",
     "dataset": "dataset_10M.csv",
     "training_config": {
         "eval_interval": 250,
@@ -8,17 +8,18 @@
         "gradient_accumulation_steps": 80,
         "batch_size": 128,
         "context_events": 1,
-        "n_layer": 12,
-        "n_head": 4,
+        "n_layer": 4,
+        "n_head": 2,
         "n_embd": 512,
         "dropout": 0.1,
+        "lr_scheduler": "cosine_annealing_with_warm_restarts",
         "learning_rate": 0.001,
         "max_iters": 1000000,
         "lr_decay_iters": 5000,
         "min_lr": 1e-05,
         "beta2": 0.98,
         "warmup_iters": 250,
-        "max_num_failed_checkpoint_checks": 8
+        "max_num_failed_checkpoint_checks": 100
     },
     "sampling_config": {
         "temperature": 0.8,

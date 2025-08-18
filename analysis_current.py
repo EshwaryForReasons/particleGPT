@@ -11,6 +11,7 @@ import pUtil
 import data_manager
 import analysis as anal
 import untokenizer
+import wandb_doer
 
 script_dir = Path(__file__).resolve().parent
 
@@ -282,5 +283,6 @@ if __name__ == "__main__":
     dataset_analyzer.generate_verbose_particle_information()
     dataset_analyzer.generate_distributions()
     dataset_analyzer.calculate_metrics()
+    wandb_doer.send_to_wandb(model_to_analyze)
     
     print('Distributions and metrics generated successfully.')
