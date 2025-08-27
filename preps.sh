@@ -1,0 +1,11 @@
+python prepare.py data/preparation_10M_reducedbinwidths_2/dictionary.json
+python prepare.py data/preparation_10M_reducedbinwidths_3/dictionary.json
+python prepare.py data/preparation_10M_reducedbinwidths_4/dictionary.json
+python prepare.py data/preparation_10M_reducedbinwidths_5/dictionary.json
+python prepare.py data/preparation_10M_LinTok_1/dictionary.json
+
+sbatch job_scripts/train_10M_LinTok_1_inclrrestarts_1.sl
+sbatch job_scripts/train_10M_reducedbinwidths_2_inclrrestarts_1.sl
+sbatch job_scripts/train_10M_reducedbinwidths_3_inclrrestarts_1.sl
+sbatch job_scripts/train_10M_reducedbinwidths_4_inclrrestarts_1.sl
+sbatch job_scripts/train_10M_reducedbinwidths_5_inclrrestarts_1.sl

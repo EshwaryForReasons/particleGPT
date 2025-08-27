@@ -69,6 +69,12 @@ def tokenize_event(event: list[float]) -> list[int]:
                 tokenized_event.append(particle_index + dictionary.PDGID_OFFSET)
             elif schema == "pt":
                 tokenized_event.append(custom_searchsorted(pt, dictionary.pt_bins) + dictionary.PT_OFFSET)
+            elif schema == "px":
+                tokenized_event.append(custom_searchsorted(px, dictionary.px_bins) + dictionary.PX_OFFSET)
+            elif schema == "py":
+                tokenized_event.append(custom_searchsorted(py, dictionary.py_bins) + dictionary.PY_OFFSET)
+            elif schema == "pz":
+                tokenized_event.append(custom_searchsorted(pz, dictionary.pz_bins) + dictionary.PZ_OFFSET)
             elif schema == "energy":
                 tokenized_event.append(custom_searchsorted(energy, dictionary.e_bins) + dictionary.ENERGY_OFFSET)
             elif schema == "eta":

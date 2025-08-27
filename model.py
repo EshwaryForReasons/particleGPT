@@ -207,6 +207,9 @@ class GPT(nn.Module):
         type_ids[(idx >= dictionary.THETA_OFFSET)              & (idx < dictionary.THETA_OFFSET + len(dictionary.theta_bins))]             = ETokenTypes.THETA.value
         type_ids[(idx >= dictionary.PHI_OFFSET)                & (idx < dictionary.PHI_OFFSET + len(dictionary.phi_bins))]                 = ETokenTypes.PHI.value
         type_ids[(idx >= dictionary.PT_OFFSET)                 & (idx < dictionary.PT_OFFSET + len(dictionary.pt_bins))]                   = ETokenTypes.PT.value
+        type_ids[(idx >= dictionary.PX_OFFSET)                 & (idx < dictionary.PX_OFFSET + len(dictionary.px_bins))]                   = ETokenTypes.PX.value
+        type_ids[(idx >= dictionary.PY_OFFSET)                 & (idx < dictionary.PY_OFFSET + len(dictionary.py_bins))]                   = ETokenTypes.PY.value
+        type_ids[(idx >= dictionary.PZ_OFFSET)                 & (idx < dictionary.PZ_OFFSET + len(dictionary.pz_bins))]                   = ETokenTypes.PZ.value
         return type_ids
 
     def get_num_params(self, non_embedding=True):
@@ -253,27 +256,43 @@ class GPT(nn.Module):
     This function does this by penalizing the bins based on (1) being in the right range for the
     type of token this is (i.e. for a pt token it following the bounds for pt), and (2) by
     defining the penalty as a function of distance from the correct token (i.e. 80 is still ok,
-    whereas 700 is utterly unacceptable).
+    whereas 700 is unacceptable).
     """
     @staticmethod
-    def batch_gaussian_labels(target_idxs, vocab_size, sigma=1.0):
+    def batch_gaussian_labels(target_idxs, vocab_size, sigma=1.0, get_token_type_ids_fn=None):
         """
         Create soft target distributions for a batch of indices using a Gaussian.
         target_idxs: [batch_size] (int)
         returns: [batch_size, vocab_size]
         """
+        
         batch_size = target_idxs.size(0)
         device = target_idxs.device
-        positions = torch.arange(vocab_size, device=device).unsqueeze(0)  # [1, vocab_size]
-        target_idxs = target_idxs.unsqueeze(1).float()                    # [batch_size, 1]
+        positions = torch.arange(vocab_size, device=device).unsqueeze(0).expand(batch_size, -1)  # [1, vocab_size]
+        target_idxs_expanded = target_idxs.unsqueeze(1).float()                                  # [batch_size, 1]
 
-        gauss = torch.exp(-0.5 * ((positions - target_idxs) / sigma) ** 2)
-        soft_targets = gauss / gauss.sum(dim=1, keepdim=True)
-        return soft_targets  # [batch_size, vocab_size]
+        # Compute type IDs using provided function
+        # Get the type of each target token (shape [batch_size, 1])
+        target_token_types = get_token_type_ids_fn(target_idxs).unsqueeze(1)                     # [batch_size, 1]
+        # Get the type of every token in vocab (broadcasted to [batch_size, vocab_size])
+        vocab_token_types = get_token_type_ids_fn(positions)                                     # [batch_size, vocab_size]
+        # Create a mask where types match
+        group_mask = (vocab_token_types == target_token_types)                                   # [batch_size, vocab_size]
+
+        # Apply Gaussian falloff
+        dist = torch.exp(-0.5 * ((positions - target_idxs_expanded) / sigma) ** 2)
+        # Apply group mask
+        dist = dist * group_mask.float()
+
+        # Normalize
+        dist_sum = dist.sum(dim=1, keepdim=True)
+        dist_sum = torch.where(dist_sum == 0, torch.ones_like(dist_sum), dist_sum)
+        soft_targets = dist / dist_sum
+        return soft_targets
 
     @staticmethod
-    def distance_sensitive_loss(logits, target_idxs, sigma=1.0):
-        soft_targets = GPT.batch_gaussian_labels(target_idxs, logits.size(1), sigma)
+    def distance_sensitive_loss(logits, target_idxs, sigma=1.0, get_token_type_ids_fn=None):
+        soft_targets = GPT.batch_gaussian_labels(target_idxs, logits.size(1), sigma, get_token_type_ids_fn=get_token_type_ids_fn)
         log_probs = F.log_softmax(logits, dim=1)
         loss = F.kl_div(log_probs, soft_targets, reduction='batchmean')
         return loss
@@ -305,7 +324,12 @@ class GPT(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = GPT.classic_cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=dictionary.padding_token)
+            if conf.training.loss_function == 'cross_entropy':
+                loss = GPT.classic_cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=dictionary.padding_token)
+            elif conf.training.loss_function == 'distance_sensitive':
+                loss = GPT.distance_sensitive_loss(logits.view(-1, logits.size(-1)), targets.view(-1), sigma=1.0, get_token_type_ids_fn=self.get_token_type_ids)
+            else:
+                raise ValueError(f"Unknown loss function: {conf.training.loss_function}")
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

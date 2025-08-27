@@ -23,6 +23,9 @@ class ETokenTypes(Enum):
     THETA = 6
     PHI = 7
     PT = 8
+    PX = 9
+    PY = 10
+    PZ = 11
 
 # Custom arange because np.arange and np.linspace suffer from floating point precision issues.
 def arange(start, stop, step_size):
@@ -176,8 +179,11 @@ class Dictionary():
         self.theta_bins = self._create_bins('theta')
         self.phi_bins   = self._create_bins('phi')
         self.pt_bins    = self._create_bins('pt')
-        
-        self.vocab_size = self.num_special_tokens + self.num_particles + self.num_materials + len(self.e_bins) + len(self.eta_bins) + len(self.theta_bins) + len(self.phi_bins) + len(self.pt_bins)
+        self.px_bins    = self._create_bins('px')
+        self.py_bins    = self._create_bins('py')
+        self.pz_bins    = self._create_bins('pz')
+
+        self.vocab_size = self.num_special_tokens + self.num_particles + self.num_materials + len(self.e_bins) + len(self.eta_bins) + len(self.theta_bins) + len(self.phi_bins) + len(self.pt_bins) + len(self.px_bins) + len(self.py_bins) + len(self.pz_bins)
         
         # Offsets for tokenization (since we need to eliminate repeat tokens)
         self.SPECIAL_TOKENS_OFFSET = 0
@@ -188,6 +194,9 @@ class Dictionary():
         self.THETA_OFFSET = self.ETA_OFFSET + len(self.eta_bins)
         self.PHI_OFFSET = self.THETA_OFFSET + len(self.theta_bins)
         self.PT_OFFSET = self.PHI_OFFSET + len(self.phi_bins)
+        self.PX_OFFSET = self.PT_OFFSET + len(self.pt_bins)
+        self.PY_OFFSET = self.PX_OFFSET + len(self.px_bins)
+        self.PZ_OFFSET = self.PY_OFFSET + len(self.py_bins)
 
         # Converts input particle ID to the relevant index
         self.pdgids = self.dictionary_data['pdgids']
@@ -201,7 +210,10 @@ class Dictionary():
             ["Eta bins",        len(self.eta_bins),       self.token_range_str(self.ETA_OFFSET, len(self.eta_bins)),                  self.token_min('eta'),    self.token_max('eta'),    self.token_step_size('eta')],
             ["Theta bins",      len(self.theta_bins),     self.token_range_str(self.THETA_OFFSET, len(self.theta_bins)),              self.token_min('theta'),  self.token_max('theta'),  self.token_step_size('theta')],
             ["Phi bins",        len(self.phi_bins),       self.token_range_str(self.PHI_OFFSET, len(self.phi_bins)),                  self.token_min('phi'),    self.token_max('phi'),    self.token_step_size('phi')],
-            ["Pt bins",         len(self.pt_bins),        self.token_range_str(self.PT_OFFSET, len(self.pt_bins)),                    self.token_min('pt'),     self.token_max('pt'),     self.token_step_size('pt')]
+            ["Pt bins",         len(self.pt_bins),        self.token_range_str(self.PT_OFFSET, len(self.pt_bins)),                    self.token_min('pt'),     self.token_max('pt'),     self.token_step_size('pt')],
+            ["Px bins",         len(self.px_bins),        self.token_range_str(self.PX_OFFSET, len(self.px_bins)),                    self.token_min('px'),     self.token_max('px'),     self.token_step_size('px')],
+            ["Py bins",         len(self.py_bins),        self.token_range_str(self.PY_OFFSET, len(self.py_bins)),                    self.token_min('py'),     self.token_max('py'),     self.token_step_size('py')],
+            ["Pz bins",         len(self.pz_bins),        self.token_range_str(self.PZ_OFFSET, len(self.pz_bins)),                    self.token_min('pz'),     self.token_max('pz'),     self.token_step_size('pz')]
         ]
     
     def _create_bins(self, type_str):
@@ -339,7 +351,13 @@ class Dictionary():
             return ETokenTypes.PHI
         elif token >= self.PT_OFFSET and token < self.PT_OFFSET + len(self.pt_bins):
             return ETokenTypes.PT
-    
+        elif token >= self.PX_OFFSET and token < self.PX_OFFSET + len(self.px_bins):
+            return ETokenTypes.PX
+        elif token >= self.PY_OFFSET and token < self.PY_OFFSET + len(self.py_bins):
+            return ETokenTypes.PY
+        elif token >= self.PZ_OFFSET and token < self.PZ_OFFSET + len(self.pz_bins):
+            return ETokenTypes.PZ
+
     def output_humanized_dictionary(self, output_file_path):
         # Define column widths for formatting
         col_widths = [max(len(str(row[col])) for row in self.table_data) + 3 for col in range(len(self.table_data[0]))]

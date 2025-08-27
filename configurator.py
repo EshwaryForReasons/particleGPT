@@ -33,10 +33,12 @@ class TrainingConfiguration:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = False
+    loss_function: str = 'cross_entropy'
 
     # adamw optimizer
     learning_rate: float = 6e-4
     max_iters: int = 600000
+    max_epochs: int = int(10e9)
     max_num_failed_checkpoint_checks: int = 4
     weight_decay: float = 1e-1
     beta1: float = 0.9

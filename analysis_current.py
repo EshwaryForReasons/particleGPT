@@ -114,7 +114,28 @@ class Analyzer:
             token_types = token_type_lookup[tokenized_data]
 
             # Build expected pattern based on token position in particle (pdgid, pt, eta, phi).
-            expected_pattern = np.array([ETokenTypes.PDGID.value, ETokenTypes.PT.value, ETokenTypes.ETA.value, ETokenTypes.PHI.value], dtype=token_types.dtype)
+            expected_pattern_arr = []
+            for type_str in self.dictionary.tokenization_schema:
+                if type_str == 'pdgid':
+                    expected_pattern_arr.append(ETokenTypes.PDGID.value)
+                elif type_str == 'pt':
+                    expected_pattern_arr.append(ETokenTypes.PT.value)
+                elif type_str == 'eta':
+                    expected_pattern_arr.append(ETokenTypes.ETA.value)
+                elif type_str == 'theta':
+                    expected_pattern_arr.append(ETokenTypes.THETA.value)
+                elif type_str == 'phi':
+                    expected_pattern_arr.append(ETokenTypes.PHI.value)
+                elif type_str == 'energy':
+                    expected_pattern_arr.append(ETokenTypes.ENERGY.value)
+                elif type_str == 'px':
+                    expected_pattern_arr.append(ETokenTypes.PX.value)
+                elif type_str == 'py':
+                    expected_pattern_arr.append(ETokenTypes.PY.value)
+                elif type_str == 'pz':
+                    expected_pattern_arr.append(ETokenTypes.PZ.value)
+
+            expected_pattern = np.array(expected_pattern_arr, dtype=token_types.dtype)
             expected_token_types = np.tile(expected_pattern, tokenized_data.shape[1] // num_features_per_particle)[:tokenized_data.shape[1]]
             # Ensure padding is not counted among the expected token types.
             padding_mask = tokenized_data == self.dictionary.padding_token
@@ -283,6 +304,6 @@ if __name__ == "__main__":
     dataset_analyzer.generate_verbose_particle_information()
     dataset_analyzer.generate_distributions()
     dataset_analyzer.calculate_metrics()
-    wandb_doer.send_to_wandb(model_to_analyze)
+    # wandb_doer.send_to_wandb(model_to_analyze)
     
     print('Distributions and metrics generated successfully.')

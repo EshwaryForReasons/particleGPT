@@ -113,7 +113,10 @@ def untokenize_event(event: list[int]) -> list[float]:
         eta_bin_idx = determine_bin_index(i, event, 'eta', dictionary.ETA_OFFSET)
         theta_bin_idx = determine_bin_index(i, event, 'theta', dictionary.THETA_OFFSET)
         phi_bin_idx = determine_bin_index(i, event, 'phi', dictionary.PHI_OFFSET)
-        
+        px_bin_idx = determine_bin_index(i, event, 'px', dictionary.PX_OFFSET)
+        py_bin_idx = determine_bin_index(i, event, 'py', dictionary.PY_OFFSET)
+        pz_bin_idx = determine_bin_index(i, event, 'pz', dictionary.PZ_OFFSET)
+
         # We can reasonably assume pdgid exists in the tokenization since it is needed to have a proper particle.
         pdgid = dictionary.pdgids[str(pdgid_idx)]
         
@@ -122,9 +125,12 @@ def untokenize_event(event: list[int]) -> list[float]:
         eta = None
         theta = None
         phi = None
+        px = None
+        py = None
+        pz = None
         
         if energy_bin_idx is not None:
-            energy = untokenize_token_type('e', dictionary.energy_bins, energy_bin_idx)
+            energy = untokenize_token_type('e', dictionary.e_bins, energy_bin_idx)
         if pt_bin_idx is not None:
             pt = untokenize_token_type('pt', dictionary.pt_bins, pt_bin_idx)
         if eta_bin_idx is not None:
@@ -133,24 +139,21 @@ def untokenize_event(event: list[int]) -> list[float]:
             theta = untokenize_token_type('theta', dictionary.theta_bins, theta_bin_idx)
         if phi_bin_idx is not None:
             phi = untokenize_token_type('phi', dictionary.phi_bins, phi_bin_idx)
-        
-        # if energy_bin_idx is not None:
-        #     energy = get_bin_median(dictionary.energy_bins, energy_bin_idx)
-        # if pt_bin_idx is not None:
-        #     pt = get_bin_median(dictionary.pt_bins, pt_bin_idx)
-        # if eta_bin_idx is not None:
-        #     eta = get_bin_median(dictionary.eta_bins, eta_bin_idx)
-        # if theta_bin_idx is not None:
-        #     theta = get_bin_median(dictionary.theta_bins, theta_bin_idx)
-        # if phi_bin_idx is not None:
-        #     phi = get_bin_median(dictionary.phi_bins, phi_bin_idx)
-            
+        if px_bin_idx is not None:
+            px = untokenize_token_type('px', dictionary.px_bins, px_bin_idx)
+        if py_bin_idx is not None:
+            py = untokenize_token_type('py', dictionary.py_bins, py_bin_idx)
+        if pz_bin_idx is not None:
+            pz = untokenize_token_type('pz', dictionary.pz_bins, pz_bin_idx)
+
         particle = Particle.from_pdgid(pdgid)
         
         if pt_bin_idx is not None and eta_bin_idx is not None and phi_bin_idx is not None:
             particle_vector = vector.obj(mass=particle.mass, pt=pt, eta=eta, phi=phi)
         elif energy_bin_idx is not None and theta_bin_idx is not None and phi_bin_idx is not None:
             particle_vector = vector.obj(energy=energy, theta=theta, phi=phi)
+        elif energy_bin_idx is not None and px_bin_idx is not None and py_bin_idx is not None and pz_bin_idx is not None:
+            particle_vector = vector.obj(energy=energy, px=px, py=py, pz=pz)
         else:
             raise ValueError("Not enough information to create a vector for the particle.")
         

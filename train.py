@@ -321,7 +321,18 @@ def estimate_loss():
         data_loader_iter = iter(dataloader)
         losses = torch.zeros(conf.training.eval_iters)
         for k in range(conf.training.eval_iters):
-            x, y = next(data_loader_iter)
+            try:
+                x, y = next(data_loader_iter)
+            except StopIteration:
+                # If our dataset size is small for the batch size, then eval_iters may be larger than how many we can
+                # do in this epoch. In this case we increase the epoch and continue.
+                epochs_trained_thus_far += 1
+                if ddp:
+                    dataloader.sampler.set_epoch(epochs_trained_thus_far)
+                data_loader_iter = iter(dataloader)
+                x, y = next(data_loader_iter)
+                continue
+            
             with ctx:
                 logits, loss, _ = model(x, y)
             losses[k] = loss.item()
@@ -388,9 +399,8 @@ running_mfu = -1.0
 # Used for when we are resuming training from a checkpoint.
 epochs_trained_thus_far, iters_trained_thus_far = get_epoch_from_iter(iter_num)
 data_retrievals_so_far = iters_trained_thus_far * conf.training.gradient_accumulation_steps
-ARBITRARY_LARGE_NUMBER = int(10e9)
 continue_training = True
-for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
+for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
     if not continue_training:
         break
     
@@ -482,7 +492,8 @@ for epoch_num in range(epochs_trained_thus_far, ARBITRARY_LARGE_NUMBER):
                     num_failed_checkpoint_checks = 0
                     pLogging.info(logger_idx, f"Training progress: saving best checkpoint @ val_loss {losses['val'].item()}")
                     torch.save(checkpoint, best_ckpt_path)
-                else:
+                elif conf.training.max_num_failed_checkpoint_checks > 0:
+                    # Negative max_num_failed_checkpoint_checks means we are using a different stopping method
                     # On the max_num_failed_checkpoint_checks-th failure, we end training
                     num_failed_checkpoint_checks += 1
                     if num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:

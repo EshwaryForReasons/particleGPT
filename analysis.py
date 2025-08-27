@@ -107,7 +107,6 @@ class plotting:
     distributions_per_row = 3
     
     verbose_columns = ["pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
-    columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     
     """
     Plotting training runs and distributions of leading particles.
@@ -230,55 +229,41 @@ class plotting:
         Retrieves bin widths and ranges for each feature and the real and sampled leading particles dataframes.
         """
         dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
-        real_leading_test_particles_filename = pUtil.get_model_preparation_dir(model_name) / 'real_leading_test_particles.csv'
-        sampled_leading_particles_filename = pUtil.get_latest_sampling_dir(model_name) / 'sampled_leading_particles.csv'
-        
         dictionary = Dictionary(dictionary_filename)
         
-        # Legacy NO NOT DELETE. Using the bin counts as specified in the tokenization is ideal but not always possible.
-        
-        # def get_bin_count(type_str):
-        #     step_size = dictionary.token_step_size(type_str)
-        #     if step_size == 0:
-        #         return 0
-        #     if type_str in ['eta', 'theta', 'phi']:
-        #         step_size = 0.05
-        #     return int(dictionary.token_range(type_str) // step_size)
+        def get_bin_count(type_str):
+            step_size = dictionary.token_step_size(type_str)
+            if type_str in ['eta', 'theta', 'phi']:
+                step_size = 0.1
+            if type_str == 'theta':
+                theta_min = 0 if dictionary.token_min('theta') == 0 else dictionary.token_min('theta')
+                theta_max = np.pi if dictionary.token_max('theta') == 0 else dictionary.token_max('theta')
+                return int((theta_max - theta_min) // step_size)
+            if type_str == 'phi':
+                phi_min = -np.pi if dictionary.token_min('phi') == 0 else dictionary.token_min('phi')
+                phi_max = np.pi if dictionary.token_max('phi') == 0 else dictionary.token_max('phi')
+                return int((phi_max - phi_min) // step_size)
+            return int(dictionary.token_range(type_str) // step_size)
         
         # For now, I have replaced those with hard coded values.
-        # bin_settings = {
-        #     "num_particles": { "min": -0.5,                          "max": 50.5,                          "bins": 51 },
-        #     "e":             { "min": 0,                             "max": 35000,                         "bins": 350 },
-        #     "px":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
-        #     "py":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
-        #     "pz":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
-        #     "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": get_bin_count('eta') },
-        #     "theta":         { "min": dictionary.token_min('theta'), "max": dictionary.token_max('theta'), "bins": get_bin_count('theta') },
-        #     "phi":           { "min": dictionary.token_min('phi'),   "max": dictionary.token_max('phi'),   "bins": get_bin_count('phi') },
-        #     "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": get_bin_count('pt') },
-        # }
-        
         theta_min = 0 if dictionary.token_min('theta') == 0 else dictionary.token_min('theta')
         theta_max = np.pi if dictionary.token_max('theta') == 0 else dictionary.token_max('theta')
         phi_min = -np.pi if dictionary.token_min('phi') == 0 else dictionary.token_min('phi')
         phi_max = np.pi if dictionary.token_max('phi') == 0 else dictionary.token_max('phi')
         
-        columns = ["num_particles", "pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
         bin_settings = {
             "num_particles": { "min": -0.5,                          "max": 50.5,                          "bins": 51 },
             "e":             { "min": 0,                             "max": 35000,                         "bins": 350 },
             "px":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
             "py":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
             "pz":            { "min": -5000,                         "max": 35000,                         "bins": 400 },
-            "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": 400 },
-            "theta":         { "min": theta_min,                     "max": theta_max,                     "bins": 400 },
-            "phi":           { "min": phi_min,                       "max": phi_max,                       "bins": 400 },
-            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": 350 },
+            "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": get_bin_count('eta') },
+            "theta":         { "min": theta_min,                     "max": theta_max,                     "bins": get_bin_count('theta') },
+            "phi":           { "min": phi_min,                       "max": phi_max,                       "bins": get_bin_count('phi') },
+            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": get_bin_count('pt') },
         }
 
-        # real_df = pd.read_csv(real_leading_test_particles_filename, sep=" ", names=columns, engine="c", header=None)
-        # sampled_df = pd.read_csv(sampled_leading_particles_filename, sep=" ", names=columns, engine="c", header=None)
-        return bin_settings #, real_df, sampled_df
+        return bin_settings
 
     @staticmethod
     def plot_distribution_leading(model_names, column_name=None, normalized=False, use_log=False, out_file=None):
@@ -548,8 +533,6 @@ class plotting:
     def plot_num_particles(model_names, normalized=False, use_log=False, out_file=None):
         model_name = model_names[0]
         
-        MASS_CARBON = 931.5 * 12 # MeV
-        
         real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
         real_num_particle_data = np.full(shape=(len(real_verbose_data)), fill_value=np.nan)
         for idx, event in enumerate(real_verbose_data):
@@ -592,8 +575,8 @@ class tables:
     """
     
     model_metadata_columns          = ['vocab_size', 'max_sequence_length', 'num_train_tokens', 'num_val_tokens']
-    model_config_columns            = ['batch_size', 'block_size', 'learning_rate', 'min_lr', 'lr_decay_iters', 'n_layer', 'n_head', 'n_embd', 'scheme', 'preparation_name']
-    model_training_columns          = ['iters_trained', 'min_saved_train_loss', 'min_saved_val_loss']
+    model_config_columns            = ['batch_size', 'block_size', 'learning_rate', 'min_lr', 'lr_decay_iters', 'lr_scheduler', 'n_layer', 'n_head', 'n_embd', 'scheme', 'preparation_name']
+    model_training_columns          = ['iters_trained', 'iters_saved', 'min_saved_train_loss', 'min_saved_val_loss']
     model_metrics_columns           = ['coverage', 'mmd', 'kpd_median', 'fpd_value', 'w1m_score', 'w1p_avg_eta', 'w1p_avg_phi', 'w1p_avg_pt']
     model_metrics_columns_verbose   = ['kpd_error', 'fpd_error', 'w1m_score_std', 'w1p_avg_eta_std', 'w1p_avg_phi_std', 'w1p_avg_pt_std']
     model_all_columns               = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns
@@ -639,6 +622,7 @@ class tables:
             learning_rate           = training_config.get('learning_rate', np.nan),
             min_lr                  = training_config.get('min_lr', np.nan),
             lr_decay_iters          = training_config.get('lr_decay_iters', np.nan),
+            lr_scheduler            = training_config.get('lr_scheduler', 'cosine_annealing_with_warmup'),
             n_layer                 = training_config.get('n_layer', np.nan),
             n_head                  = training_config.get('n_head', np.nan),
             n_embd                  = training_config.get('n_embd', np.nan),
@@ -714,6 +698,7 @@ class tables:
         
         training_run_data = SimpleNamespace(
             iters_trained           = iters_trained,
+            iters_saved             = int(min_saved_val_loss_row['iter']),
             min_saved_train_loss    = min_saved_val_loss_row['train_loss'],
             min_saved_val_loss      = min_saved_val_loss_row['val_loss'],
             running_df              = training_run_data.running_df,

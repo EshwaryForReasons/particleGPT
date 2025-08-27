@@ -1,6 +1,6 @@
 {
-    "preparation_name": "preparation_6_1",
-    "dataset": "dataset_6.csv",
+    "preparation_name": "preparation_100M_1",
+    "dataset": "dataset_100M.csv",
     "tokenization": {
         "0": "pdgid",
         "1": "pt",

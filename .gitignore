@@ -27,3 +27,4 @@ pTokenizer/pTokenizer.egg-info/
 
 setup.sh
 *.out
+outputs/
