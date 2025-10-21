@@ -3,6 +3,7 @@ import json
 import pickle
 import numpy as np
 from pathlib import Path
+import time
 
 import configurator as conf
 from dictionary import Dictionary
@@ -155,25 +156,24 @@ class Analyzer:
                 event = [str(x) for x in event if x != self.dictionary.padding_token]
                 event = ' '.join(event)
                 filtered_file.write(event + '\n')
-    
+     
     def generate_distributions(self):
+        plotter = anal.plotting()
+        plotter.load_data_by_model_names([self.model_name])
+        
         # The full training run probably isn't too useful, but we plot it anyway.
-        anal.plotting.plot_training_run([self.model_name], out_file=self.latest_sampling_dir / 'training_run.png')
-        anal.plotting.plot_training_run([self.model_name], out_file=self.latest_sampling_dir / 'training_run_with_lr_schedule.png', plot_lr_schedule=True)
-        anal.plotting.plot_training_run([self.model_name], use_log=True, out_file=self.latest_sampling_dir / 'training_run_log.png')
-        anal.plotting.plot_training_run([self.model_name], use_log=True, out_file=self.latest_sampling_dir / 'training_run_log_with_lr_schedule.png', plot_lr_schedule=True)
-        anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
-        anal.plotting.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid_log.png')
-        anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
-        anal.plotting.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_all_pdgid_log.png')
-        anal.plotting.plot_energy_conservation([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_energy_conservation_log.png')
-        anal.plotting.plot_energy_conservation([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_energy_conservation.png')
-        anal.plotting.plot_num_particles([self.model_name], normalized=False, use_log=False, out_file=self.latest_sampling_dir / 'distribution_num_particles.png')
-        for column_name in ['e', 'px', 'py', 'pz', 'pt', 'eta', 'theta', 'phi']:
-            anal.plotting.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_{column_name}.png')
-            anal.plotting.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_log_{column_name}.png', use_log=True)
-            anal.plotting.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_{column_name}.png')
-            anal.plotting.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_log_{column_name}.png', use_log=True)
+        # plotter.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
+        # plotter.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid_log.png')
+        # plotter.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
+        # plotter.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_all_pdgid_log.png')
+        # plotter.plot_energy_conservation([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_energy_conservation_log.png')
+        # plotter.plot_energy_conservation([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_energy_conservation.png')
+        plotter.plot_num_particles([self.model_name], normalized=False, use_log=False, out_file=self.latest_sampling_dir / 'distribution_num_particles.png')
+        # for column_name in ['e', 'px', 'py', 'pz', 'pt', 'eta', 'theta', 'phi']:
+        #     plotter.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_{column_name}.png')
+        #     plotter.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_log_{column_name}.png', use_log=True)
+        #     plotter.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_{column_name}.png')
+        #     plotter.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_log_{column_name}.png', use_log=True)
 
     def get_real_jets(self):
         # -------------------------------------------------------------------------------
@@ -299,11 +299,11 @@ if __name__ == "__main__":
     
     # Run the analysis
     dataset_analyzer = Analyzer(model_to_analyze)
-    dataset_analyzer.filter_data()
-    untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
-    dataset_analyzer.generate_verbose_particle_information()
+    # dataset_analyzer.filter_data()
+    # untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
+    # dataset_analyzer.generate_verbose_particle_information()
     dataset_analyzer.generate_distributions()
-    dataset_analyzer.calculate_metrics()
+    # dataset_analyzer.calculate_metrics()
     # wandb_doer.send_to_wandb(model_to_analyze)
     
     print('Distributions and metrics generated successfully.')

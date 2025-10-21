@@ -94,3 +94,4 @@ if __name__ == "__main__":
     config_filepath = script_dir / sys.argv[1]
     generic, training, sampling = configurator.perform_configuration(config_filepath)
     send_to_wandb(generic.model_name)
+    

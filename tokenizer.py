@@ -63,7 +63,7 @@ def tokenize_event(event: list[float]) -> list[int]:
         if abs(eta) > 4:
             return []
         
-        particle_index = int(dictionary.pdgids_to_index[pdgid])
+        particle_index = int(dictionary.pdgids_to_index[int(pdgid)])
         for schema in dictionary.tokenization_schema:
             if schema == "pdgid":
                 tokenized_event.append(particle_index + dictionary.PDGID_OFFSET)

@@ -254,8 +254,8 @@ if init_training_from == 'scratch':
     model = GPT(gptconf)
 elif init_training_from == 'resume':
     # Resume training from a checkpoint
-    pLogging.info(logger_idx, f"Resuming training from {model_output_dir}")
-    pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {model_output_dir}"})
+    pLogging.info(logger_idx, f"Resuming training from {latest_running_ckpt}")
+    pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {latest_running_ckpt}"})
     checkpoint = torch.load(latest_running_ckpt, map_location=conf.training.device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
@@ -287,7 +287,7 @@ scaler = torch.amp.GradScaler('cuda', enabled=(conf.training.dtype == 'float16')
 
 # conf.training.optimizer
 optimizer = model.configure_optimizers(conf.training.weight_decay, conf.training.learning_rate, (conf.training.beta1, conf.training.beta2), device_type)
-if conf.training.init_from == 'resume':
+if init_training_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None # free up memory
 
@@ -322,6 +322,12 @@ def estimate_loss():
         losses = torch.zeros(conf.training.eval_iters)
         for k in range(conf.training.eval_iters):
             try:
+                # Skip any iterations already trained in this epoch
+                skip_iters_range = range(iters_trained_thus_far)
+                for iter_idx in skip_iters_range:
+                    # print("skipping", iter_idx)
+                    next(data_loader_iter)
+                    iters_trained_thus_far -= 1
                 x, y = next(data_loader_iter)
             except StopIteration:
                 # If our dataset size is small for the batch size, then eval_iters may be larger than how many we can
