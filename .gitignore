@@ -3,6 +3,7 @@ __pycache__/
 
 wandb/
 
+outputs/
 logs/
 temp/
 trained_models/

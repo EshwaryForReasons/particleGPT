@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter, FuncFormatter
+import matplotlib.colors as mcolors
 from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -1489,11 +1490,27 @@ class plotting:
         naturally only works if there is a way to show the figures.
     """
     
-    # Colors in the order they will be used for overlapping graphs.
-    colors = ['blue', 'orange', 'purple', 'green', 'red', 'yellow', 'brown', 'pink', 'gray', 'cyan', 'magenta', 'turquoise', 'tan', 'khaki', 'lavender', 'slategray', 'deeppink', 'gold', 'lightgreen', 'lightblue']
+    # Preferred starting colors
+    first_colors = ['blue', 'orange', 'purple', 'red', 'green']
+    # Build color list (done right inside the class body)
+    _all_colors = list(mcolors.CSS4_COLORS.keys())
+    _rgb_colors = [(c, mcolors.to_rgb(c)) for c in _all_colors]
+    # Filter out very bright / whiteish colors (value < 0.9)    x
+    _filtered_colors = [
+        name for name, rgb in _rgb_colors
+        if mcolors.rgb_to_hsv(rgb)[2] < 0.96
+    ]
+    # Remove duplicates of first colors
+    _filtered_colors = [c for c in _filtered_colors if c not in ['blue', 'orange', 'purple', 'red', 'green', 'black']]
+    # Final palette
+    colors = ['blue', 'orange', 'purple', 'red', 'green'] + _filtered_colors
+    # Apply globally to Matplotlib
+    plt.rcParams['axes.prop_cycle'] = plt.cycler(color=colors)
+    
     default_figsize = (21, 6)
     default_dpi = 300
     distributions_per_row = 3
+    legend_items_per_col = 10
     
     verbose_columns = ["pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     
@@ -1712,7 +1729,7 @@ class plotting:
             # ax.annotate(label_name, xy=(final_row['iter'], final_row['val_loss']), xytext=(final_row['iter'] * 1.005, final_row['val_loss'] - 0.02), fontsize=14, color=plotting.colors[idx])
 
         # Final touches and show and/or save
-        ax.legend(loc='upper right', fontsize=16)
+        ax.legend(loc='upper right', fontsize=16, ncol=int(len(model_names) // (plotting.legend_items_per_col + 1)) + 1)
         fig.tight_layout()
         ax.grid()
         if out_file != None:
@@ -2309,7 +2326,7 @@ class plotting:
             data.append((model_name, column_name, all_instances_of_this_column_real, all_instances_of_this_column_sampled))
         
         feature_name, _ = self._do_plot_get_labels(column_name)
-        self._do_plot(data, title=f'Distribution of {feature_name} for All Particles', normalized=normalized, use_log=use_log, out_file=out_file)  
+        self._do_plot(data, title=f'Distribution of {feature_name} for All Particles', normalized=normalized, use_log=use_log, out_file=out_file)
             
 class tables:
     """

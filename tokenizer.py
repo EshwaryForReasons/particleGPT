@@ -152,7 +152,7 @@ def batch_tokenize_data():
     temp_data_dir.mkdir(parents=True, exist_ok=True)
     
     num_events, num_particles_max = analyze_dataset(input_data_filepath)
-    MAX_EVENTS_PER_THREAD = 100_000
+    MAX_EVENTS_PER_THREAD = 1_000_000
     
     # Generate chunks
     ranges = []
