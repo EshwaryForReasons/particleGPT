@@ -110,7 +110,6 @@ else:
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
-tokens_per_iter = conf.training.gradient_accumulation_steps * ddp_world_size * conf.training.batch_size * conf.training.block_size
 
 if master_process:
     os.makedirs(model_output_dir, exist_ok=True)
@@ -192,7 +191,6 @@ pLogging.info(logger_idx, "Training configuration", {
     "config_file_path": conf.generic.config_file_path,
     "preparation": conf.generic.preparation_name,
     "model_name": conf.generic.model_name,
-    "tokens_per_iter": tokens_per_iter,
     "ddp": ddp,
     "ddp_world_size": ddp_world_size,
     "device": conf.training.device,
@@ -469,7 +467,9 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
             optimizer.zero_grad(set_to_none=True)
             
             # Save checkpoint
-            if iter_num % conf.training.eval_interval == 0 and master_process:
+            eval_cond_1 = conf.training.eval_interval > 0 and (iter_num % conf.training.eval_interval == 0)
+            eval_cond_2 = conf.training.eval_every_epoch and (iter_num % conf.training.iterations_per_epoch == 0)
+            if (eval_cond_1 or eval_cond_2) and master_process:
                 # Evaluate the loss on train/val sets and write checkpoints
                 # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
                 # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
@@ -506,13 +506,20 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
                         continue_training = False
                         break
                 
-                # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
-                # without having to redo iterations.
-                pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
-                latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_checkpoint_filepath()
-                new_running_ckpt_idx = latest_running_cktp_idx + 1
-                new_running_ckpt_path = model_output_dir / f'ckpt_running_{new_running_ckpt_idx}.pt'
-                torch.save(checkpoint, new_running_ckpt_path)
+                if eval_cond_1:
+                    # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
+                    # without having to redo iterations.
+                    pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
+                    latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_checkpoint_filepath()
+                    new_running_ckpt_idx = latest_running_cktp_idx + 1
+                    new_running_ckpt_path = model_output_dir / f'ckpt_running_{new_running_ckpt_idx}.pt'
+                    torch.save(checkpoint, new_running_ckpt_path)
+                if eval_cond_2:
+                    # We save a current checkpoint every epoch
+                    pLogging.info(logger_idx, f"Training progress: saving epoch {epoch_num} checkpoint @ val_loss {losses['val'].item()}")
+                    latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_checkpoint_filepath()
+                    new_epoch_ckpt_path = model_output_dir / f'ckpt_epoch_{epoch_num}.pt'
+                    torch.save(checkpoint, new_epoch_ckpt_path)
             
             # Log training progress
             if iter_num % conf.training.log_interval == 0 and master_process:

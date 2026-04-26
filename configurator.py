@@ -15,11 +15,12 @@ class GenericConfiguration:
 @dataclass
 class TrainingConfiguration:
     # I/O
-    eval_interval: int = 2000
-    log_interval: int = 1
+    eval_interval: int = 2000 # Set negative to disable (e.g, if eval_every_epoch is True or if we just do not want any)
+    log_interval: int = 10
     eval_iters: int = 200
     eval_only: bool = False
     init_from: str = ''  # 'scratch', 'resume', or 'gpt2*'
+    eval_every_epoch: bool = True
 
     # data
     gradient_accumulation_steps: int = field(default=5 * 8)

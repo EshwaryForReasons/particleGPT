@@ -29,3 +29,5 @@ pTokenizer/pTokenizer.egg-info/
 setup.sh
 *.out
 outputs/
+
+analysis_notebooks/publication_1

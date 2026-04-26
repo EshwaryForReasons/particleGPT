@@ -18,9 +18,11 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import matplotlib.colors as mcolors
-from matplotlib.ticker import ScalarFormatter, FuncFormatter
+from matplotlib.ticker import ScalarFormatter, FuncFormatter, FormatStrFormatter
 from matplotlib.patches import FancyBboxPatch
 import seaborn as sns
+import atlas_mpl_style as ampl
+import boost_histogram as bh
 
 from particle import Particle
 import vector
@@ -201,10 +203,25 @@ class metrics:
 
 class plotting_v2:
     
-    legend_fontsize = 12
-    annotation_fontsize = 10
-    axes_fontsize = 10
-    ticks_fontsize = 10
+    fontsize_legend = 14
+    fontsize_annotation = 14
+    fontsize_labels = 16
+    fontsize_axes_labels = 16
+    fontsize_ticks = 16
+    sns_palette = 'colorblind'
+    
+    color_palette = [
+        "petroff:blue",
+        "petroff:orange",
+        "petroff:red",
+        "petroff:gray",
+        "petroff:purple",
+        "petroff:brown",
+        "petroff:orange2",
+        "petroff:tan",
+        "petroff:gray2",
+        "petroff:lightBlue"
+    ]
     
     verbose_columns = ["pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
     
@@ -276,6 +293,51 @@ class plotting_v2:
     # Custom formatter to force scientific notation for small numbers
     def _sci_notation(x, pos):
         return f'{x:.0e}'
+    
+    @staticmethod
+    def _get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters, min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult):
+        if lr_scheduler == 'cosine_annealing_with_warmup':
+            # 1) linear warmup for warmup_iters steps
+            if it < warmup_iters:
+                return learning_rate * it / warmup_iters
+            # 2) if it > lr_decay_iters, return min learning rate
+            if it >= lr_decay_iters:
+                return min_lr
+            # 3) in between, use cosine decay down to min learning rate
+            decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+            assert 0 <= decay_ratio <= 1
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return min_lr + coeff * (learning_rate - min_lr)
+        elif lr_scheduler == 'cosine_with_warmup':
+            # 1) linear warmup for warmup_iters steps
+            if it < warmup_iters:
+                return learning_rate * it / warmup_iters
+            # 3) in between, use cosine decay down to min learning rate
+            decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return min_lr + coeff * (learning_rate - min_lr)
+        elif lr_scheduler == 'cosine_annealing_with_warm_restarts':
+            # 1) linear warmup for warmup_iters steps
+            if it < warmup_iters:
+                return learning_rate * (it / warmup_iters)
+            # Adjust iteration to account for warmup
+            it -= warmup_iters
+            # 2) Find current cycle and  in the cycle
+            cycle = 0
+            curr_cycle_len = lr_decay_iters
+            iter_in_cycle = it
+            while iter_in_cycle >= curr_cycle_len:
+                iter_in_cycle -= curr_cycle_len
+                cycle += 1
+                curr_cycle_len = int(curr_cycle_len * cycle_steps_mult)
+            # 3) Decay the base learning rate for the current cycle
+            curr_base_lr = learning_rate * (base_lr_decay_mult ** cycle)
+            # 4) Normalized progress within the cycle
+            t = iter_in_cycle / curr_cycle_len
+            # 5) Cosine annealing
+            lr = min_lr + 0.5 * (curr_base_lr - min_lr) * (1 + math.cos(math.pi * t))
+            return lr
+        raise ValueError(f"Unknown lr_scheduler {lr_scheduler}")
     
     # =====================
     # Plotting utils - Data Processing
@@ -376,7 +438,7 @@ class plotting_v2:
         return x2, y2
 
     # =====================
-    # Plotting utils - Aesthetics
+    # Plotting utils - Aesthetics/Abstractions
     # =====================
     
     @staticmethod
@@ -413,12 +475,14 @@ class plotting_v2:
         return feature_name, unit
 
     @staticmethod
-    def _apply_dynamic_count_scaling_ticks(ax, y_arrays, base_label="Counts", group_by_3=False):
+    def _apply_dynamic_count_scaling_ticks(ax, y_arrays, density=False, group_by_3=False):
         """
         Dynamically scaled y-axis for counts plots. If the maximum count is large, the y-axis will
             be scaled down by a power of 10 and the label will indicate this.
         e.g. instead of 100,000, 200,000, etc. the y-axis will show 1, 2, etc. and the label will say "Counts (×10^5)".
         """
+        base_label = 'Density' if density else 'Counts'
+        
         y_all = np.concatenate([np.asarray(y) for y in y_arrays if y is not None])
         y_max = np.nanmax(y_all) if y_all.size else 0
         if not np.isfinite(y_max) or y_max <= 0:
@@ -429,18 +493,26 @@ class plotting_v2:
         if group_by_3:
             order = int(np.floor(order / 3) * 3)
         scale = 10 ** order
-
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v/scale:g}"))
-        # ax.set_ylabel(f"{base_label} (×10$^{{{order}}}$)")
-        ax.set_ylabel(rf"Counts ($\times 10^{{{order}}}$)")
+        
+        if np.abs(order) > 2:
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v/scale:g}"))
+            ax.set_ylabel(rf"{base_label} ($\times 10^{{{order}}}$)")
+        else:
+            ax.set_ylabel(base_label)
     
-    @staticmethod
-    def _place_legend_emptiest_corner(ax, x, y, labels, colors=None, lw=2, fontsize=legend_fontsize):
+    
+    @classmethod
+    def _place_legend_emptiest_corner(cls, locx, locy, ax, x, y, labels, colors=None, lw=2):
         """
         Choose legend location among 4 corners by finding the corner with minimal summed y
         in that x-range and near-top y-range. Works well for peaked distributions. Avoids issues
         with legend overlapping data.
         """
+        
+        if (locx, locy) != (None, None):
+            leg = ax.legend(loc="upper left", bbox_to_anchor=(locx, locy), frameon=False, fontsize=cls.fontsize_legend)
+            return leg
+        
         x = np.asarray(x)
         y = np.asarray(y)
 
@@ -469,66 +541,29 @@ class plotting_v2:
         
         # This is here to move the left corner slightly rightwards to avoid clashing with the panel labels
         if best_loc == "upper left":
-            leg = ax.legend(loc="upper left", bbox_to_anchor=(0.03, 0.98), frameon=False, fontsize=fontsize)
+            leg = ax.legend(loc="upper left", bbox_to_anchor=(0.03, 0.98), frameon=False, fontsize=cls.fontsize_legend)
         else:
-            leg = ax.legend(loc="upper right", bbox_to_anchor=(0.98, 0.98), frameon=False, fontsize=fontsize)
+            leg = ax.legend(loc="upper right", bbox_to_anchor=(0.98, 0.98), frameon=False, fontsize=cls.fontsize_legend)
 
-        ax.add_artist(leg)
+        # might need this line, i am unsure
+        # ax.add_artist(leg)
         return leg
     
     @classmethod
-    def _place_annotation_emptiest_corner(cls, fig, axd, x, y, labels, leg_bbox_pixels=None, spec_text=None, spec_table_rows=None, fontsize=legend_fontsize):
+    def _place_annotation_emptiest_corner(cls, locx, locy, fig, axd, x, y, labels, leg_bbox_pixels=None, spec_text=None, spec_table_rows=None):
         """
         Choose annotation location among 4 corners by finding the corner with minimal summed y
         in that x-range and near-top y-range. Works well for peaked distributions. Further, avoid
         overlapping with the legend. Avoids issues with annotation overlapping data.
         """
-        # x = np.asarray(x)
-        # y = np.asarray(y)
 
-        # xmin, xmax = ax.get_xlim()
-        # ymin, ymax = ax.get_ylim()
-
-        # # Define corner x-windows as fractions of axis span
-        # xL0, xL1 = xmin + 0.00*(xmax-xmin), xmin + 0.35*(xmax-xmin)
-        # xR0, xR1 = xmin + 0.65*(xmax-xmin), xmin + 1.00*(xmax-xmin)
-
-        # # Score corners by "how much curve lives there"
-        # def score(x0, x1):
-        #     m = (x >= x0) & (x <= x1)
-        #     if not np.any(m):
-        #         return np.inf
-        #     return np.nansum(y[m])
-
-        # scores = {
-        #     "upper left":  score(xL0, xL1),
-        #     "upper right": score(xR0, xR1),
-        #     "lower left":  score(xL0, xL1) + 1e9,   # discourage lower corners for hists usually
-        #     "lower right": score(xR0, xR1) + 1e9,
-        # }
-
-        # # best is for legend, second best is for annotation
-        # second_best_loc = sorted(scores, key=scores.get)[1]
-        
-        # # Make a fake legend to get geometry at the second best location. Remove it after.
-        # if second_best_loc == "upper left":
-        #     temp_leg = ax.legend(loc="upper left", bbox_to_anchor=(0.03, 0.98), frameon=False, fontsize=fontsize)
-        # else:
-        #     temp_leg = ax.legend(loc="upper right", bbox_to_anchor=(0.98, 0.98), frameon=False, fontsize=fontsize)
-        # fig.canvas.draw()
-        # bbox_leg_pixels = temp_leg.get_window_extent()
-        # bbox_leg_axes = bbox_leg_pixels.transformed(ax.transAxes.inverted())
-        # temp_leg.remove()
-        
-        
-        
         if spec_text is not None:
             leg_bbox_axes = leg_bbox_pixels.transformed(axd.transAxes.inverted())
             
             # Get the width of the annotation so we can do better placement calculations. Remove right after.
             temp_annotation = axd.text(
                 0, 0, s=spec_text, transform=axd.transAxes,
-                fontsize=cls.annotation_fontsize, va="top", ha="left", linespacing=1.25,
+                fontsize=cls.fontsize_annotation, va="top", ha="left", linespacing=1.25,
                 bbox=dict(
                     facecolor="white",
                     alpha=0.85,
@@ -542,17 +577,20 @@ class plotting_v2:
             bbox_annotation_axes = bbox_annotation_pixels.transformed(axd.transAxes.inverted())
             temp_annotation.remove()
             
-            # Find if legend is right or left within the figure and adjust annotation placement accordingly
-            fig_width_pixels = fig.get_window_extent().width
-            if leg_bbox_pixels.x0 > fig_width_pixels / 2:
-                delta_width = (leg_bbox_axes.width * 0.95) - bbox_annotation_axes.width
-                annotation_loc = (leg_bbox_axes.x0 + delta_width, leg_bbox_axes.y0 - 0.02)
+            if (locx, locy) != (None, None):
+                annotation_loc = (locx, locy)
             else:
-                annotation_loc = (leg_bbox_axes.x0, leg_bbox_axes.y0 - 0.02)
+                # Find if legend is right or left within the figure and adjust annotation placement accordingly
+                fig_width_pixels = fig.get_window_extent().width
+                if leg_bbox_pixels.x0 > fig_width_pixels / 2:
+                    delta_width = (leg_bbox_axes.width * 0.95) - bbox_annotation_axes.width
+                    annotation_loc = (leg_bbox_axes.x0 + delta_width, leg_bbox_axes.y0 - 0.02)
+                else:
+                    annotation_loc = (leg_bbox_axes.x0, leg_bbox_axes.y0 - 0.02)
                         
             axd.text(
                 *annotation_loc, s=spec_text, transform=axd.transAxes,
-                fontsize=cls.annotation_fontsize, va="top", ha="left", linespacing=1.25,
+                fontsize=cls.fontsize_annotation, va="top", ha="left", linespacing=1.25,
                 bbox=dict(
                     facecolor="white",
                     alpha=0.85,
@@ -561,11 +599,11 @@ class plotting_v2:
                     boxstyle="round,pad=0.4"
                 )
             )
-        elif spec_table_rows is not None:
+        if spec_table_rows is not None:
             fig.canvas.draw() # legend must be rendered before we use location properties
             leg_bbox_axes = leg_bbox_pixels.transformed(axd.transAxes.inverted())
             
-            annotation_width = 0.26
+            annotation_width = leg_bbox_axes.width * 1.05
             
             # Find if legend is right or left within the figure and adjust annotation placement accordingly
             fig_width_pixels = fig.get_window_extent().width
@@ -574,15 +612,20 @@ class plotting_v2:
             else:
                 delta_width = 0
             
-            x0 = leg_bbox_axes.x0 + delta_width
-            y0 = leg_bbox_axes.y0 - 0.04
-            dy = 0.04
+            if (locx, locy) != (None, None):
+                x0 = locx
+                y0 = locy
+            else:
+                x0 = leg_bbox_axes.x0 + delta_width
+                y0 = leg_bbox_axes.y0 - 0.06
             
-            col_codebook = x0 + 0.13
-            col_events   = x0 + 0.2
+            dy = 0.05
+            
+            col_codebook = x0 + 0.17
+            col_events   = col_codebook + 0.13
             
             box = FancyBboxPatch(
-                (x0 + 0.005, y0 - 4*dy + 0.026),
+                (x0 + 0.005, y0 - 4*dy + 0.04),
                 width=annotation_width,
                 height=4*dy - 0.01,
                 transform=axd.transAxes,
@@ -595,20 +638,175 @@ class plotting_v2:
             )
 
             axd.add_patch(box)
-            axd.text(x0, y0, "Generator", transform=axd.transAxes, fontsize=cls.annotation_fontsize, weight="bold", zorder=3)
-            axd.text(col_codebook, y0, "Size", transform=axd.transAxes, fontsize=cls.annotation_fontsize, weight="bold", zorder=3)
-            axd.text(col_events, y0, "N", transform=axd.transAxes, fontsize=cls.annotation_fontsize, weight="bold", zorder=3)
+            axd.text(x0, y0, "Generator", transform=axd.transAxes, fontsize=cls.fontsize_annotation, weight="bold", zorder=3)
+            axd.text(col_codebook, y0, "Tokens", transform=axd.transAxes, fontsize=cls.fontsize_annotation, weight="bold", zorder=3)
+            axd.text(col_events, y0, "N", transform=axd.transAxes, fontsize=cls.fontsize_annotation, weight="bold", zorder=3)
         
             rows = spec_table_rows
             for i, (g, c, e) in enumerate(rows):
                 y = y0 - (i + 1) * dy
 
-                axd.text(x0, y, g, transform=axd.transAxes, fontsize=cls.annotation_fontsize, zorder=3)
-                axd.text(col_codebook, y, c, transform=axd.transAxes, fontsize=cls.annotation_fontsize, zorder=3)
-                axd.text(col_events, y, e, transform=axd.transAxes, fontsize=cls.annotation_fontsize, zorder=3)
+                axd.text(x0, y, g, transform=axd.transAxes, fontsize=cls.fontsize_annotation, zorder=3)
+                axd.text(col_codebook, y, c, transform=axd.transAxes, fontsize=cls.fontsize_annotation, zorder=3)
+                axd.text(col_events, y, e, transform=axd.transAxes, fontsize=cls.fontsize_annotation, zorder=3)
         
         # return bbox_leg_axes
 
+    @classmethod
+    def _place_label(cls, locx, locy, ax, label_text):
+        label_text = label_text or r"Simulation of $\pi^-$" "\n" "interacting with $C$"
+        ax.text(locx, locy, s=label_text, transform=ax.transAxes, fontsize=cls.fontsize_labels)
+    
+    @classmethod
+    def _apply_styling(
+        cls, 
+        fig, 
+        axd, 
+        axr, 
+        column_name, 
+        density, 
+        use_log,
+        centers,
+        top_y_arrays, 
+        ratio_ylim, 
+        dynamic_count_scale,
+        count_scale_group_by_3=False,
+        spec_text=None,
+        spec_table_rows=None,
+        label_text=None,
+        override_legend_loc=(None, None),
+        override_spec_loc=(None, None),
+        override_label_loc=(None, None),
+        # show_output=True,
+        show_legend=True,
+        show_label=True,
+    ):
+        # ===== Aesthetics =====
+            
+        # Style axes ticks
+        for ax in (axd, axr):
+            ax.minorticks_on()
+            ax.tick_params(which="both", direction="in", top=True, right=True)
+            
+        # Ratio guide lines
+        axr.axhline(1.0, color="0.25", lw=1.2)
+        for frac in [0.05, 0.10]:
+            axr.axhline(1.0 + frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+            axr.axhline(1.0 - frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+        axr.set_ylim(*ratio_ylim)
+        
+        # 10% top headroom for less cramped feel
+        ymin, ymax = axd.get_ylim()
+        if use_log:
+            log_range = np.log10(ymax) - np.log10(ymin)
+            new_log_top = np.log10(ymax) + 0.10 * log_range
+            axd.set_ylim(ymin, 10**new_log_top)
+        else:
+            axd.set_ylim(ymin, ymax * 1.10)
+            
+        # Set ticks fontsizes
+        axd.tick_params(axis='both', labelsize=cls.fontsize_ticks)
+        axr.tick_params(axis='both', labelsize=cls.fontsize_ticks)
+       
+        # @TODO: for some reason this causes lots of lag. I have disabled this for now.
+        # -- I am testing using this only when use_log is true (we dont need it otherwise anyway)
+        # Fix for log scale axes tick label issue
+        if use_log:
+            axd.yaxis.set_major_locator(mticker.LogLocator(base=10))
+            axd.yaxis.set_major_formatter(mticker.LogFormatterMathtext(base=10))
+
+        # Dynamic y scaling for counts (not log since those are compact naturally)
+        if dynamic_count_scale and not use_log:
+            cls._apply_dynamic_count_scaling_ticks(axd, top_y_arrays, density=density, group_by_3=count_scale_group_by_3)
+        
+        # For momenta we need the ticks to be in MeV, not keV. This is an arbitrary decision.
+        if column_name in ['e', 'pt', 'px', 'py', 'pz']:
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x/1000:g}"))
+
+        # ===== Legend =====
+        
+        # Choose legend position dynamically (based on reference curve)
+        x_for_score = centers
+        y_for_score = np.max(np.vstack(top_y_arrays), axis=0)
+        leg = cls._place_legend_emptiest_corner(
+            override_legend_loc[0], override_legend_loc[1], axd,
+            x_for_score, y_for_score, labels=None
+        )
+        
+        # ===== Model Spec Annotations =====
+
+        fig.canvas.draw() # legend must be rendered before we use location properties
+        leg_bbox_pixels = leg.get_window_extent()
+        cls._place_annotation_emptiest_corner(
+            override_spec_loc[0], override_spec_loc[1], fig, axd,
+            x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
+            spec_text=spec_text, spec_table_rows=spec_table_rows
+        )
+        
+        # ===== Label =====
+        
+        # No automatic placement code so location is required
+        if show_label and override_label_loc != (None, None):
+            cls._place_label(override_label_loc[0], override_label_loc[1], axd, label_text)
+
+        # ===== Finishing and show/save =====
+        
+        # We need legend for position calulations, if we are not supposed to show, then remove it here
+        if show_legend == False:
+            leg.remove()
+    
+    @classmethod
+    def _plot_ratios(cls, ax, ref_counts, all_comp_counts, bin_centers, ratio_ylim):
+        """
+        @param ref_counts [list]: histogrammed counts for the reference distribution 
+        @param comp_counts [list[list]]: list of histogrammed counts for all comparision distributions
+        
+        Note: ratios are always calculated on densities regardless of if the raw counts are plotted.
+        """
+        
+        ref_N = np.sum(ref_counts)
+        # Ratio denominator (densities, shape-only)
+        ref_density = ref_counts / ref_N if ref_N > 0 else np.zeros_like(ref_counts, dtype=float)
+        ref_density_err = np.sqrt(ref_counts) / ref_N if ref_N > 0 else np.zeros_like(ref_counts, dtype=float)
+    
+        # Ratio (densities)
+        for i, comp_counts in enumerate(all_comp_counts):
+            color = cls.color_palette[i]
+            
+            gen_N = np.sum(comp_counts)
+            comp_density = comp_counts / gen_N if gen_N > 0 else np.zeros_like(comp_counts, dtype=float)
+            comp_density_err = np.sqrt(comp_counts) / gen_N if gen_N > 0 else np.zeros_like(comp_counts, dtype=float)
+
+            ratio = np.divide(comp_density, ref_density, out=np.full_like(comp_density, np.nan, dtype=float), where=ref_density > 0)
+
+            # Error propagation on ratio
+            ratio_err = np.full_like(ratio, np.nan, dtype=float)
+            ok = (comp_density > 0) & (ref_density > 0)
+            ratio_err[ok] = ratio[ok] * np.sqrt(
+                (comp_density_err[ok] / comp_density[ok])**2 + (ref_density_err[ok] / ref_density[ok])**2
+            )
+
+            # Plot too high or too low ratios as markers indicating suchly
+            ratio_bottom, ratio_top = ratio_ylim
+            ratio_out_of_range_up = np.where(ratio > (ratio_top - 0.01), ratio_top - 0.01, np.nan)
+            ratio_out_of_range_down = np.where(ratio < (ratio_bottom + 0.01), ratio_bottom + 0.01, np.nan)
+            ax.scatter(
+                bin_centers, ratio_out_of_range_up,
+                marker=mpl.markers.CARETUP, color=color, s=30,
+            )
+            ax.scatter(
+                bin_centers, ratio_out_of_range_down,
+                marker=mpl.markers.CARETDOWN, color=color, s=30,
+            )
+    
+            # Plot rations that fit within the range
+            ok2 = np.isfinite(ratio) & np.isfinite(ratio_err)
+            ax.scatter(bin_centers[ok2], ratio[ok2], s=10, color=color)
+            ax.errorbar(
+                bin_centers[ok2], ratio[ok2], yerr=ratio_err[ok2],
+                fmt="none", ecolor=color, elinewidth=0.8, capsize=0, alpha=0.9, zorder=3
+            )
+            
     @staticmethod
     def get_common_data(model_name ):
         """
@@ -673,15 +871,16 @@ class plotting_v2:
         show_raw=True,
         smooth_alpha=0.02,
         mark_best=True,
-        smoothing_function="bin_average", # options: "bin_average", "savgol", "rolling"
+        smoothing_function=None, # options: "none", "bin_average", "savgol", "rolling"
+        show_output=True,
     ):
-        palette = sns.color_palette("colorblind", n_colors=max(3, len(model_names) + 1))
+        palette = sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
         
         model_names = np.atleast_1d(model_names)
 
         fig, ax = plt.subplots(figsize=figsize)
 
-        ax.set_xlabel("Iteration")
+        ax.set_xlabel("Iteration", fontsize=cls.fontsize_axes_labels)
         y_label_loss_type = ""
         if show_train_loss and not show_val_loss:
             y_label_loss_type = "Training"
@@ -690,7 +889,7 @@ class plotting_v2:
         if show_val_loss and show_train_loss:
             y_label_loss_type = ""
             
-        ax.set_ylabel(f"{y_label_loss_type} Loss")
+        ax.set_ylabel(f"{y_label_loss_type} Loss", fontsize=cls.fontsize_axes_labels)
 
         if y_lim is not None:
             ax.set_ylim(y_lim)
@@ -735,7 +934,7 @@ class plotting_v2:
 
                 iters = np.arange(df["iter"].max())
                 lrs = [
-                    plotting_old3._get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters,
+                    plotting_v2._get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters,
                                         min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult)
                     for it in iters
                 ]
@@ -755,7 +954,7 @@ class plotting_v2:
 
             if show_train_loss == True:
                 if show_raw:
-                    ax.plot(x, yt, linewidth=1.0, alpha=0.25, color=color)
+                    ax.plot(x, yt, linewidth=1.0, alpha=0.25 if smoothing_function is not None else 1, color=color)
                 
                 if smoothing_function == "savgol":
                     yt_s = plotting_v2._smooth_savgol(yt, window=301, poly=3)
@@ -778,7 +977,7 @@ class plotting_v2:
                 
             if show_val_loss == True:
                 if show_raw:
-                    ax.plot(x, yv, linewidth=1.0, alpha=0.25, color=color)
+                    ax.plot(x, yv, linewidth=1.0, alpha=0.25 if smoothing_function is not None else 1, color=color)
                 
                 if smoothing_function == "savgol":
                     yv_s = plotting_v2._smooth_savgol(yv, window=301, poly=3)
@@ -799,16 +998,20 @@ class plotting_v2:
                 unique_handles[model_legend_title[idx]] = mpl.lines.Line2D([0], [0], linestyle='-', color=color, linewidth=2, label=model_legend_title[idx])
 
         unique_handles = list(unique_handles.values())
-        ax.legend(handles=unique_handles, loc="best", frameon=False)
+        ax.legend(handles=unique_handles, loc="best", frameon=False, fontsize=cls.fontsize_legend)
         fig.subplots_adjust(right=0.80)
+        
+        plt.xticks(fontsize=cls.fontsize_ticks)
+        plt.yticks(fontsize=cls.fontsize_ticks)
 
-        sns.despine(ax=ax, trim=True)
+        # sns.despine(ax=ax, trim=True)
         fig.tight_layout()
 
         if out_file is not None:
             fig.savefig(out_file, bbox_inches="tight")
 
-        plt.show()
+        if show_output:
+            plt.show()
         return fig, ax
 
     # =====================
@@ -834,11 +1037,787 @@ class plotting_v2:
         count_scale_group_by_3=False,
         spec_text=None,
         spec_table_rows=None,
+        label_text=None,
+        override_legend_loc=(None, None),
+        override_spec_loc=(None, None),
+        override_label_loc=(None, None),
+        show_output=True,
+        show_legend=True,
+        show_label=True,
+        fig_ax_tuple=(None, None, None)
     ):
         # ===== Defaults if not set =====
         
         model_names = list(comp_vals_dict.keys())
-        palette = sns.color_palette("colorblind", n_colors=max(3, len(model_names) + 1))
+        # ampl.use_atlas_style()
+        feature_name, unit = cls._get_labels(column_name)
+        
+        fig, axd, axr = fig_ax_tuple
+        if (fig, axd, axr) == (None, None, None):
+            fig, axd, axr = ampl.ratio_axes()
+        
+        # ===== Histogram config for this distrubtion type =====
+        
+        # Common bins from first model
+        if edges is None:
+            bin_settings = cls.get_common_data(model_names[0])
+            x_min = bin_settings[column_name]["min"]
+            x_max = bin_settings[column_name]["max"]
+            n_bins = bin_settings[column_name]["bins"]
+            edges = np.linspace(x_min, x_max, n_bins + 1)
+
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        widths = np.diff(edges)
+                
+        # ===== Reference Model =====
+
+        ref_vals = np.asarray(ref_vals)
+        ref_counts, _ = np.histogram(ref_vals, bins=edges)
+        ref_N = np.sum(ref_counts)
+        
+        if density:
+            ref_y = ref_counts / (ref_N * widths) if ref_N > 0 else np.zeros_like(ref_counts, dtype=float)
+            ref_err = np.sqrt(ref_counts) / (ref_N * widths) if ref_N > 0 else np.zeros_like(ref_counts, dtype=float)
+        else:
+            ref_y = ref_counts.astype(float)
+            ref_err = np.sqrt(ref_counts)
+
+        axd.stairs(
+            ref_y, edges, color="black",
+            linewidth=2.2, label=f"{model_legend_titles[0]}", zorder=4, alpha=0.5
+        )
+
+        mask_ref = ref_counts > 0
+        axd.bar(
+            centers[mask_ref], 2 * ref_err[mask_ref], bottom=ref_y[mask_ref] - ref_err[mask_ref], width=widths[mask_ref],
+            align="center", facecolor="none", edgecolor='black', hatch="///", linewidth=0.5, zorder=3
+        )
+
+        top_y_arrays = [ref_y]
+
+        # ===== Comparison Models =====
+        
+        # Make a dict of models -> num events for optional annotations later
+        model_to_num_events = {}
+        # Make a dict of models -> gen counts for ratio plotting later
+        model_to_gen_counts = {}
+        for i, mn in enumerate(model_names):
+            gen_vals = np.asarray(comp_vals_dict[mn])
+            gen_counts, _ = np.histogram(gen_vals, bins=edges)
+            gen_N = np.sum(gen_counts)
+            # Store for later use (e.g. annotations)
+            model_to_num_events[mn] = gen_N
+            model_to_gen_counts[mn] = gen_counts
+
+            if density:
+                gen_y = gen_counts / (gen_N * widths) if gen_N > 0 else np.zeros_like(gen_counts, dtype=float)
+                gen_err = np.sqrt(gen_counts) / (gen_N * widths) if gen_N > 0 else np.zeros_like(gen_counts, dtype=float)
+            else:
+                gen_y = gen_counts.astype(float)
+                gen_err = np.sqrt(gen_counts)
+
+            top_y_arrays.append(gen_y)
+
+            color = cls.color_palette[i]
+            axd.stairs(
+                gen_y, edges, linewidth=2.0, color=color,
+                label=f"{model_legend_titles[i+1]}", zorder=2
+            )
+            
+            mask_gen = gen_counts > 0
+            axd.bar(
+                centers[mask_gen], 2 * gen_err[mask_gen], bottom=gen_y[mask_gen] - gen_err[mask_gen], width=widths[mask_gen],
+                align="center", facecolor="none", edgecolor=color, hatch="///", linewidth=0.5, zorder=3
+            )
+
+        cls._plot_ratios(axr, ref_counts, list(model_to_gen_counts.values()), centers, ratio_ylim)
+            
+        # ===== Writing =====
+
+        # Useful for slides etc, where the figure might be standalone
+        if title:
+            fig.suptitle(title, fontsize=cls.fontsize_axes_labels)
+
+        # Labels
+        den_or_cnts = "Density" if density else "Counts"
+        axd.set_ylabel(f"log({den_or_cnts})" if use_log else den_or_cnts, fontsize=cls.fontsize_axes_labels)
+        
+        axr.set_ylabel("Gen / Geant4", fontsize=cls.fontsize_axes_labels)
+        axr.set_xlabel(f"{feature_name} {unit}".rstrip(), fontsize=cls.fontsize_axes_labels)
+
+        # ===== Axes =====
+
+        axd.set_yscale("log" if use_log else "linear")
+        axr.set_xlim(x_min, x_max)
+        
+        # ===== Finalize =====
+        
+        cls._apply_styling(
+            fig, axd, axr, 
+            column_name=column_name, 
+            density=density, 
+            use_log=use_log, 
+            centers=centers, 
+            top_y_arrays=top_y_arrays, 
+            ratio_ylim=ratio_ylim,
+            dynamic_count_scale=dynamic_count_scale,
+            count_scale_group_by_3=count_scale_group_by_3,
+            spec_text=spec_text,
+            spec_table_rows=spec_table_rows,
+            label_text=label_text,
+            override_legend_loc=override_legend_loc,
+            override_spec_loc=override_spec_loc,
+            override_label_loc=override_label_loc,
+            # show_output=show_output,
+            show_legend=show_legend,
+            show_label=show_label,
+        )
+        
+        if out_file is not None:
+            fig.savefig(out_file, bbox_inches="tight")
+        if show_output:
+            fig.show()
+        
+        # # ===== Aesthetics =====
+            
+        # # Style axes ticks
+        # for ax in (axd, axr):
+        #     ax.minorticks_on()
+        #     ax.tick_params(which="both", direction="in", top=True, right=True)
+            
+        # # Ratio guide lines
+        # axr.axhline(1.0, color="0.25", lw=1.2)
+        # for frac in [0.05, 0.10]:
+        #     axr.axhline(1.0 + frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+        #     axr.axhline(1.0 - frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+        # axr.set_ylim(*ratio_ylim)
+        
+        # # 10% top headroom for less cramped feel
+        # ymin, ymax = axd.get_ylim()
+        # if use_log:
+        #     log_range = np.log10(ymax) - np.log10(ymin)
+        #     new_log_top = np.log10(ymax) + 0.10 * log_range
+        #     axd.set_ylim(ymin, 10**new_log_top)
+        # else:
+        #     axd.set_ylim(ymin, ymax * 1.10)
+            
+        # # Set ticks fontsizes
+        # axd.tick_params(axis='both', labelsize=cls.fontsize_ticks)
+        # axr.tick_params(axis='both', labelsize=cls.fontsize_ticks)
+       
+        # # @TODO: for some reason this causes lots of lag. I have disabled this for now.
+        # # -- I am testing using this only when use_log is true (we dont need it otherwise anyway)
+        # # Fix for log scale axes tick label issue
+        # if use_log:
+        #     axd.yaxis.set_major_locator(mticker.LogLocator(base=10))
+        #     axd.yaxis.set_major_formatter(mticker.LogFormatterMathtext(base=10))
+
+        # # Dynamic y scaling for counts (not log since those are compact naturally)
+        # if dynamic_count_scale and not use_log:
+        #     cls._apply_dynamic_count_scaling_ticks(axd, top_y_arrays, density=density, group_by_3=count_scale_group_by_3)
+        
+        # # For momenta we need the ticks to be in MeV, not keV. This is an arbitrary decision.
+        # if column_name in ['e', 'pt', 'px', 'py', 'pz']:
+        #     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x/1000:g}"))
+
+        # # ===== Legend =====
+        
+        # # Choose legend position dynamically (based on reference curve)
+        # x_for_score = centers
+        # y_for_score = np.max(np.vstack(top_y_arrays), axis=0)
+        # leg = cls._place_legend_emptiest_corner(
+        #     override_legend_loc[0], override_legend_loc[1], axd,
+        #     x_for_score, y_for_score, labels=None
+        # )
+        
+        # # ===== Model Spec Annotations =====
+
+        # fig.canvas.draw() # legend must be rendered before we use location properties
+        # leg_bbox_pixels = leg.get_window_extent()
+        # cls._place_annotation_emptiest_corner(
+        #     override_spec_loc[0], override_spec_loc[1], fig, axd,
+        #     x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
+        #     spec_text=spec_text, spec_table_rows=spec_table_rows
+        # )
+        
+        # # ===== Label =====
+        
+        # # No automatic placement code so location is required
+        # if show_label and override_label_loc != (None, None):
+        #     cls._place_label(override_label_loc[0], override_label_loc[1], axd, label_text)
+
+        # # ===== Finishing and show/save =====
+        
+        # # We need legend for position calulations, if we are not supposed to show, then remove it here
+        # if show_legend == False:
+        #     leg.remove()
+
+        # if out_file is not None:
+        #     fig.savefig(out_file, bbox_inches="tight")
+        # if show_output:
+        #     fig.show()
+        return fig, (axd, axr)
+
+    @classmethod
+    def plot_dist_and_ratio_discrete_overlaid(
+        cls,
+        *,
+        column_name,
+        ref_vals,
+        comp_vals_dict,             # dict: model_name -> np.array
+        model_legend_titles,        # ["Geant4", "model1 label", "model2 label", ...] aligned with model_names
+        density=False,
+        use_log=False,
+        out_file=None,
+        title=None,
+        ratio_ylim=(0.5, 1.5),
+        ratio_bands=(0.05, 0.10, 0.20),
+        dynamic_count_scale=True,
+        count_scale_group_by_3=False,
+        spec_text=None,
+        spec_table_rows=None,
+        label_text=None,
+        override_legend_loc=(None, None),
+        override_spec_loc=(None, None),
+        override_label_loc=(None, None),
+        show_output=True,
+        show_legend=True,
+        show_label=True,
+        top_k=None,
+        sort_descending=False,
+        fig_ax_tuple=(None, None, None)
+    ):
+        """
+        Plots discrete data as a bargraph where all bars are grouped together.
+        """
+
+        # ===== Defaults if not set =====
+        
+        model_names = list(comp_vals_dict.keys())
+        # ampl.use_atlas_style()
+        feature_name, unit = cls._get_labels(column_name)
+        
+        fig, axd, axr = fig_ax_tuple
+        if (fig, axd, axr) == (None, None, None):
+            fig, axd, axr = ampl.ratio_axes()
+        
+        # ===== Get data frequency distribution =====
+        
+        all_unique_elements, real_freq_dist, sampled_freq_dist_dict = plotting_v2._get_data_frequency_distribution(
+            in_real_data=ref_vals,
+            in_generated_data=comp_vals_dict,
+            top_k=top_k,
+            sort_descending=sort_descending
+        )
+        
+        # Keep raw counts for error propagation
+        real_counts_raw = real_freq_dist.copy()
+        sampled_counts_raw_dict = {
+            mn: sampled_freq_dist_dict[mn].copy()
+            for mn in model_names
+        }
+        
+        # ===== Normalize / top-panel errors =====
+        
+        if density:
+            real_total = real_counts_raw.sum()
+            if real_total > 0:
+                r_y = real_counts_raw.astype(float) / real_total
+                r_err = np.sqrt(real_counts_raw.astype(float)) / real_total
+            else:
+                r_y = real_counts_raw.astype(float)
+                r_err = np.zeros_like(r_y, dtype=float)
+
+            g_y_dict = {}
+            g_err_dict = {}
+            for mn in model_names:
+                g_total = sampled_counts_raw_dict[mn].sum()
+                if g_total > 0:
+                    g_y_dict[mn] = sampled_counts_raw_dict[mn].astype(float) / g_total
+                    g_err_dict[mn] = np.sqrt(sampled_counts_raw_dict[mn].astype(float)) / g_total
+                else:
+                    g_y_dict[mn] = sampled_counts_raw_dict[mn].astype(float)
+                    g_err_dict[mn] = np.zeros_like(g_y_dict[mn], dtype=float)
+        else:
+            r_y = real_counts_raw.astype(float)
+            r_err = np.sqrt(real_counts_raw.astype(float))
+
+            g_y_dict = {
+                mn: sampled_counts_raw_dict[mn].astype(float)
+                for mn in model_names
+            }
+            g_err_dict = {
+                mn: np.sqrt(sampled_counts_raw_dict[mn].astype(float))
+                for mn in model_names
+            }
+            
+        # ===== X positions =====
+
+        n_categories = len(all_unique_elements)
+        x = np.arange(n_categories)
+        axd.set_xticks(x)
+        axr.set_xticks(x)
+
+        # For legend scoring / annotations
+        top_y_arrays = [r_y]
+    
+        # ===== Top panel: grouped bars =====
+        
+        error_kw = dict(linewidth=1, capsize=0, capthick=0)
+        
+        # For log scale, error bars cannot go to/below zero
+        if use_log:
+            eps = 1e-12
+            if density:
+                real_freq_dist = np.clip(real_freq_dist, eps, None)
+                for mn in model_names:
+                    sampled_freq_dist_dict[mn] = np.clip(sampled_freq_dist_dict[mn], eps, None)
+        
+        # Do plot
+        axd.bar(
+            x, r_y, yerr=r_err,
+            label=model_legend_titles[0], color='black', linewidth=0, alpha=0.8, width=0.9, align='center', error_kw=error_kw
+        )
+        model_to_gen_counts = {}
+        for i, mn in enumerate(model_names):
+            g_y = g_y_dict[mn]
+            g_err = g_err_dict[mn]
+            
+            model_to_gen_counts[mn] = g_y
+            top_y_arrays.append(g_y)
+
+            axd.bar(
+                x, g_y_dict[mn], yerr=g_err,
+                label=model_legend_titles[i], color=cls.color_palette[i], linewidth=0, alpha=0.8, width=(0.9 - 0.3 * i), align='center', error_kw=error_kw
+            )
+            
+        cls._plot_ratios(axr, real_counts_raw.astype(float), list(model_to_gen_counts.values()), x, ratio_ylim)
+        
+        # ===== Writing =====
+
+        # Useful for slides etc, where the figure might be standalone
+        if title:
+            fig.suptitle(title, fontsize=12)
+
+        # Labels
+        den_or_cnts = "Density" if density else "Counts"
+        axd.set_ylabel(f"log({den_or_cnts})" if use_log else den_or_cnts, fontsize=cls.fontsize_axes_labels)
+        
+        axr.set_ylabel("Gen / Geant4", fontsize=cls.fontsize_axes_labels)
+        axr.set_xlabel(f"{feature_name} {unit}".rstrip(), fontsize=cls.fontsize_axes_labels)
+
+        # ===== Axes =====
+
+        axd.set_yscale("log" if use_log else "linear")
+        
+        all_unique_particles_ticks = [str(int(p)) for p in all_unique_elements]
+        axr.set_xticklabels(all_unique_particles_ticks, rotation=45, ha="right")
+        
+        # ===== Finalize =====
+        
+        # cls._apply_styling(
+        #     fig, axd, axr, 
+        #     column_name=column_name, 
+        #     density=density, 
+        #     use_log=use_log, 
+        #     centers=x, 
+        #     top_y_arrays=top_y_arrays, 
+        #     ratio_ylim=ratio_ylim,
+        #     dynamic_count_scale=dynamic_count_scale,
+        #     count_scale_group_by_3=count_scale_group_by_3,
+        #     spec_text=spec_text,
+        #     spec_table_rows=spec_table_rows,
+        #     label_text=label_text,
+        #     override_legend_loc=override_legend_loc,
+        #     override_spec_loc=override_spec_loc,
+        #     override_label_loc=override_label_loc,
+        #     # show_output=show_output,
+        #     show_legend=show_legend,
+        #     show_label=show_label,
+        # )
+        
+        # if out_file is not None:
+        #     fig.savefig(out_file, bbox_inches="tight")
+        # if show_output:
+        #     fig.show()
+        
+        # ===== Aesthetics =====
+        
+        # Style axes ticks
+        for axd in ([axd]):
+            axd.minorticks_on()
+            axd.tick_params(which="both", direction="in", top=True, right=True)
+        
+        # Ratio guide lines
+        axr.axhline(1.0, color="0.25", lw=1.2)
+        for frac in ratio_bands:
+            axr.axhline(1.0 + frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+            axr.axhline(1.0 - frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+        axr.set_ylim(*ratio_ylim)
+
+        # Top-panel headroom
+        ymin, ymax = axd.get_ylim()
+        if use_log:
+            if ymin > 0 and ymax > 0:
+                log_range = np.log10(ymax) - np.log10(ymin)
+                new_log_top = np.log10(ymax) + 0.10 * log_range
+                axd.set_ylim(ymin, 10**new_log_top)
+        else:
+            axd.set_ylim(ymin, ymax * 1.10)
+
+        # Fix log tick formatting only when needed
+        if use_log:
+            axd.yaxis.set_major_locator(mticker.LogLocator(base=10))
+            axd.yaxis.set_major_formatter(mticker.LogFormatterMathtext(base=10))
+        
+        # Dynamic y scaling for counts (not density and not log because those do not need it)
+        if dynamic_count_scale and not use_log:
+            counts_arrays = [real_freq_dist] + [sampled_freq_dist_dict[mn] for mn in model_names]
+            cls._apply_dynamic_count_scaling_ticks(axd, counts_arrays, density=density, group_by_3=count_scale_group_by_3)
+        
+        # ===== Legend =====
+        
+        # Choose legend position dynamically (based on reference curve)
+        x_for_score = x
+        y_for_score = np.max(np.vstack(top_y_arrays), axis=0)
+        leg = cls._place_legend_emptiest_corner(
+            override_legend_loc[0], override_legend_loc[1], axd,
+            x_for_score, y_for_score, labels=None
+        )
+        
+        # ===== Model Spec Annotations =====
+
+        fig.canvas.draw() # legend must be rendered before we use location properties
+        leg_bbox_pixels = leg.get_window_extent()
+        cls._place_annotation_emptiest_corner(
+            override_spec_loc[0], override_spec_loc[1], fig, axd,
+            x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
+            spec_text=spec_text, spec_table_rows=spec_table_rows
+        )
+        
+        # ===== Label =====
+        
+        # No automatic placement code so location is required
+        if show_label and override_label_loc != (None, None):
+            cls._place_label(override_label_loc[0], override_label_loc[1], axd, label_text)
+                        
+        # ===== Final/Save =====
+        
+        # We need legend for position calulations, if we are not supposed to show, then remove it here
+        if show_legend == False:
+            leg.remove()
+        
+        if out_file != None:
+            fig.savefig(out_file, bbox_inches='tight')
+        if show_output:
+            plt.show()
+        return fig, (axd, axr)
+    
+    @classmethod
+    def plot_dist_and_ratio_discrete_grouped(
+        cls,
+        *,
+        column_name,
+        ref_vals,
+        comp_vals_dict,             # dict: model_name -> np.array
+        model_legend_titles,        # ["Geant4", "model1 label", "model2 label", ...] aligned with model_names
+        density=False,
+        use_log=False,
+        out_file=None,
+        title=None,
+        ratio_ylim=(0.5, 1.5),
+        ratio_bands=(0.05, 0.10, 0.20),
+        dynamic_count_scale=True,
+        count_scale_group_by_3=False,
+        spec_text=None, 
+        spec_table_rows=None,
+        override_legend_loc=(None, None),
+        override_spec_loc=(None, None),
+        override_label_loc=(None, None),
+        top_k=None,
+        sort_descending=False
+    ):
+        """
+        Plots discrete data as a bargraph where all bars are grouped together.
+        """
+
+        # ===== Defaults if not set =====
+        
+        model_names = list(comp_vals_dict.keys())
+        palette = sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
+        
+        feature_name, unit = cls._get_labels(column_name)
+        
+        # ===== Get data frequency distribution =====
+        
+        all_unique_particles, real_freq_dist, sampled_freq_dist_dict = plotting_v2._get_data_frequency_distribution(
+            in_real_data=ref_vals,
+            in_generated_data=comp_vals_dict,
+            top_k=top_k,
+            sort_descending=sort_descending
+        )
+        
+        # Keep raw counts for error propagation
+        real_counts_raw = real_freq_dist.copy()
+        sampled_counts_raw_dict = {
+            mn: sampled_freq_dist_dict[mn].copy()
+            for mn in model_names
+        }
+        
+        # ===== Normalize / top-panel errors =====
+        
+        if density:
+            real_total = real_counts_raw.sum()
+            if real_total > 0:
+                r_y = real_counts_raw.astype(float) / real_total
+                r_err = np.sqrt(real_counts_raw.astype(float)) / real_total
+            else:
+                r_y = real_counts_raw.astype(float)
+                r_err = np.zeros_like(r_y, dtype=float)
+
+            g_y_dict = {}
+            g_err_dict = {}
+            for mn in model_names:
+                g_total = sampled_counts_raw_dict[mn].sum()
+                if g_total > 0:
+                    g_y_dict[mn] = sampled_counts_raw_dict[mn].astype(float) / g_total
+                    g_err_dict[mn] = np.sqrt(sampled_counts_raw_dict[mn].astype(float)) / g_total
+                else:
+                    g_y_dict[mn] = sampled_counts_raw_dict[mn].astype(float)
+                    g_err_dict[mn] = np.zeros_like(g_y_dict[mn], dtype=float)
+        else:
+            r_y = real_counts_raw.astype(float)
+            r_err = np.sqrt(real_counts_raw.astype(float))
+
+            g_y_dict = {
+                mn: sampled_counts_raw_dict[mn].astype(float)
+                for mn in model_names
+            }
+            g_err_dict = {
+                mn: np.sqrt(sampled_counts_raw_dict[mn].astype(float))
+                for mn in model_names
+            }
+            
+        # ===== Ratio denominator always uses shape-only densities =====
+
+        rN = real_counts_raw.sum()
+        r_density = real_counts_raw.astype(float) / rN if rN > 0 else np.zeros_like(real_counts_raw, dtype=float)
+        # Ratio error propagation: sqrt(N) / N = 1 / sqrt(N)
+        r_density_err = np.sqrt(real_counts_raw.astype(float)) / rN if rN > 0 else np.zeros_like(real_counts_raw, dtype=float)
+        
+        fig, (axd, axr) = plt.subplots(
+            2, 1,
+            figsize=(6, 6),
+            sharex=True,
+            gridspec_kw={"height_ratios": [3, 1]},
+            constrained_layout=True,
+        )
+        
+        # ===== Writing =====
+
+        # Useful for slides etc, where the figure might be standalone
+        if title:
+            fig.suptitle(title, fontsize=12)
+
+        # Labels
+        den_or_cnts = "Density" if density else "Counts"
+        axd.set_ylabel(f"log({den_or_cnts})" if use_log else den_or_cnts)
+        
+        axr.set_ylabel("Gen / Geant4")
+        axr.set_xlabel(f"{feature_name} {unit}".rstrip())
+
+        # ===== Axes =====
+
+        axd.set_yscale("log" if use_log else "linear")
+
+        for axd in ([axd]):
+            axd.minorticks_on()
+            axd.tick_params(which="both", direction="in", top=True, right=True)
+        
+        all_unique_particles_ticks = [str(int(p)) for p in all_unique_particles]
+        plt.xticks(rotation=45, ha='right')
+        
+        # ===== X positions for grouped bars =====
+
+        n_categories = len(all_unique_particles)
+        n_series = 1 + len(model_names)   # Geant4 + generated models
+        x = np.arange(n_categories)
+
+        total_group_width = 0.82
+        bar_width = total_group_width / n_series
+        offsets = (np.arange(n_series) - (n_series - 1) / 2.0) * bar_width
+
+        tick_labels = [str(int(p)) for p in all_unique_particles]
+
+        # For legend scoring / annotations
+        top_y_arrays = [r_y]
+    
+        # ===== Top panel: grouped bars =====
+        
+        error_kw = dict(linewidth=1, capsize=0, capthick=0)
+        
+        # For log scale, error bars cannot go to/below zero
+        if use_log:
+            eps = 1e-12
+            if density:
+                real_freq_dist = np.clip(real_freq_dist, eps, None)
+                for mn in model_names:
+                    sampled_freq_dist_dict[mn] = np.clip(sampled_freq_dist_dict[mn], eps, None)
+        
+        # Do plot
+        axd.bar(
+            x + offsets[0], r_y, yerr=r_err,
+            label=model_legend_titles[0], color='black', linewidth=0, alpha=0.8, width=bar_width, align='center', error_kw=error_kw
+        )
+        for i, mn in enumerate(model_names, start=1):
+            g_y = g_y_dict[mn]
+            g_err = g_err_dict[mn]
+            top_y_arrays.append(g_y)
+
+            axd.bar(
+                x + offsets[i], g_y_dict[mn], yerr=g_err,
+                label=model_legend_titles[i], color=palette[i], linewidth=0, alpha=0.8, width=bar_width, align='center', error_kw=error_kw
+            )
+            
+        axd.set_xticks(x)
+        axd.set_xticklabels(all_unique_particles_ticks, rotation=45, ha="right")
+        
+        # ===== Bottom panel: ratios (shape-only densities) =====
+
+        for i, mn in enumerate(model_names, start=1):
+            color = palette[i]
+
+            gcounts = sampled_counts_raw_dict[mn].astype(float)
+            gN = gcounts.sum()
+
+            g_density = gcounts / gN if gN > 0 else np.zeros_like(gcounts, dtype=float)
+            g_density_err = np.sqrt(gcounts) / gN if gN > 0 else np.zeros_like(gcounts, dtype=float)
+
+            ratio = np.divide(
+                g_density,
+                r_density,
+                out=np.full_like(g_density, np.nan, dtype=float),
+                where=r_density > 0
+            )
+
+            ratio_err = np.full_like(ratio, np.nan, dtype=float)
+            ok = (g_density > 0) & (r_density > 0)
+            ratio_err[ok] = ratio[ok] * np.sqrt(
+                (g_density_err[ok] / g_density[ok])**2 +
+                (r_density_err[ok] / r_density[ok])**2
+            )
+
+            ok2 = np.isfinite(ratio) & np.isfinite(ratio_err)
+
+            axr.errorbar(
+                (x + offsets[i])[ok2],
+                ratio[ok2],
+                yerr=ratio_err[ok2],
+                fmt="o",
+                ms=3.5,
+                color=color,
+                ecolor=color,
+                elinewidth=0.8,
+                capsize=0,
+                alpha=0.95,
+                zorder=3
+            )
+        
+        # ===== Aesthetics =====
+        
+        axd.text(0.015, 0.95, "(a)", transform=axd.transAxes, fontsize=11, va="top")
+        axr.text(0.015, 0.95, "(b)", transform=axr.transAxes, fontsize=11, va="top")
+
+        # Ratio guide lines
+        axr.axhline(1.0, color="0.25", lw=1.2)
+        for frac in ratio_bands:
+            axr.axhline(1.0 + frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+            axr.axhline(1.0 - frac, color="0.6", linestyle="--", lw=0.8, alpha=0.6)
+        axr.set_ylim(*ratio_ylim)
+
+        # Top-panel headroom
+        ymin, ymax = axd.get_ylim()
+        if use_log:
+            if ymin > 0 and ymax > 0:
+                log_range = np.log10(ymax) - np.log10(ymin)
+                new_log_top = np.log10(ymax) + 0.10 * log_range
+                axd.set_ylim(ymin, 10**new_log_top)
+        else:
+            axd.set_ylim(ymin, ymax * 1.10)
+
+        # Fix log tick formatting only when needed
+        if use_log:
+            axd.yaxis.set_major_locator(mticker.LogLocator(base=10))
+            axd.yaxis.set_major_formatter(mticker.LogFormatterMathtext(base=10))
+        
+        # Dynamic y scaling for counts (not density and not log because those do not need it)
+        if dynamic_count_scale and (not density) and (not use_log):
+            counts_arrays = [real_freq_dist] + [sampled_freq_dist_dict[mn] for mn in model_names]
+            # cls._apply_dynamic_count_scaling_ticks(axd, counts_arrays, base_label="Counts", group_by_3=count_scale_group_by_3)
+        
+        # X ticks
+        axr.set_xticks(x)
+        axr.set_xticklabels(tick_labels, rotation=45, ha="right")
+    
+        # ===== Legend =====
+
+        # Choose legend position dynamically (based on reference curve)
+        x_for_score = x
+        y_for_score = np.max(np.vstack(top_y_arrays), axis=0)
+        leg = cls._place_legend_emptiest_corner(
+            override_legend_loc[0], override_legend_loc[1], axd,
+            x_for_score, y_for_score, labels=None
+        )
+        
+        # ===== Optional Model Spec Annotations =====
+
+        fig.canvas.draw() # legend must be rendered before we use location properties
+        leg_bbox_pixels = leg.get_window_extent()
+        cls._place_annotation_emptiest_corner(
+            override_spec_loc[0], override_spec_loc[1], fig, axd,
+            x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
+            spec_text=spec_text, spec_table_rows=spec_table_rows
+        )
+        
+        # ===== Final/Save =====
+        
+        sns.despine(ax=axd, trim=True)
+        sns.despine(ax=axr, trim=True)
+    
+        if out_file != None:
+            fig.savefig(out_file, bbox_inches='tight')
+        fig.show()
+        
+        return fig, (axd, axr)
+
+
+    @classmethod
+    def old_style_plot_dist_and_ratio_cont(
+        cls,
+        *,
+        column_name,
+        ref_vals,
+        comp_vals_dict,             # dict: model_name -> np.array
+        model_legend_titles,        # ["Geant4", "model1 label", "model2 label", ...] aligned with model_names
+        edges=None,
+        density=False,
+        use_log=False,
+        out_file=None,
+        title=None,
+        ratio_ylim=(0.5, 1.5),
+        ratio_bands=(0.05, 0.10, 0.20),
+        dynamic_count_scale=True,
+        count_scale_group_by_3=False,
+        spec_text=None,
+        spec_table_rows=None,
+        show_output=True,
+        show_legend=True,
+        fig_ax_tuple=(None, None, None)
+    ):
+        # ===== Defaults if not set =====
+        
+        model_names = list(comp_vals_dict.keys())
+        palette = sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
         
         feature_name, unit = cls._get_labels(column_name)
         
@@ -853,13 +1832,15 @@ class plotting_v2:
         centers = 0.5 * (edges[:-1] + edges[1:])
         widths = np.diff(edges)
 
-        fig, (axd, axr) = plt.subplots(
-            2, 1,
-            figsize=(6, 6),
-            sharex=True,
-            gridspec_kw={"height_ratios": [3, 1]},
-            constrained_layout=True,
-        )
+        fig, axd, axr = fig_ax_tuple
+        if fig is None or axd is None or axr is None:
+            fig, (axd, axr) = plt.subplots(
+                2, 1,
+                figsize=(6, 6),
+                sharex=True,
+                gridspec_kw={"height_ratios": [3, 1]},
+                constrained_layout=True,
+            )
 
         # ===== Writing =====
 
@@ -869,12 +1850,12 @@ class plotting_v2:
 
         # Labels
         if density:
-            axd.set_ylabel("Density")
+            axd.set_ylabel("Density", fontsize=cls.fontsize_axes_labels)
         else:
-            axd.set_ylabel("log(Counts)" if use_log else "Counts")
+            axd.set_ylabel("log(Counts)" if use_log else "Counts", fontsize=cls.fontsize_axes_labels)
 
-        axr.set_ylabel("Gen / Geant4")
-        axr.set_xlabel(f"{feature_name} {unit}".rstrip())
+        axr.set_ylabel("Gen / Geant4", fontsize=cls.fontsize_axes_labels)
+        axr.set_xlabel(f"{feature_name} {unit}".rstrip(), fontsize=cls.fontsize_axes_labels)
 
         # ===== Axes =====
 
@@ -883,7 +1864,7 @@ class plotting_v2:
         for ax in (axd, axr):
             ax.minorticks_on()
             ax.tick_params(which="both", direction="in", top=True, right=True)
-        
+                
        #  axd.yaxis.set_major_locator(mticker.MaxNLocator(6))
        #  axr.yaxis.set_major_locator(mticker.MultipleLocator(0.1))
         
@@ -990,21 +1971,29 @@ class plotting_v2:
             axd.set_ylim(ymin, 10**new_log_top)
         else:
             axd.set_ylim(ymin, ymax * 1.10)
+            
+        # Set ticks fontsizes
+        axd.tick_params(axis='both', labelsize=cls.fontsize_ticks)
+        axr.tick_params(axis='both', labelsize=cls.fontsize_ticks)
+        
+        # I have found using density causes long decimals, this avoid that and replaced it with scientific notation.
+        # if density == True and use_log == False:
+        #     axd.yaxis.set_major_formatter(FormatStrFormatter('%.1e'))
         
         # Fix for log scale axes tick label issue
         # axd.yaxis.set_major_locator(mticker.LogLocator(base=10))
         # axd.yaxis.set_major_formatter(mticker.LogFormatterMathtext(base=10))
 
         # Dynamic y scaling for counts (not density and not log because those do not need it)
-        if dynamic_count_scale and (not density) and (not use_log):
-            cls._apply_dynamic_count_scaling_ticks(axd, top_y_arrays, base_label="Counts", group_by_3=count_scale_group_by_3)
+        if dynamic_count_scale and not use_log:
+            cls._apply_dynamic_count_scaling_ticks(axd, top_y_arrays, density=density, group_by_3=count_scale_group_by_3)
 
         # ===== Legend =====
         
         # Choose legend position dynamically (based on reference curve)
         x_for_score = 0.5 * (edges[:-1] + edges[1:])
         y_for_score = r_y   # use Geant4 reference to avoid peak overlap
-        leg = cls._place_legend_emptiest_corner(axd, x_for_score, y_for_score, labels=None, fontsize=cls.legend_fontsize)
+        leg = cls._place_legend_emptiest_corner(axd, x_for_score, y_for_score, labels=None, fontsize=cls.fontsize_legend)
         
         # ===== Optional Model Spec Annotations =====
 
@@ -1012,21 +2001,26 @@ class plotting_v2:
         leg_bbox_pixels = leg.get_window_extent()
         cls._place_annotation_emptiest_corner(
             fig, axd, x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
-            spec_text=spec_text, spec_table_rows=spec_table_rows, fontsize=cls.legend_fontsize
+            spec_text=spec_text, spec_table_rows=spec_table_rows, fontsize=cls.fontsize_legend
         )
 
         # ===== Finishing and show/save =====
+        
+        # We need legend for position calulations, if we are not supposed to show, then remove it here
+        if show_legend == False:
+            leg.remove()
 
         sns.despine(ax=axd, trim=True)
         sns.despine(ax=axr, trim=True)
 
         if out_file is not None:
             fig.savefig(out_file, bbox_inches="tight")
-        plt.show()
+        if show_output:
+            plt.show()
         return fig, (axd, axr)
 
     @classmethod
-    def plot_dist_and_ratio_discrete_overlaid(
+    def old_style_plot_dist_and_ratio_discrete_overlaid(
         cls,
         *,
         column_name,
@@ -1053,7 +2047,7 @@ class plotting_v2:
         # ===== Defaults if not set =====
         
         model_names = list(comp_vals_dict.keys())
-        palette = sns.color_palette("colorblind", n_colors=max(3, len(model_names) + 1))
+        palette = sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
         
         feature_name, unit = cls._get_labels(column_name)
         
@@ -1268,7 +2262,7 @@ class plotting_v2:
         # Choose legend position dynamically (based on reference curve)
         x_for_score = x
         y_for_score = np.max(np.vstack(top_y_arrays), axis=0)
-        leg = cls._place_legend_emptiest_corner(axd, x_for_score, y_for_score, labels=None, fontsize=cls.legend_fontsize)
+        leg = cls._place_legend_emptiest_corner(axd, x_for_score, y_for_score, labels=None, fontsize=cls.fontsize_legend)
         
         # ===== Optional Model Spec Annotations =====
 
@@ -1276,7 +2270,7 @@ class plotting_v2:
         leg_bbox_pixels = leg.get_window_extent()
         cls._place_annotation_emptiest_corner(
             fig, axd, x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
-            spec_text=spec_text, spec_table_rows=spec_table_rows, fontsize=cls.legend_fontsize
+            spec_text=spec_text, spec_table_rows=spec_table_rows, fontsize=cls.fontsize_legend
         )
                         
         # ===== Final/Save =====
@@ -1291,7 +2285,7 @@ class plotting_v2:
         return fig, (axd, axr)
     
     @classmethod
-    def plot_dist_and_ratio_discrete_grouped(
+    def old_style_plot_dist_and_ratio_discrete_grouped(
         cls,
         *,
         column_name,
@@ -1318,7 +2312,7 @@ class plotting_v2:
         # ===== Defaults if not set =====
         
         model_names = list(comp_vals_dict.keys())
-        palette = sns.color_palette("colorblind", n_colors=max(3, len(model_names) + 1))
+        palette = sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
         
         feature_name, unit = cls._get_labels(column_name)
         
@@ -1527,7 +2521,7 @@ class plotting_v2:
         # Dynamic y scaling for counts (not density and not log because those do not need it)
         if dynamic_count_scale and (not density) and (not use_log):
             counts_arrays = [real_freq_dist] + [sampled_freq_dist_dict[mn] for mn in model_names]
-            cls._apply_dynamic_count_scaling_ticks(axd, counts_arrays, base_label="Counts", group_by_3=count_scale_group_by_3)
+            # cls._apply_dynamic_count_scaling_ticks(axd, counts_arrays, base_label="Counts", group_by_3=count_scale_group_by_3)
         
         # X ticks
         axr.set_xticks(x)
@@ -1538,7 +2532,7 @@ class plotting_v2:
         # Choose legend position dynamically (based on reference curve)
         x_for_score = x
         y_for_score = np.max(np.vstack(top_y_arrays), axis=0)
-        leg = cls._place_legend_emptiest_corner(axd, x_for_score, y_for_score, labels=None, fontsize=cls.legend_fontsize)
+        leg = cls._place_legend_emptiest_corner(axd, x_for_score, y_for_score, labels=None, fontsize=cls.fontsize_legend)
         
         # ===== Optional Model Spec Annotations =====
 
@@ -1546,7 +2540,7 @@ class plotting_v2:
         leg_bbox_pixels = leg.get_window_extent()
         cls._place_annotation_emptiest_corner(
             fig, axd, x_for_score, y_for_score, labels=None, leg_bbox_pixels=leg_bbox_pixels,
-            spec_text=spec_text, spec_table_rows=spec_table_rows, fontsize=cls.legend_fontsize
+            spec_text=spec_text, spec_table_rows=spec_table_rows, fontsize=cls.fontsize_legend
         )
                         
         # ===== Final/Save =====
@@ -1561,856 +2555,9 @@ class plotting_v2:
         return fig, (axd, axr)
 
 
-class plotting_old3:
-    """
-    All plotting functions will follow a similar API. This allows easy intuitive generation
-    of various types of plots.
-    
-    normalized: (optional: False) bool, should the values be normalized to an area of 1 before plotting?
-    use_log: (optional: False) bool, should the dependent axis be log scaled?
-    juxtaposed: (optional: False) bool, if input contains multiple values (array) should all be plotted on the same
-        axis or should different axes be used side-by-side.
-    out_file: (optional) pathlib.Path, file to save figure to. plt.show will always be called since it
-        naturally only works if there is a way to show the figures.
-    """
-    
-    # Preferred starting colors
-    first_colors = ['blue', 'orange', 'purple', 'red', 'green']
-    # Build color list (done right inside the class body)
-    _all_colors = list(mcolors.CSS4_COLORS.keys())
-    _rgb_colors = [(c, mcolors.to_rgb(c)) for c in _all_colors]
-    # Filter out very bright / whiteish colors (value < 0.9)    x
-    _filtered_colors = [
-        name for name, rgb in _rgb_colors
-        if mcolors.rgb_to_hsv(rgb)[2] < 0.96
-    ]
-    # Remove duplicates of first colors
-    _filtered_colors = [c for c in _filtered_colors if c not in ['blue', 'orange', 'purple', 'red', 'green', 'black']]
-    # Final palette
-    colors = ['blue', 'orange', 'purple', 'red', 'green'] + _filtered_colors
-    # Apply globally to Matplotlib
-    plt.rcParams['axes.prop_cycle'] = plt.cycler(color=colors)
-    
-    default_figsize = (21, 6)
-    default_dpi = 300
-    distributions_per_row = 3
-    legend_items_per_col = 10
-    
-    verbose_columns = ["pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
-    
-    def __init__(self):
-        # We store the data for the distributions here so it can be reused
-        # Format: dict(mode_name, data)
-        self.all_real_data = {}
-        self.all_sampled_data = {}
 
-    def load_data_by_model_names(self, model_names):
-        for model_name in model_names:
-            real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
-            sampled_verbose_data = data_manager.load_verbose_dataset(pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples_verbose.csv', pad_token = np.nan)
-            self.all_real_data[model_name] = real_verbose_data
-            self.all_sampled_data[model_name] = sampled_verbose_data
-    
-    def ensure_data_loaded(self, model_names, real_data=False):
-        "Loads data for model_names if not already loaded. Nothing otherwise."
-        for model_name in model_names:
-            if real_data == True and model_name not in self.all_real_data:
-                real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
-                self.all_real_data[model_name] = real_verbose_data
-            if model_name not in self.all_sampled_data:
-                sampled_verbose_data = data_manager.load_verbose_dataset(pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples_verbose.csv', pad_token = np.nan)
-                self.all_sampled_data[model_name] = sampled_verbose_data
 
-    """
-    Plotting training runs and distributions of leading particles.
-    """
-    
-    # learning rate decay scheduler
-    @staticmethod
-    def _get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters, min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult):
-        if lr_scheduler == 'cosine_annealing_with_warmup':
-            # 1) linear warmup for warmup_iters steps
-            if it < warmup_iters:
-                return learning_rate * it / warmup_iters
-            # 2) if it > lr_decay_iters, return min learning rate
-            if it >= lr_decay_iters:
-                return min_lr
-            # 3) in between, use cosine decay down to min learning rate
-            decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
-            assert 0 <= decay_ratio <= 1
-            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-            return min_lr + coeff * (learning_rate - min_lr)
-        elif lr_scheduler == 'cosine_with_warmup':
-            # 1) linear warmup for warmup_iters steps
-            if it < warmup_iters:
-                return learning_rate * it / warmup_iters
-            # 3) in between, use cosine decay down to min learning rate
-            decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
-            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-            return min_lr + coeff * (learning_rate - min_lr)
-        elif lr_scheduler == 'cosine_annealing_with_warm_restarts':
-            # 1) linear warmup for warmup_iters steps
-            if it < warmup_iters:
-                return learning_rate * (it / warmup_iters)
-            # Adjust iteration to account for warmup
-            it -= warmup_iters
-            # 2) Find current cycle and  in the cycle
-            cycle = 0
-            curr_cycle_len = lr_decay_iters
-            iter_in_cycle = it
-            while iter_in_cycle >= curr_cycle_len:
-                iter_in_cycle -= curr_cycle_len
-                cycle += 1
-                curr_cycle_len = int(curr_cycle_len * cycle_steps_mult)
-            # 3) Decay the base learning rate for the current cycle
-            curr_base_lr = learning_rate * (base_lr_decay_mult ** cycle)
-            # 4) Normalized progress within the cycle
-            t = iter_in_cycle / curr_cycle_len
-            # 5) Cosine annealing
-            lr = min_lr + 0.5 * (curr_base_lr - min_lr) * (1 + math.cos(math.pi * t))
-            return lr
-        raise ValueError(f"Unknown lr_scheduler {lr_scheduler}")
-    
-    @staticmethod
-    def plot_training_run(model_names, y_lim=None, x_lim=None, use_log=False, out_file=None, plot_lr_schedule=False):
-        """
-        Wrapper to plot a training run. Handles plotting lines and markers for training and validation loss.
-        """
-        
-        if not isinstance(model_names, list):
-            model_names = [model_names]
-        
-        # Set up plot
-        fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        if len(model_names) < 3:
-            fig.suptitle(f'Training Progress for {model_names}', fontsize=16)
-        else:
-            fig.suptitle(f'Training Progress for various models', fontsize=16)
-        
-        plt.xticks(fontsize=14)
-        plt.yticks(fontsize=14)
-            
-        ax.set_xlabel("Iteration", fontsize=16)
-        ax.set_ylabel("Loss", fontsize=16)
-        if y_lim is not None:
-            ax.set_ylim(y_lim)
-        if x_lim is not None:
-            ax.set_xlim(x_lim)
-        if use_log:
-            ax.set_yscale('log')
-            
-        for idx, model_name in enumerate(model_names):
-            # Parse model data
-            model_data = tables.get_all_data(model_name)
-            min_val_row = model_data.checkpointed_df.loc[model_data.checkpointed_df['val_loss'].idxmin()]
-            final_row = model_data.running_df.iloc[-1]
-            
-            if plot_lr_schedule:
-                config_filepath = pUtil.get_model_config_filepath(model_name)
-                with open(config_filepath, 'r') as f:
-                    model_config = json.load(f)
-                    training_conf = model_config.get('training_config', {})
-                    lr_scheduler = training_conf.get('lr_scheduler', 'cosine_annealing_with_warmup')
-                    warmup_iters = training_conf .get('warmup_iters', 0)
-                    lr_decay_iters = training_conf .get('lr_decay_iters', 0)
-                    learning_rate = training_conf .get('learning_rate', 0)
-                    min_lr = training_conf .get('min_lr', 0)
-                    base_lr_decay_mult = training_conf .get('base_lr_decay_mult', 1)
-                    cycle_steps_mult = training_conf .get('cycle_steps_mult', 1)
-                iters = [i for i in range(model_data.running_df['iter'].max())]
-                lrs = [plotting._get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters, min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult) for it in iters]
-                
-                # Another y-axis for lr as otherwise it would be too small to see 
-                lrax = ax.twinx()
-                lrax.plot(iters, lrs, label=f'Learning rate', color="magenta", linestyle='solid', linewidth=2)
-                lrax.tick_params(axis='y', labelcolor="magenta")
-                # Decimal can be confusing so we switch to scientific
-                lrax.yaxis.set_major_formatter(FuncFormatter(sci_notation))
 
-            # Do plot
-            ax.plot(model_data.running_df['iter'], model_data.running_df['train_loss'], label=f'Training Loss ({model_name})', color=plotting.colors[idx], linestyle='solid', linewidth=2)
-            ax.plot(model_data.running_df['iter'], model_data.running_df['val_loss'], label=f'Validation Loss ({model_name})', color=plotting.colors[idx], linestyle='solid', linewidth=2)
-            ax.scatter(min_val_row['iter'], min_val_row['train_loss'], label=f'Min Saved Train Loss ({model_name}; {min_val_row["train_loss"]:.4f})', color=plotting.colors[idx], marker='s')
-            ax.scatter(min_val_row['iter'], min_val_row['val_loss'], label=f'Min Saved Val Loss ({model_name}; {min_val_row["val_loss"]:.4f})', color=plotting.colors[idx], marker='o')
-            # ax.annotate(model_name, xy=(final_row['iter'], final_row['val_loss']), xytext=(final_row['iter'] * 1.005, final_row['val_loss'] - 0.02), fontsize=9, color=plotting.colors[idx])
-
-        # Final touches and show and/or save
-        if len(model_names) > 3:
-            ax.legend(loc='upper right', fontsize=12)
-        else:
-            ax.legend(loc='best', fontsize=12)
-        fig.tight_layout()
-        ax.grid()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        
-        return fig, ax
-
-    @staticmethod
-    def plot_validation_run(model_names, model_legend_titles=None, y_lim=None, x_lim=None, use_log=False, out_file=None, plot_lr_schedule=False):
-        """
-        Wrapper to plot a training run. Handles plotting lines and markers for training and validation loss.
-        """
-        
-        if not isinstance(model_names, list):
-            model_names = [model_names]
-        
-        # Set up plot
-        fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        if len(model_names) < 3:
-            fig.suptitle(f'Training Progress for {model_names}', fontsize=16)
-        else:
-            fig.suptitle(f'Training Progress for various models', fontsize=16)
-        
-        plt.xticks(fontsize=14)
-        plt.yticks(fontsize=14)
-        
-        ax.set_xlabel("Iteration", fontsize=16)
-        ax.set_ylabel("Validation Loss", fontsize=16)
-        if y_lim is not None:
-            ax.set_ylim(y_lim)
-        if x_lim is not None:
-            ax.set_xlim(x_lim)
-        if use_log:
-            ax.set_yscale('log')
-            
-        for idx, model_name in enumerate(model_names):
-            # Parse model data
-            model_data = tables.get_all_data(model_name)
-            min_val_row = model_data.checkpointed_df.loc[model_data.checkpointed_df['val_loss'].idxmin()]
-            final_row = model_data.running_df.iloc[-1]
-            
-            if plot_lr_schedule:
-                config_filepath = pUtil.get_model_config_filepath(model_name)
-                with open(config_filepath, 'r') as f:
-                    model_config = json.load(f)
-                    training_conf = model_config.get('training_config', {})
-                    lr_scheduler = training_conf.get('lr_scheduler', 'cosine_annealing_with_warmup')
-                    warmup_iters = training_conf .get('warmup_iters', 0)
-                    lr_decay_iters = training_conf .get('lr_decay_iters', 0)
-                    learning_rate = training_conf .get('learning_rate', 0)
-                    min_lr = training_conf .get('min_lr', 0)
-                    base_lr_decay_mult = training_conf .get('base_lr_decay_mult', 1)
-                    cycle_steps_mult = training_conf .get('cycle_steps_mult', 1)
-                iters = [i for i in range(model_data.running_df['iter'].max())]
-                lrs = [plotting._get_lr(it, lr_scheduler, warmup_iters, lr_decay_iters, min_lr, learning_rate, cycle_steps_mult, base_lr_decay_mult) for it in iters]
-                
-                # Another y-axis for lr as otherwise it would be too small to see 
-                lrax = ax.twinx()
-                lrax.plot(iters, lrs, label=f'Learning rate', color="magenta", linestyle='solid', linewidth=2)
-                lrax.tick_params(axis='y', labelcolor="magenta")
-                # Decimal can be confusing so we switch to scientific
-                lrax.yaxis.set_major_formatter(FuncFormatter(sci_notation))
-
-            # If a name is specified use that.
-            label_name = model_name
-            if model_legend_titles is not None and idx < len(model_legend_titles):
-                label_name = model_legend_titles[idx]
-                
-            # Do plot
-            ax.plot(model_data.running_df['iter'], model_data.running_df['val_loss'], label=f'{label_name}', color=plotting.colors[idx], linestyle='solid', linewidth=2)
-            # ax.annotate(label_name, xy=(final_row['iter'], final_row['val_loss']), xytext=(final_row['iter'] * 1.005, final_row['val_loss'] - 0.02), fontsize=14, color=plotting.colors[idx])
-
-        # Final touches and show and/or save
-        ax.legend(loc='upper right', fontsize=16, ncol=int(len(model_names) // (plotting.legend_items_per_col + 1)) + 1)
-        fig.tight_layout()
-        ax.grid()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        
-        return fig, ax
-
-    @staticmethod
-    def get_common_data(model_name ):
-        """
-        Retrieves bin widths and ranges for each feature and the real and sampled leading particles dataframes.
-        """
-        dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
-        dictionary = Dictionary(dictionary_filename)
-        
-        def get_bin_count(type_str):
-            step_size = dictionary.token_step_size(type_str)
-            if type_str in ['eta', 'theta', 'phi']:
-                step_size = 0.1
-            if type_str == 'theta':
-                theta_min = 0 if dictionary.token_min('theta') == 0 else dictionary.token_min('theta')
-                theta_max = np.pi if dictionary.token_max('theta') == 0 else dictionary.token_max('theta')
-                return int((theta_max - theta_min) // step_size)
-            if type_str == 'phi':
-                phi_min = -np.pi if dictionary.token_min('phi') == 0 else dictionary.token_min('phi')
-                phi_max = np.pi if dictionary.token_max('phi') == 0 else dictionary.token_max('phi')
-                return int((phi_max - phi_min) // step_size)
-            return int(dictionary.token_range(type_str) // step_size)
-        
-        # For now, I have replaced those with hard coded values.
-        theta_min = 0 if dictionary.token_min('theta') == 0 else dictionary.token_min('theta')
-        theta_max = np.pi if dictionary.token_max('theta') == 0 else dictionary.token_max('theta')
-        phi_min = -np.pi if dictionary.token_min('phi') == 0 else dictionary.token_min('phi')
-        phi_max = np.pi if dictionary.token_max('phi') == 0 else dictionary.token_max('phi')
-        
-        bin_settings = {
-            "num_particles": { "min": -0.5,                          "max": 50.5,                          "bins": 51 },
-            "e":             { "min": 0,                             "max": 35000,                         "bins": 70 },
-            "px":            { "min": -5000,                         "max": 35000,                         "bins": 70 },
-            "py":            { "min": -5000,                         "max": 35000,                         "bins": 70 },
-            "pz":            { "min": -5000,                         "max": 35000,                         "bins": 70 },
-            "eta":           { "min": dictionary.token_min('eta'),   "max": dictionary.token_max('eta'),   "bins": get_bin_count('eta') },
-            "theta":         { "min": theta_min,                     "max": theta_max,                     "bins": get_bin_count('theta') },
-            "phi":           { "min": phi_min,                       "max": phi_max,                       "bins": get_bin_count('phi') },
-            "pt":            { "min": dictionary.token_min('pt'),    "max": dictionary.token_max('pt'),    "bins": 70 },
-        }
-
-        return bin_settings
-
-    def _do_plot_get_labels(self, column_name):
-        # assert column_name in plotting.verbose_columns, f"Invalid column name: {column_name}. Must be one of {plotting.verbose_columns}."
-        
-        if column_name == 'num_particles':
-            feature_name = 'Number of particles'
-            unit = ''
-            return feature_name, unit
-        
-        unit = ''
-        if column_name in ['e', 'pt', 'px', 'py', 'pz']:
-            unit = '[MeV]'
-                        
-        feature_name = column_name
-        if column_name == 'pt':
-            feature_name = r'$p_{T}$'
-        elif column_name == 'px':
-            feature_name = r'$p_{x}$'
-        elif column_name == 'py':
-            feature_name = r'$p_{y}$'
-        elif column_name == 'pz':
-            feature_name = r'$p_{z}$'
-        elif column_name == 'eta':
-            feature_name = r'$\eta$'
-        elif column_name == 'theta':
-            feature_name = r'$\theta$'
-        elif column_name == 'phi':
-            feature_name = r'$\phi$'
-        return feature_name, unit
-
-    def _do_plot(self, data, title=None, normalized=False, use_log=False, out_file=None):
-        """
-        data: must be a dict with elements of form (model_name, column_name, data_real, data_generated)
-              The first element is expected to be the Geant4 Simulation.
-        """
-
-        # 2 rows because we have a ratio on the bottom
-        fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]}, constrained_layout=True, dpi=plotting.default_dpi)
-        fig.suptitle(title, fontsize=16)
-        
-        axd, axr = axes
-        # Since the column name will be the same for all data, we can just extract it here.
-        # Further, the input data will also be the same for all of them.
-        _, f_column_name, f_real_data, _ = data[0]
-        feature_name, unit = self._do_plot_get_labels(f_column_name)
-        axd.set_ylabel('log(Frequency)' if use_log else 'Frequency', fontsize=16)
-        axd.set_yscale('log' if use_log else 'linear')
-        axr.set_ylabel('Generated / Geant4', fontsize=16)
-        axr.set_xlabel(f'{feature_name} {unit}', fontsize=16)
-        
-        # Will be same across all models
-        bin_settings = plotting.get_common_data(model_name)
-        range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
-        n_bins = bin_settings[column_name]['bins']
-
-        rcounts, redges = np.histogram(data_real, bins=n_bins, range=range, density=normalized)
-        input_total_counts = np.sum(rcounts)
-        
-        axd.step(redges[:-1], rcounts, where='post', label=f'Geant4 Simulation  = {input_total_counts}', color='black', linewidth=2)
-        axd.errorbar(bin_centers, rcounts, yerr=rerrors, fmt='none', ecolor='black', elinewidth=0.5, capsize=0)
-        
-        for model_name, column_name, data_real, data_generated in data:
-            gcounts, gedges = np.histogram(data_generated, bins=n_bins, range=range, density=normalized)
-            generated_total_counts = np.sum(gcounts)
-
-            # Top pannel, the distribution
-            
-            # Bin centers for error bars
-            bin_centers = (redges[:-1] + redges[1:]) / 2
-            bin_width = redges[1] - redges[0]
-            
-            # Statistical uncertainties
-            rerrors = np.sqrt(rcounts)
-            gerrors = np.sqrt(gcounts)
-
-            if normalized:
-                rerrors = rerrors / input_total_counts
-                gerrors = gerrors / generated_total_counts
-            
-            axd.step(gedges[:-1], gcounts, where='post', label=f'Generated ({model_name})  = {generated_total_counts}', color=plotting.colors[1], linewidth=2)
-            axd.errorbar(bin_centers, gcounts, yerr=gerrors, fmt='none', ecolor=plotting.colors[1], elinewidth=0.5, capsize=0)
-        
-            # Bottom pannel, the ratio
-            
-            input_density = rcounts / input_total_counts
-            generated_density = gcounts / generated_total_counts
-            ratio = np.divide(generated_density, input_density, out=np.zeros_like(generated_density), where=input_density!=0)
-            
-            axr.stairs(ratio, redges, label=f'Ratio ({model_name})', color=plotting.colors[1], linewidth=1)
-            # Reasonable range for ratios around 1
-            axr.set_ylim(0.5, 1.5)
-            for frac in [0.05, 0.10, 0.20]:
-                axr.axhline(y=1.0 + frac, color="gray", linestyle="--", lw=1)
-                axr.axhline(y=1.0 - frac, color="gray", linestyle="--", lw=1)
-            
-        axd.legend(loc='best', fontsize=12)
-
-        # Finishing touches and show and/or save
-        fig.tight_layout()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        return fig, axes
-    
-    def _do_plot_single(self, data, title=None, normalized=False, use_log=False, out_file=None):
-        """
-        data: must be a dict with elements of form (model_name, column_name, data_real, data_generated)
-              The first element is expected to be the Geant4 Simulation.
-        """
-
-        # 2 rows because we have a ratio on the bottom
-        fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]}, constrained_layout=True, dpi=plotting.default_dpi)
-        fig.suptitle(title, fontsize=16)
-        
-        axd, axr = axes
-        
-        model_name, column_name, data_real, data_generated = data[0]
-        bin_settings = plotting.get_common_data(model_name)
-        range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
-        n_bins = bin_settings[column_name]['bins']
-        
-        rcounts, redges = np.histogram(data_real, bins=n_bins, range=range, density=normalized)
-        gcounts, gedges = np.histogram(data_generated, bins=n_bins, range=range, density=normalized)
-        
-        input_total_counts = np.sum(rcounts)
-        generated_total_counts = np.sum(gcounts)
-
-        # Top pannel, the distribution
-        feature_name, unit = self._do_plot_get_labels(column_name)
-        axd.set_ylabel('log(Frequency)' if use_log else 'Frequency', fontsize=16)
-        axd.set_yscale('log' if use_log else 'linear')
-        
-        # Bin centers for error bars
-        bin_centers = (redges[:-1] + redges[1:]) / 2
-        bin_width = redges[1] - redges[0]
-        
-        # Statistical uncertainties
-        rerrors = np.sqrt(rcounts)
-        gerrors = np.sqrt(gcounts)
-
-        if normalized:
-            rerrors = rerrors / input_total_counts
-            gerrors = gerrors / generated_total_counts
-        
-        axd.step(redges[:-1], rcounts, where='post', label=f'Geant4 Simulation  = {input_total_counts}', color='black', linewidth=2)
-        axd.step(gedges[:-1], gcounts, where='post', label=f'Generated ({model_name})  = {generated_total_counts}', color=plotting.colors[1], linewidth=2)
-        axd.errorbar(bin_centers, rcounts, yerr=rerrors, fmt='none', ecolor='black', elinewidth=0.5, capsize=0)
-        axd.errorbar(bin_centers, gcounts, yerr=gerrors, fmt='none', ecolor=plotting.colors[1], elinewidth=0.5, capsize=0)
-        axd.legend(loc='best', fontsize=12)
-        
-        # Bottom pannel, the ratio
-        input_density = rcounts / input_total_counts
-        generated_density = gcounts / generated_total_counts
-        ratio = np.divide(generated_density, input_density, out=np.zeros_like(generated_density), where=input_density!=0)
-        
-        axr.stairs(ratio, redges, label=f'Ratio ({model_name})', color=plotting.colors[1], linewidth=1)
-        # Reasonable range for ratios around 1
-        axr.set_ylim(0.5, 1.5)
-        for frac in [0.05, 0.10, 0.20]:
-            axr.axhline(y=1.0 + frac, color="gray", linestyle="--", lw=1)
-            axr.axhline(y=1.0 - frac, color="gray", linestyle="--", lw=1)
-        
-        axr.set_xlabel(f'{feature_name} {unit}', fontsize=16)
-        axr.set_ylabel('Generated / Geant4', fontsize=16)
-
-        # Finishing touches and show and/or save
-        fig.tight_layout()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        return fig, axes
-
-    def plot_distribution_leading(self, model_names, column_name=None, normalized=False, use_log=False, out_file=None):
-        data = []
-        for model_name in model_names:
-            relevant_column_pos = plotting.verbose_columns.index(column_name)
-            real_verbose_data = self.all_real_data[model_name]
-            all_instances_of_this_column_real = []
-            for event in real_verbose_data:
-                secondaries = event[1:]
-                # Find index of particle with the highest energy
-                leading_particle_idx = np.nanargmax(secondaries[:, 1])
-                leading_particle = secondaries[leading_particle_idx]
-                all_instances_of_this_column_real.append(leading_particle[relevant_column_pos])
-            
-            sampled_verbose_data = self.all_sampled_data[model_name]
-            all_instances_of_this_column_sampled = []
-            for event in sampled_verbose_data:
-                secondaries = event[1:]
-                # Find index of particle with the highest energy
-                leading_particle_idx = np.nanargmax(secondaries[:, 1])
-                leading_particle = secondaries[leading_particle_idx]
-                all_instances_of_this_column_sampled.append(leading_particle[relevant_column_pos])
-            
-            data.append((model_name, column_name, all_instances_of_this_column_real, all_instances_of_this_column_sampled))
-
-        feature_name, _ = self._do_plot_get_labels(column_name)
-        self._do_plot(data, title=f'Distribution of {feature_name} for Leading Particles', normalized=normalized, use_log=use_log, out_file=out_file)
-
-    def plot_distribution_all(self, model_names, column_name=None, normalized=False, use_log=False, out_file=None):
-        data = []
-        for model_name in model_names:
-            relevant_column_pos = plotting.verbose_columns.index(column_name)
-            real_verbose_data = self.all_real_data[model_name]
-            all_instances_of_this_column_real = []
-            for event in real_verbose_data:
-                secondaries = event[1:]
-                for particle in secondaries:
-                    if not np.isnan(particle[relevant_column_pos]):
-                        all_instances_of_this_column_real.append(particle[relevant_column_pos])
-            
-            sampled_verbose_data = self.all_sampled_data[model_name]
-            all_instances_of_this_column_sampled = []
-            for event in sampled_verbose_data:
-                secondaries = event[1:]
-                for particle in secondaries:
-                    if not np.isnan(particle[relevant_column_pos]):
-                        all_instances_of_this_column_sampled.append(particle[relevant_column_pos])
-                        
-            data.append((model_name, column_name, all_instances_of_this_column_real, all_instances_of_this_column_sampled))
-
-        feature_name, _ = self._do_plot_get_labels(column_name)
-        self._do_plot(data, title=f'Distribution of {feature_name} for All Particles', normalized=normalized, use_log=use_log, out_file=out_file)
-            
-    def plot_pdgid_distribution_leading(self, model_names, normalized=False, use_log=False, out_file=None):
-        model_name = model_names[0]
-        
-        relevant_column_pos = plotting.verbose_columns.index('pdgid')
-        real_verbose_data = self.all_real_data[model_name]
-        all_instances_of_this_column_real = []
-        for event in real_verbose_data:
-            secondaries = event[1:]
-            # Find index of particle with the highest energy
-            leading_particle_idx = np.nanargmax(secondaries[:, 1])
-            leading_particle = secondaries[leading_particle_idx]
-            all_instances_of_this_column_real.append(leading_particle[relevant_column_pos])
-        
-        sampled_verbose_data = self.all_sampled_data[model_name]
-        all_instances_of_this_column_sampled = []
-        for event in sampled_verbose_data:
-            secondaries = event[1:]
-            # Find index of particle with the highest energy
-            leading_particle_idx = np.nanargmax(secondaries[:, 1])
-            leading_particle = secondaries[leading_particle_idx]
-            all_instances_of_this_column_sampled.append(leading_particle[relevant_column_pos])
-            
-        # real_pdgids, sampled_pdgids = real_df['pdgid'], sampled_df['pdgid']
-        real_freq, sampled_freq = Counter(all_instances_of_this_column_real), Counter(all_instances_of_this_column_sampled)
-        
-        # Union of all particle labels from both histograms
-        all_particles = sorted(set(real_freq.keys()).union(sampled_freq.keys()))
-        # Sorting them by frequency in real leading particles to ensure a legible plot
-        sorted_particles = sorted(all_particles, key=lambda p: real_freq[p], reverse=True)
-        # Build aligned values for both histograms
-        real_values = [real_freq.get(p, 0) for p in sorted_particles]
-        sampled_values = [sampled_freq.get(p, 0) for p in sorted_particles]
-        
-        # Set up plot
-        fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        fig.suptitle(f'Particle Type Distributions {"(Normalized)" if normalized else ""}')
-        fig.supxlabel('Particle Type')
-        fig.supylabel('log(Frequency)' if use_log else 'Frequency')
-        if use_log:
-            ax.set_yscale('log')
-        if normalized:
-            total_real = sum(real_values)
-            total_sampled = sum(sampled_values)
-            real_values = [v / total_real for v in real_values]
-            sampled_values = [v / total_sampled for v in sampled_values]
-        
-        # Do plot
-        ax.bar(range(len(sorted_particles)), real_values, label=f'Geant4 Simulation', color='black', alpha=0.7, width=0.9, align='center')
-        ax.bar(range(len(sorted_particles)), sampled_values, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7, width=0.9, align='center')
-        ax.set_xticks(range(len(sorted_particles)), sorted_particles, rotation=45, ha='right')
-        
-        # Finishing touches and show and/or save
-        plt.legend(loc='best', fontsize=12)
-        fig.tight_layout()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        
-        return fig, ax
-
-    def plot_pdgid_distribution_all(self, model_names, normalized=False, use_log=False, out_file=None):
-        model_name = model_names[0]
-        
-        meta_data = tables.get_meta_data(model_name)
-        
-        testing_bin_filename = pUtil.get_model_preparation_dir(model_name) / 'test_real.bin'
-        generated_samples_filename = pUtil.get_latest_sampling_dir(model_name) / 'untokenized_samples.csv'
-        
-        num_tokens_per_particle_raw = 5
-        testing_real_data = np.memmap(testing_bin_filename, dtype=np.float64, mode='r')
-        testing_real_data = testing_real_data.reshape(-1, int((meta_data.max_sequence_length - 2) / num_tokens_per_particle_raw), num_tokens_per_particle_raw)
-        generated_sample_data = data_manager.load_geant4_dataset(generated_samples_filename, pad_token=0.0)
-        
-        real_pdgid_freq_dist, _ = dataset.get_pdgid_frequency_distribution(testing_real_data)
-        sampled_pdgid_freq_dist, _ = dataset.get_pdgid_frequency_distribution(generated_sample_data)
-        real_freq, sampled_freq = real_pdgid_freq_dist, sampled_pdgid_freq_dist
-        
-        # Union of all particle labels from both histograms
-        all_particles = sorted(set(real_freq.keys()).union(sampled_freq.keys()))
-        # Sorting them by frequency in real leading particles to ensure a legible plot
-        sorted_particles = sorted(all_particles, key=lambda p: real_freq[p], reverse=True)
-        # Build aligned values for both histograms
-        real_values = [real_freq.get(p, 0) for p in sorted_particles]
-        sampled_values = [sampled_freq.get(p, 0) for p in sorted_particles]
-        
-        # Set up plot
-        fig, ax = plt.subplots(figsize=plotting.default_figsize, dpi=plotting.default_dpi)
-        fig.suptitle(f'Particle Type Distributions {"(Normalized)" if normalized else ""}')
-        fig.supxlabel('Particle Type')
-        fig.supylabel('log(Frequency)' if use_log else 'Frequency')
-        if use_log:
-            ax.set_yscale('log')
-        if normalized:
-            total_real = sum(real_values)
-            total_sampled = sum(sampled_values)
-            real_values = [v / total_real for v in real_values]
-            sampled_values = [v / total_sampled for v in sampled_values]
-        
-        # Do plot
-        ax.bar(range(len(sorted_particles)), real_values, label=f'Geant4 Simulation', color='black', alpha=0.7, width=0.9, align='center')
-        ax.bar(range(len(sorted_particles)), sampled_values, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7, width=0.9, align='center')
-        ax.set_xticks(range(len(sorted_particles)), sorted_particles, rotation=45, ha='right')
-        
-        # Finishing touches and show and/or save
-        plt.legend(loc='best', fontsize=12)
-        fig.tight_layout()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        
-        return fig, ax
-    
-    def plot_energy_conservation(self, model_names, normalized=False, use_log=False, out_file=None):
-        model_name = model_names[0]
-        
-        MASS_CARBON = 931.5 * 12 # MeV
-        generated_samples_data = self.all_sampled_data[model_name]
-        generated_samples_data = np.nan_to_num(generated_samples_data, copy=True, nan=0.0)
-
-        # Perform computation
-        dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
-        dictionary = Dictionary(dictionary_filename)
-        
-        pdgid_mass_dict = {}
-        for idx, pdgid in dictionary.pdgids.items():
-            if pdgid == 0:
-                continue
-            part = Particle.from_pdgid(pdgid)
-            pdgid_mass_dict[pdgid] = part.mass
-
-        computed_data = np.full(shape=(len(generated_samples_data), 2), fill_value=np.nan)
-        for idx, event in enumerate(generated_samples_data):
-            # Input vector
-            in_particle_vec = vector.obj(mass=pdgid_mass_dict[event[0][0]], px=event[0][2], py=event[0][3], pz=event[0][4])
-            in_material_vec = vector.obj(mass=MASS_CARBON, px=0.0, py=0.0, pz=0.0)
-            in_vec = in_particle_vec + in_material_vec
-            
-            # Output vector
-            out_vec = vector.obj(mass=0.0, px=0.0, py=0.0, pz=0.0)
-            for particle in event[1:]:
-                if particle[0] == 0.0:
-                    continue
-                i_vec = vector.obj(mass=pdgid_mass_dict[particle[0]], px=particle[2], py=particle[3], pz=particle[4])
-                out_vec += i_vec
-            
-            computed_data[idx] = in_vec.e, out_vec.e
-        
-        # Set up plot
-        num_horizontal, num_vertical = min(len(model_names), plotting.distributions_per_row), (math.ceil(1 / plotting.distributions_per_row))
-        fig, axes = plt.subplots(num_vertical, num_horizontal, figsize=(8 * num_horizontal, 6 * num_vertical), sharex=False, sharey=True, dpi=plotting.default_dpi)
-        fig.suptitle(f'Energy conservation for {model_names}')
-        fig.supxlabel(f'Delta Energy (MeV)')
-        fig.supylabel('Frequency')
-        
-        for ax, model_name in zip([axes], model_names):
-            # Do plot
-            ax.set_yscale('log' if use_log else 'linear')
-            ax.hist(computed_data[:,0], bins=50, density=normalized, label=f'Geant4 Simulation', color='black', alpha=0.7)
-            ax.hist(computed_data[:,1], bins=50, density=normalized, label=f'Sampled ({model_name})', color=plotting.colors[1], alpha=0.7)
-
-        # Finishing touches and show and/or save
-        plt.legend(loc='best', fontsize=12)
-        fig.tight_layout()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        fig.show()
-        
-    def plot_num_particles(self, model_names, normalized=False, use_log=False, out_file=None):
-        data = []
-        for model_name in model_names:
-            real_verbose_data = data_manager.load_verbose_dataset(pUtil.get_model_preparation_dir(model_name) / 'real_verbose_test_particles.csv', pad_token = np.nan)
-            real_num_particle_data = np.full(shape=(len(real_verbose_data)), fill_value=np.nan)
-            for idx, event in enumerate(real_verbose_data):
-                secondaries = event[1:]
-                secondaries = [secondary for secondary in secondaries if not np.isnan(secondary[0])]
-                num_secondaries = len(secondaries)
-                real_num_particle_data[idx] = num_secondaries
-            
-            generated_samples_data = data_manager.load_geant4_dataset(pUtil.get_latest_sampling_dir(model_names[0]) / 'untokenized_samples.csv', pad_token = np.nan)
-            sampled_num_particle_data = np.full(shape=(len(generated_samples_data)), fill_value=np.nan)
-            for idx, event in enumerate(generated_samples_data):
-                secondaries = event[1:]
-                secondaries = [secondary for secondary in secondaries if not np.isnan(secondary[0])]
-                num_secondaries = len(secondaries)
-                sampled_num_particle_data[idx] = num_secondaries
-                
-            data.append((model_name, 'num_particles', real_num_particle_data, sampled_num_particle_data))
-        
-        self._do_plot(data, title=f'Distribution of Number of Particles for All Particles', normalized=normalized, use_log=use_log, out_file=out_file)
-
-    # IMPORTANT: This function assumes ALL provided models are from the same dataset!!!!
-    def compare_distributions_all_bak(self, model_names, model_legend_titles=None, column_name=None, normalized=False, use_log=False, out_file=None, auto_show=True):
-        assert column_name in plotting.verbose_columns, f"Invalid column name: {column_name}. Must be one of {plotting.verbose_columns}."
-        unit = ''
-        if column_name in ['e', 'pt', 'px', 'py', 'pz']:
-            unit = '(MeV)'
-        
-        unit_label = column_name
-        if column_name == 'eta':
-            unit_label = 'η'
-        elif column_name == 'theta':
-            unit_label = 'θ'
-        elif column_name == 'phi':
-            unit_label = 'φ'
-            
-        # Set up plot
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6), sharex=False, sharey=True, dpi=plotting.default_dpi)
-        fig.suptitle(f'{unit_label} Distribution for All Outgoing Particles {"(Normalized)" if normalized else ""}')
-        fig.supxlabel(f'{unit_label} {unit}', fontsize=16)
-        fig.supylabel('log(Frequency)' if use_log else 'Frequency', fontsize=16)
-        
-        plt.xticks(fontsize=14)
-        plt.yticks(fontsize=14)
-        
-        # This data will be grabbed from the first model to maintain consistency
-        bin_settings = plotting.get_common_data(model_names[0])
-        range = (bin_settings[column_name]['min'], bin_settings[column_name]['max'])
-        n_bins = bin_settings[column_name]['bins']
-        
-        relevant_column_pos = plotting.verbose_columns.index(column_name)
-        
-        # The input data
-        real_verbose_data = self.all_real_data[model_names[0]]
-        all_instances_of_this_column_real = []
-        for event in real_verbose_data:
-            secondaries = event[1:]
-            for particle in secondaries:
-                if not np.isnan(particle[relevant_column_pos]):
-                    all_instances_of_this_column_real.append(particle[relevant_column_pos])
-        
-        # The sampled datas 
-        sampled_columns_instances = {}
-        for model_name in model_names:
-            sampled_verbose_data = self.all_sampled_data[model_name]
-            all_instances_of_this_column_sampled = []
-            for event in sampled_verbose_data:
-                secondaries = event[1:]
-                for particle in secondaries:
-                    if not np.isnan(particle[relevant_column_pos]):
-                        all_instances_of_this_column_sampled.append(particle[relevant_column_pos])
-            sampled_columns_instances[model_name] = all_instances_of_this_column_sampled
-            
-        ax.set_yscale('log' if use_log else 'linear')
-        
-        base_dataset_label = model_legend_titles[0] if model_legend_titles != None and len(model_legend_titles) > 0 else 'Geant4 Simulation'
-        ax.hist(all_instances_of_this_column_real, range=range, bins=n_bins, density=normalized, label=base_dataset_label, color='black', histtype='step', linewidth=2)
-        for idx, (model_name, sampled_column_instance) in enumerate(sampled_columns_instances.items()):
-            model_label = model_legend_titles[idx + 1] if model_legend_titles != None and idx + 1 < len(model_legend_titles) else model_name
-            ax.hist(sampled_column_instance, range=range, bins=n_bins, density=normalized, label=model_label, color=plotting.colors[idx], histtype='step', linewidth=2)
-            
-        # Finishing touches and show and/or save
-        plt.legend(loc='best', fontsize=16)
-        fig.tight_layout()
-        if out_file != None:
-            fig.savefig(out_file, bbox_inches='tight')
-        if auto_show == True:
-            fig.show()
-        return fig, ax
-    
-    # IMPORTANT: This function assumes ALL provided models are from the same dataset!!!!
-    def compare_distributions_all(self, model_names, model_legend_titles=None, column_name=None, normalized=False, use_log=False, out_file=None, auto_show=True, in_ax=None):
-        relevant_column_pos = plotting.verbose_columns.index(column_name)
-        
-        data = []
-        for model_name in model_names:
-            # The input data
-            real_verbose_data = self.all_real_data[model_names[0]]
-            all_instances_of_this_column_real = []
-            for event in real_verbose_data:
-                secondaries = event[1:]
-                for particle in secondaries:
-                    if not np.isnan(particle[relevant_column_pos]):
-                        all_instances_of_this_column_real.append(particle[relevant_column_pos])
-            
-            # The sampled datas 
-            sampled_columns_instances = {}
-            for model_name in model_names:
-                sampled_verbose_data = self.all_sampled_data[model_name]
-                all_instances_of_this_column_sampled = []
-                for event in sampled_verbose_data:
-                    secondaries = event[1:]
-                    for particle in secondaries:
-                        if not np.isnan(particle[relevant_column_pos]):
-                            all_instances_of_this_column_sampled.append(particle[relevant_column_pos])
-                sampled_columns_instances[model_name] = all_instances_of_this_column_sampled
-                
-            data.append((model_name, column_name, all_instances_of_this_column_real, all_instances_of_this_column_sampled))
-        
-        feature_name, _ = self._do_plot_get_labels(column_name)
-        self._do_plot(data, title=f'Distribution of {feature_name} for All Particles', normalized=normalized, use_log=use_log, out_file=out_file)         
-
-    # IMPORTANT: This function assumes ALL provided models are from the same dataset!!!!
-    def compare_distributions_leading(self, model_names, model_legend_titles=None, column_name=None, normalized=False, use_log=False, out_file=None, auto_show=True, in_ax=None):
-        relevant_column_pos = plotting.verbose_columns.index(column_name)
-        
-        data = []
-        for model_name in model_names:
-            # The input data
-            real_verbose_data = self.all_real_data[model_names[0]]
-            all_instances_of_this_column_real = []
-            for event in real_verbose_data:
-                secondaries = event[1:]
-                # Find index of particle with the highest energy
-                leading_particle_idx = np.nanargmax(secondaries[:, 1])
-                leading_particle = secondaries[leading_particle_idx]
-                all_instances_of_this_column_real.append(leading_particle[relevant_column_pos])
-                
-            # The sampled datas
-            sampled_columns_instances = {}
-            for model_name in model_names:
-                sampled_verbose_data = self.all_sampled_data[model_name]
-                all_instances_of_this_column_sampled = []
-                for event in sampled_verbose_data:
-                    secondaries = event[1:]
-                    # Find index of particle with the highest energy
-                    leading_particle_idx = np.nanargmax(secondaries[:, 1])
-                    leading_particle = secondaries[leading_particle_idx]
-                    all_instances_of_this_column_sampled.append(leading_particle[relevant_column_pos])
-                sampled_columns_instances[model_name] = all_instances_of_this_column_sampled
-                
-            data.append((model_name, column_name, all_instances_of_this_column_real, all_instances_of_this_column_sampled))
-        
-        feature_name, _ = self._do_plot_get_labels(column_name)
-        self._do_plot(data, title=f'Distribution of {feature_name} for All Particles', normalized=normalized, use_log=use_log, out_file=out_file)
 
 class tables:
     """
@@ -2419,7 +2566,7 @@ class tables:
     
     model_metadata_columns          = ['vocab_size', 'max_sequence_length', 'num_train_tokens', 'num_val_tokens']
     model_config_columns            = ['batch_size', 'block_size', 'learning_rate', 'min_lr', 'lr_decay_iters', 'lr_scheduler', 'n_layer', 'n_head', 'n_embd', 'num_params']
-    model_training_columns          = ['iters_trained', 'iters_saved', 'min_saved_train_loss', 'min_saved_val_loss']
+    model_training_columns          = ['iters_trained', 'iters_saved', 'min_saved_train_loss', 'min_saved_val_loss', 'compute_time_trained', 'compute_time_saved']
     model_metrics_columns           = ['coverage', 'mmd', 'kpd_median', 'fpd_value', 'w1m_score', 'w1p_avg_eta', 'w1p_avg_phi', 'w1p_avg_pt']
     model_metrics_columns_verbose   = ['kpd_error', 'fpd_error', 'w1m_score_std', 'w1p_avg_eta_std', 'w1p_avg_phi_std', 'w1p_avg_pt_std']
     model_all_columns               = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns
@@ -2467,6 +2614,7 @@ class tables:
                 jdata = json.loads(jline)
                 if jdata.get("message") == "Model info" and "num_params" in jdata:
                     num_params = jdata['num_params']
+                    num_params = int(float(num_params.replace("M", "")) * 1e6)
         
         return SimpleNamespace(
             batch_size              = training_config.get('batch_size', np.nan),
@@ -2493,14 +2641,25 @@ class tables:
                 jdata = json.loads(jline)
                 if jdata.get("message") == "Training progress" and "iter" in jdata:
                     current_epochs_trained = 0 if jdata['iter'] == 0 else (jdata['iter'] / iterations_per_epoch)
-                    running_data.append({'iter': jdata["iter"], 'epoch': current_epochs_trained, 'train_loss': jdata["train_loss"], 'val_loss': jdata["val_loss"]})
+                    running_data.append({
+                        'iter': jdata["iter"],
+                        'epoch': current_epochs_trained,
+                        'train_loss': jdata["train_loss"],
+                        'val_loss': jdata["val_loss"],
+                        'time': jdata['time']
+                    })
                 elif jdata.get("message") == "Training progress: checking checkpoint conditions":
                     current_epochs_trained = 0 if jdata['step'] == 0 else (jdata['step'] / iterations_per_epoch)
-                    checkpointed_data.append({'iter': jdata["step"], 'epoch': current_epochs_trained, 'train_loss': jdata["train_loss"], 'val_loss': jdata["val_loss"]})
+                    checkpointed_data.append({
+                        'iter': jdata["step"],
+                        'epoch': current_epochs_trained,
+                        'train_loss': jdata["train_loss"],
+                        'val_loss': jdata["val_loss"]
+                    })
         
         return SimpleNamespace(
             running_df = pd.DataFrame(running_data),
-            checkpointed_df = pd.DataFrame(checkpointed_data)
+            checkpointed_df = pd.DataFrame(checkpointed_data),
         )
     
     @staticmethod
@@ -2546,16 +2705,26 @@ class tables:
         
         # Training information
         training_run_data = tables.get_training_run_data(model_name, iterations_per_epoch)
+        # Trained iters and compute time
         iters_trained = training_run_data.running_df['iter'].max()
-        min_saved_val_loss_row = training_run_data.checkpointed_df.loc[training_run_data.checkpointed_df['val_loss'].idxmin()]
+        compute_time_trained = training_run_data.running_df['time'].sum()        
+        # Saved minimum validation loss
+        min_saved_val_loss_row_idx = training_run_data.checkpointed_df['val_loss'].idxmin()
+        min_saved_val_loss_row = training_run_data.checkpointed_df.loc[min_saved_val_loss_row_idx]
+        iters_saved = int(min_saved_val_loss_row['iter'])
+        # Saved compute time; we use the iteration closest to iters_saved since the exact might not exist.
+        closest_to_min_saved_val_loss_row_idx = (training_run_data.running_df['iter'] - iters_saved).abs().idxmin()
+        compute_time_saved = (training_run_data.running_df.iloc[:closest_to_min_saved_val_loss_row_idx])['time'].sum()
         
         training_run_data = SimpleNamespace(
             iters_trained           = iters_trained,
-            iters_saved             = int(min_saved_val_loss_row['iter']),
+            iters_saved             = iters_saved,
             min_saved_train_loss    = min_saved_val_loss_row['train_loss'],
             min_saved_val_loss      = min_saved_val_loss_row['val_loss'],
+            compute_time_trained    = compute_time_trained,
+            compute_time_saved      = compute_time_saved,
             running_df              = training_run_data.running_df,
-            checkpointed_df         = training_run_data.checkpointed_df
+            checkpointed_df         = training_run_data.checkpointed_df,
         )
         
         return SimpleNamespace(**{'model_name': model_name, **vars(meta_data), **vars(config_data), **vars(metrics_data), **vars(training_run_data)})
@@ -2563,6 +2732,7 @@ class tables:
     # Returns a DataFrame with all the important data for all models
     @staticmethod
     def get_default_df(model_names):
+        model_names = np.atleast_1d(model_names)
         columns = tables.model_all_columns
         model_data_list = [row for name in model_names if (row := vars(tables.get_all_data(name))) is not None]
         model_data_df = pd.DataFrame(model_data_list, columns=columns)

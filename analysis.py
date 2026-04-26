@@ -1475,8 +1475,7 @@ class plotting_old2:
         # if auto_show == True:
         #     fig.show()
         return ax
-    
-    
+ 
 class plotting:
     """
     All plotting functions will follow a similar API. This allows easy intuitive generation
