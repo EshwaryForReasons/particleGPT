@@ -17,11 +17,13 @@ job_outputs/
 # that is needed for reproduction.
 data/**
 !data/
+!data/**/
 !data/**/dictionary.json
 
 # Same for preparations but now we store preparation.json
 preparations/**
 !preparations/
+!preparations/**/
 !preparations/**/preparation.json
 
 # Ignore analysis_notebooks because those should generally remain private
