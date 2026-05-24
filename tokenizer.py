@@ -1,19 +1,24 @@
-
+import shutil
+import sys
+import os
 import math
 import csv
 import numpy as np
 from numba import njit, float64
 from pathlib import Path
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from dictionary import Dictionary
 import configurator as conf
 
 script_dir = Path(__file__).resolve().parent
-dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')
 
 NUM_FEATURES_PER_PARTICLE_RAW = 5
+N_WORKERS = 256
+IO_BUFFER = 16 * 1024 * 1024  # 16 MB
+COPY_BUFFER = 256 * 1024 * 1024  # 256 MB
 
 def analyze_dataset(dataset_filepath, delimiter = ';'):
     num_events = 0
@@ -31,6 +36,18 @@ def analyze_dataset(dataset_filepath, delimiter = ';'):
 
     return num_events, num_particles_max
 
+def make_byte_ranges(filepath, n_ranges):
+    file_size = os.path.getsize(filepath)
+    chunk_size = file_size // n_ranges
+
+    ranges = []
+    for i in range(n_ranges):
+        start = i * chunk_size
+        end = file_size if i == n_ranges - 1 else (i + 1) * chunk_size
+        ranges.append((i, start, end))
+
+    return ranges
+
 @njit("int64(float64, float64[:])", cache=True, nogil=True)
 def custom_searchsorted(value, bins):
     if value < bins[0]:
@@ -38,6 +55,15 @@ def custom_searchsorted(value, bins):
     elif value >= bins[-1]:
         return len(bins) - 1
     return np.searchsorted(bins, value, side='right')
+
+@dataclass
+class Paths:
+    # Input raw data
+    input_data_filepath: Path = None
+    # Output tokenized data
+    tokenized_data_filepath: Path = None
+    # Directory to store temp tokenized files before concatenation
+    temp_data_dir: Path = None
 
 def tokenize_event(event: list[float]) -> list[int]:
     """
@@ -93,113 +119,157 @@ def tokenize_event(event: list[float]) -> list[int]:
     tokenized_event.append(dictionary.event_end_token)
     return tokenized_event
 
-def tokenize_events_in_range(input_data_filepath, output_data_filepath, start_event_idx, end_event_idx, num_particles_max):
-    """
-    Tokenizes events in the specified range from the input file and saves them to the output file.
-    
-    The events are padded to a max_sequence_length calculated using num_particles_max * num_tokens_per_particle + 2 for the
-    event start and end tokens.
-    """
-    tokenized_events = []
-    
-    # Tokenize all events in range
-    with open(input_data_filepath, 'r') as in_file:
-        for idx, event_str in enumerate(in_file):
-            if idx < start_event_idx:
-                continue
-            if idx >= end_event_idx:
-                break
-            
-            event_str = list(map(float, (feature_str for particle_str in event_str.strip().split(';') for feature_str in particle_str.split())))
-            tokenized_event = tokenize_event(event_str)
-            if len(tokenized_event) > 0:
-                tokenized_events.append(tokenized_event)
-    
-    # Pad to max_sequence_len
+def tokenize_byte_range_worker(
+    worker_idx,
+    input_data_filepath,
+    temp_data_dir,
+    start_byte,
+    end_byte,
+    num_particles_max,
+):
+    output_data_filepath = temp_data_dir / f"tokenized_batch_{worker_idx}.csv"
+
     padding_sequence = dictionary.get_padding_sequence()
     max_sequence_len = num_particles_max * dictionary.num_tokens_per_particle + 2
 
-    padded_array = []
-    for event_idx, tokenized_event in enumerate(tokenized_events):
-        len_pad_required = max_sequence_len - len(tokenized_event)
-        num_padding_sequences_required = len_pad_required // len(padding_sequence)
-        padded_event = tokenized_event + padding_sequence * num_padding_sequences_required
-        padded_array.append(padded_event)
-    padded_array = np.array(padded_array, dtype=np.int32)
-        
-    # Output data to temp file, pending concatenation
-    with open(output_data_filepath, 'w') as out_file:
-        np.savetxt(out_file, padded_array, delimiter=' ', fmt='%d')
+    num_written = 0
 
-def tokenize_data_worker(thread_idx, input_data_filepath, temp_data_dir, start_event_idx, end_event_idx, num_particles_max):
-    """
-    Worker function for tokenizing data in parallel.
-    """
-    this_thread_out_file = temp_data_dir / f'tokenized_batch_{thread_idx}.csv'
-    tokenize_events_in_range(input_data_filepath, this_thread_out_file, start_event_idx, end_event_idx, num_particles_max)
-    
-def batch_tokenize_data():
-    """
-    Handles the tokenization of the dataset in parallel using multiple processes.
-    This function reads the dataset, analyzes it to determine the optimal number of threads,
-    and then tokenizes the data in chunks, saving each chunk to a temporary file.
-    
-    These temporary files should be concatenated into a single output file using concatenate_tokenized_data.
-    """
-    # Load the data
-    input_data_filepath         = script_dir / 'data' / conf.generic.dataset
-    temp_data_dir               = script_dir / 'data' / conf.generic.preparation_name / 'temp'
-    temp_data_dir.mkdir(parents=True, exist_ok=True)
-    
-    num_events, num_particles_max = analyze_dataset(input_data_filepath)
-    MAX_EVENTS_PER_THREAD = 1_000_000
-    
-    # Generate chunks
-    ranges = []
-    for thread_id, start_idx in enumerate(range(0, num_events, MAX_EVENTS_PER_THREAD)):
-        end_idx = min(start_idx + MAX_EVENTS_PER_THREAD, num_events)
-        ranges.append((thread_id, start_idx, end_idx))
+    with open(input_data_filepath, "rb", buffering=IO_BUFFER) as in_file, \
+         open(output_data_filepath, "w", buffering=IO_BUFFER) as out_file:
 
-    print(f"Launching {len(ranges)} threads to process {num_events} events")
+        if start_byte == 0:
+            in_file.seek(0)
+        else:
+            # Check whether start_byte is already at the beginning of a line.
+            in_file.seek(start_byte - 1)
+            prev_byte = in_file.read(1)
 
-    with ProcessPoolExecutor(max_workers=len(ranges)) as executor:
+            # If previous byte is not newline, we landed in the middle of an event,
+            # so discard the partial line.
+            if prev_byte != b"\n":
+                in_file.readline()
+
+        while in_file.tell() < end_byte:
+            line = in_file.readline()
+            if not line:
+                break
+
+            line = line.decode("utf-8").strip()
+            if not line:
+                continue
+
+            event = list(map(
+                float,
+                (
+                    feature_str
+                    for particle_str in line.split(";")
+                    for feature_str in particle_str.split()
+                )
+            ))
+
+            tokenized_event = tokenize_event(event)
+
+            if len(tokenized_event) == 0:
+                continue
+
+            len_pad_required = max_sequence_len - len(tokenized_event)
+
+            if len_pad_required < 0:
+                raise RuntimeError(
+                    f"Tokenized event length {len(tokenized_event)} exceeds "
+                    f"max_sequence_len {max_sequence_len}"
+                )
+
+            num_padding_sequences_required = len_pad_required // len(padding_sequence)
+
+            padded_event = (
+                tokenized_event
+                + padding_sequence * num_padding_sequences_required
+            )
+
+            out_file.write(" ".join(map(str, padded_event)))
+            out_file.write("\n")
+
+            num_written += 1
+
+    return worker_idx, num_written
+
+def batch_tokenize_data(in_paths: Paths):
+    """
+    Handles tokenization using byte-range parallelism.
+
+    Each worker seeks to a different region of the file, discards one possible
+    partial first line, and then processes complete event lines.
+    """
+    in_paths.temp_data_dir.mkdir(parents=True, exist_ok=True)
+
+    num_events, num_particles_max = analyze_dataset(in_paths.input_data_filepath)
+
+    if dictionary.particle_count_override is not None:
+        assert dictionary.particle_count_override >= num_particles_max, (
+            "The particle_count_override in the dictionary must be >= maximum "
+            "number of particles found in the dataset."
+        )
+        num_particles_max = dictionary.particle_count_override
+
+    ranges = make_byte_ranges(in_paths.input_data_filepath, N_WORKERS)
+
+    print(f"Found {num_events:,} events")
+    print(f"Max particles/event: {num_particles_max:,}")
+    print(f"Launching {N_WORKERS} workers")
+
+    with ProcessPoolExecutor(max_workers=N_WORKERS) as executor:
         futures = [
-            executor.submit(tokenize_data_worker, thread_idx, input_data_filepath, temp_data_dir, start, end, num_particles_max)
-            for thread_idx, start, end in ranges
+            executor.submit(
+                tokenize_byte_range_worker,
+                worker_idx,
+                in_paths.input_data_filepath,
+                in_paths.temp_data_dir,
+                start_byte,
+                end_byte,
+                num_particles_max,
+            )
+            for worker_idx, start_byte, end_byte in ranges
         ]
-        for f in futures:
-            f.result()
 
-def concatenate_tokenized_data():
-    """
-    Concatenates all tokenized data files in the temp directory into a single output file.
-    """
-    tokenized_data_filepath     = script_dir / 'data' / conf.generic.preparation_name / 'tokenized_data.csv'
-    temp_data_dir               = script_dir / 'data' / conf.generic.preparation_name / 'temp'
-    
+        total_written = 0
+
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing"):
+            worker_idx, num_written = f.result()
+            total_written += num_written
+
+    print(f"Tokenized {total_written:,} valid events")
+
+def concatenate_tokenized_data(in_paths: Paths):
     tokenized_csv_files = sorted(
         [
-            Path(temp_data_dir, f.name)
-            for f in temp_data_dir.iterdir()
+            f
+            for f in in_paths.temp_data_dir.iterdir()
             if f.name.startswith("tokenized_batch_") and f.name.endswith(".csv")
         ],
-        key=lambda x: int(x.stem.split('_')[-1])
+        key=lambda x: int(x.stem.split("_")[-1])
     )
-    
-    b_log_outputs = False
-    with open(tokenized_data_filepath, "w", newline='', encoding="utf-8") as outfile:
-        writer = csv.writer(outfile)
 
-        for file_path in tokenized_csv_files:
-            if b_log_outputs:
-                print(f"Processing {file_path}...")
-
-            with open(file_path, "r", encoding="utf-8") as infile:
-                reader = csv.reader(infile)
-                writer.writerows(reader)
+    with open(in_paths.tokenized_data_filepath, "wb", buffering=0) as outfile:
+        for file_path in tqdm(tokenized_csv_files, desc="Concatenating"):
+            with open(file_path, "rb", buffering=0) as infile:
+                shutil.copyfileobj(infile, outfile, length=COPY_BUFFER)
 
 # Main can also do everything in case we only want to tokenize the data but not prepare
 # it for training.
 if __name__ == "__main__":
-    batch_tokenize_data()
-    concatenate_tokenized_data()
+    dictionary_filepath = sys.argv[1]
+    dictionary = Dictionary(dictionary_filepath)
+    
+    relevant_paths = Paths(
+        input_data_filepath     = script_dir / 'data' / 'raw' / dictionary.dataset_name,
+        tokenized_data_filepath = script_dir / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.csv',
+        temp_data_dir           = script_dir / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp'
+    )
+    humanized_dictionary_filepath = script_dir / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.txt'
+    
+    dictionary.update_dictionary_particle_list(relevant_paths.input_data_filepath, dictionary_filepath)
+    dictionary.output_humanized_dictionary(humanized_dictionary_filepath)
+    
+    batch_tokenize_data(relevant_paths)
+    concatenate_tokenized_data(relevant_paths)

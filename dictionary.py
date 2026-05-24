@@ -155,10 +155,14 @@ class Dictionary():
         with open(dictionary_filename, 'r') as f:
             self.dictionary_data = json.load(f)
         
-        self.dataset_filepath   = script_dir / 'data' / self.dictionary_data['dataset']
+        self.dataset_name = self.dictionary_data.get('dataset', None)
+        assert self.dataset_name is not None, "dataset_name must be defined in the dictionary."
+        self.dataset_filepath = script_dir / 'data' / 'raw' / self.dictionary_data['dataset']
         assert self.dataset_filepath.exists(), f"Dataset file {self.dataset_filepath} does not exist."
-        self.preparation_name   = self.dictionary_data.get('preparation_name', None)
-        assert self.preparation_name is not None, "preparation_name must be defined in the dictionary."
+        # self.preparation_name   = self.dictionary_data.get('preparation_name', None)
+        # assert self.preparation_name is not None, "preparation_name must be defined in the dictionary."
+        self.tokenization_name = self.dictionary_data.get('tokenization_name', None)
+        assert self.tokenization_name is not None, "tokenization_name must be defined in the dictionary."
 
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles      = len(self.dictionary_data['pdgids'])
@@ -173,7 +177,18 @@ class Dictionary():
             self.padding_sequence[int(pos_str)] = padding_str
         
         self.num_tokens_per_particle = len(self.tokenization_schema)
+        self.particle_count_override = self.dictionary_data.get('particle_count_override', None)
         
+        self.num_train_events_override = self.dictionary_data.get('num_train_events_override', None)
+        self.num_val_events_override = self.dictionary_data.get('num_val_events_override', None)
+        self.num_test_events_override = self.dictionary_data.get('num_test_events_override', None)
+        
+        assert len({x is None for x in (
+            self.num_train_events_override,
+            self.num_val_events_override,
+            self.num_test_events_override,
+        )}) == 1, "Event overrides must be either all set or all None."
+
         self.e_bins     = self._create_bins('e')
         self.eta_bins   = self._create_bins('eta')
         self.theta_bins = self._create_bins('theta')

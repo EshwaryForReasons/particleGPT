@@ -16,6 +16,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 (If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
 """
 
+import json
 import os
 import time
 import math
@@ -25,6 +26,7 @@ from contextlib import nullcontext
 import numpy as np
 
 import torch
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.utils.data import Dataset, DataLoader
@@ -46,47 +48,84 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 model_output_dir = script_dir / "trained_models" / conf.generic.model_name
 model_output_dir.mkdir(parents=True, exist_ok=True)
 
-best_ckpt_path = model_output_dir / 'ckpt.pt'
-
-# Checkpoints are stored as ckpt.pt (best val loss) and ckpt_running_idx.pt (in order of saving).
-# This function returns the latest running checkpoint filepath or None if there are none.
-def get_latest_checkpoint_filepath():
-    ckpt_map = {}
-    for path in model_output_dir.glob("ckpt_running_*.pt"):
-        idx_str = path.stem.split("_")[-1]
-        try:
-            idx = int(idx_str)
-            ckpt_map[idx] = path
-        except ValueError:
-            pass
-    
-    latest_idx = -1
-    latest_running_checkpoint = None
-    if ckpt_map:
-        latest_idx = max(ckpt_map)
-        latest_running_checkpoint = ckpt_map[latest_idx]
-    
-    return latest_idx, latest_running_checkpoint
-
 logger_idx = pLogging.create_training_logger(conf.generic.model_name, 1)
 model.set_logger(logger_idx)
 pLogging.info(logger_idx, 'Training started.')
 
-data_dir = Path('data', conf.generic.preparation_name)
-meta_path = Path(data_dir, 'meta.pkl')
+# ===== Define all directories and filepaths and ensure all required files exist =====
 
-if not meta_path.exists():
-    pLogging.info(logger_idx, "No meta file found, ensure data is prepared!")
-    
-# attempt to derive vocab_size from the dataset
-meta_vocab_size = None
-with open(meta_path, 'rb') as f:
-    meta = pickle.load(f)
-meta_vocab_size = meta['vocab_size']
+# Not a required file
+best_ckpt_path = model_output_dir / 'ckpt.pt'
+
+prep_dir = script_dir / 'preparations' / conf.generic.preparation_name
+if not prep_dir.exists():
+    pLogging.info(logger_idx, "No preparation directory found, ensure it is set correctly in the configuration!")
+    raise Exception("No preparation directory found, ensure it is set correctly in the configuration!")
+
+prep_info_filepath = prep_dir / 'preparation_info.json'
+if not prep_info_filepath.exists():
+    pLogging.info(logger_idx, "No preparation info file found, ensure it is set correctly in the configuration!")
+    raise Exception("No preparation info file found, ensure it is set correctly in the configuration!")
+
+# ===== Get useful data from prep info =====
+
+try:
+    with open(prep_info_filepath, 'r') as f:
+        prep_info = json.load(f)
+    prep_vocab_size = prep_info['vocab_size']
+    prep_max_sequence_length = prep_info['max_sequence_length']
+except Exception as e:
+    pLogging.info(logger_idx, f"Error occurred while reading preparation info: {e}")
+    raise Exception("Error occurred while reading preparation info!")
 
 # If block_size is not set, then use context_particles to set it
 if conf.training.block_size == -1 and conf.training.context_events != -1:
-    conf.training.block_size = conf.training.context_events * meta['max_sequence_length']
+    conf.training.block_size = conf.training.context_events * prep_max_sequence_length
+
+# ===== Useful functions =====
+
+# Checkpoints are stored as ckpt.pt (best val loss), ckpt_running_idx.pt (in order of saving, if eval_iters is set), and cktp_epoch_idx.pt (per epoch, if enabled).
+# This function returns the latest running checkpoint filepath or None if there are none.
+def get_latest_running_ckpt_filepath():
+    running_ckpt_map = {}
+    for path in model_output_dir.glob("ckpt_running_*.pt"):
+        idx_str = path.stem.split("_")[-1]
+        try:
+            idx = int(idx_str)
+            running_ckpt_map[idx] = path
+        except ValueError:
+            pass
+        
+    latest_idx = -1
+    latest_running_checkpoint = None
+    if running_ckpt_map:
+        latest_idx = max(running_ckpt_map)
+        latest_running_checkpoint = running_ckpt_map[latest_idx]
+    
+    return latest_idx, latest_running_checkpoint
+
+# This function returns the latest epoch checkpoint filepath or None if there are none.
+def get_latest_epoch_ckpt_filepath():
+    epoch_ckpt_map = {}
+    for path in model_output_dir.glob("ckpt_epoch_*.pt"):
+        idx_str = path.stem.split("_")[-1]
+        try:
+            idx = int(idx_str)
+            epoch_ckpt_map[idx] = path
+        except ValueError:
+            pass
+    
+    latest_idx = -1
+    latest_epoch_checkpoint = None
+    if epoch_ckpt_map:
+        latest_idx = max(epoch_ckpt_map)
+        latest_epoch_checkpoint = epoch_ckpt_map[latest_idx]
+    
+    return latest_idx, latest_epoch_checkpoint
+
+
+
+
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -110,6 +149,14 @@ else:
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
+    
+def ddp_broadcast_bool(value, src=0):
+    if not ddp:
+        return value
+
+    flag = torch.tensor([1 if value else 0], device=conf.training.device)
+    dist.broadcast(flag, src=src)
+    return bool(flag.item())
 
 if master_process:
     os.makedirs(model_output_dir, exist_ok=True)
@@ -125,7 +172,7 @@ class pDataset(Dataset):
     def __init__(self, split):
         assert split in ['train', 'val'], "Split must be either 'train' or 'val'"
         self.split = split
-        self.data_filepath = data_dir / ('train.bin' if split == 'train' else 'val.bin')
+        self.data_filepath = prep_dir / ('train.bin' if split == 'train' else 'val.bin')
         data = np.memmap(self.data_filepath, dtype=np.uint16, mode='r')
         assert len(data) % conf.training.block_size == 0, "Data length is not a multiple of block_size!"
         self.block_size = conf.training.block_size
@@ -135,10 +182,15 @@ class pDataset(Dataset):
         # We recreate np.memmap every batch to avoid a memory leak, as per
         # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
         data = np.memmap(self.data_filepath, dtype=np.uint16, mode='r')
-        
         # Our data is guaranteed to be a multiple of block_size, so we can reshape it.
         assert len(data) % conf.training.block_size == 0, "Data length is not a multiple of block_size!"
         data = data.reshape(-1, conf.training.block_size)
+        
+        # x = torch.from_numpy(data[index].astype(np.int64))
+        # y = torch.empty_like(x)
+        # y[:-1] = x[1:]
+        # y[-1] = 0 # 0 is our padding token and it is ignored in the loss calculations.
+        # return x, y
         
         x = torch.from_numpy(data[index].astype(np.int64)) # shape (batch_size, block_size).
         y = torch.roll(x.clone(), shifts=-1, dims=0) # shape (batch_size, block_size), shifted by 1.
@@ -159,25 +211,19 @@ train_dataset = pDataset('train')
 val_dataset = pDataset('val')
 train_dataloader = DataLoader(
     train_dataset,
-    batch_size=conf.training.batch_size,
-    shuffle=False if ddp else True,
-    drop_last=True,
-    sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True) if ddp else None
+    batch_size=conf.training.batch_size, shuffle=False if ddp else True, drop_last=True,
+    sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True) if ddp else None,
 )
 # For loss estimation
 le_train_dataloader = DataLoader(
     train_dataset,
-    batch_size=conf.training.batch_size,
-    shuffle=False if ddp else True,
-    drop_last=True,
-    sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True) if ddp else None
+    batch_size=conf.training.batch_size, shuffle=False if ddp else True, drop_last=True,
+    sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True) if ddp else None,
 )
 val_dataloader = DataLoader(
     val_dataset,
-    batch_size=conf.training.batch_size,
-    shuffle=False,
-    drop_last=True,
-    sampler=DistributedSampler(val_dataset, drop_last=True) if ddp else None
+    batch_size=conf.training.batch_size, shuffle=False, drop_last=True,
+    sampler=DistributedSampler(val_dataset, drop_last=True) if ddp else None,
 )
 
 conf.training.iterations_per_epoch = int(len(train_dataloader) // conf.training.gradient_accumulation_steps)
@@ -196,8 +242,8 @@ pLogging.info(logger_idx, "Training configuration", {
     "device": conf.training.device,
     "dtype": conf.training.dtype,
     "compile": conf.training.compile,
-    "meta_vocab_size": meta_vocab_size,
-    "meta_path": meta_path,
+    "prep_vocab_size": prep_vocab_size,
+    "prep_max_sequence_length": prep_max_sequence_length,
     "eval_interval": conf.training.eval_interval,
     "log_interval": conf.training.log_interval,
     "eval_iters": conf.training.eval_iters,
@@ -232,29 +278,53 @@ model_args = dict(
     n_embd=conf.training.n_embd, 
     block_size=conf.training.block_size,
     bias=conf.training.bias, 
-    vocab_size=None, 
+    # this will be overridden if we resume from a checkpoint and the checkpoint has a different vocab size, but that is necessary to ensure we can even resume from the checkpoint
+    vocab_size=prep_vocab_size,
     dropout=conf.training.dropout
 )
 
-# Determine if we should resume or start from scratch
-# This is based on if a ckpt_running.pt file exists and if the resume behavior is overridden.
+# ===== Determine if we should resume or start from scratch =====
+
+# This is based on if a running/epoch cktp file exists and if the resume behavior is overridden.
 init_training_from = 'scratch' # or 'resume'
-latest_running_cktp_idx, latest_running_ckpt = get_latest_checkpoint_filepath()
+latest_running_cktp_idx, latest_running_ckpt = get_latest_running_ckpt_filepath()
 if latest_running_ckpt and conf.training.init_from != 'scratch':
+    init_training_from = 'resume'
+latest_epoch_cktp_idx, latest_epoch_ckpt = get_latest_epoch_ckpt_filepath()
+if latest_epoch_ckpt and conf.training.init_from != 'scratch':
     init_training_from = 'resume'
 
 if init_training_from == 'scratch':
     # Init a new model from scratch
     pLogging.info(logger_idx, "Initializing a new model from scratch")
     pLogging.info(logger_idx, "Training progress", {"info": "Initializing a new model from scratch"})
-    model_args['vocab_size'] = meta_vocab_size
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
 elif init_training_from == 'resume':
-    # Resume training from a checkpoint
-    pLogging.info(logger_idx, f"Resuming training from {latest_running_ckpt}")
-    pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {latest_running_ckpt}"})
-    checkpoint = torch.load(latest_running_ckpt, map_location=conf.training.device)
+    # First we need to determine if we start from the latest epoch ckpt or the latest saved running cktp
+    resume_ckpt = None
+    
+    running_iter_num = 0
+    epoch_iter_num = 0
+    if latest_running_ckpt is not None:
+        temp_checkpoint = torch.load(latest_running_ckpt, map_location=conf.training.device)
+        running_iter_num = temp_checkpoint['iter_num']
+    if latest_epoch_ckpt is not None:
+        temp_checkpoint = torch.load(latest_epoch_ckpt, map_location=conf.training.device)
+        epoch_iter_num = temp_checkpoint['iter_num']
+    
+    assert (running_iter_num != 0 or epoch_iter_num != 0), "If resume pathway was picked, one of these must exist!"
+    if running_iter_num > epoch_iter_num:
+        resume_ckpt = latest_running_ckpt
+    elif running_iter_num < epoch_iter_num:
+        resume_ckpt = latest_epoch_ckpt
+    elif running_iter_num == epoch_iter_num:
+        resume_ckpt = latest_running_ckpt
+    
+    # Resume training from the chosen
+    pLogging.info(logger_idx, f"Resuming training from {resume_ckpt}")
+    pLogging.info(logger_idx, "Training progress", {"info": f"Resuming training from {resume_ckpt}"})
+    checkpoint = torch.load(resume_ckpt, map_location=conf.training.device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
@@ -273,6 +343,7 @@ elif init_training_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
+    num_failed_checkpoint_checks = checkpoint.get('num_failed_checkpoint_checks', 0)
 
 # crop down the model block size if desired, using model surgery
 if conf.training.block_size < model.config.block_size:
@@ -293,7 +364,7 @@ checkpoint = None # free up memory
 if conf.training.compile:
     pLogging.info(logger_idx, "Training progress", {"info": "Compiling the model"})
     unoptimized_model = model
-    model = torch.compile(model) # requires PyTorch 2.0
+    model = torch.compile(model)
 
 # wrap model into DDP container
 if ddp:
@@ -400,11 +471,27 @@ trained_epochs = 0 # number of epochs trained in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 
+meta_benchmarking = conf.training.meta_benchmarking
+
+# ---- Benchmarking / metrics ----
+if meta_benchmarking == True:
+    pLogging.info(logger_idx, 
+        "Meta benchmarking is enabled. This will log micro step times in milliseconds to the training log, "
+        "which can be used to get an accurate measure of time per step excluding evaluation and checkpointing."
+    )
+    
+    # total global batch size across all GPUs and grad accum steps
+    global_batch_size = conf.training.batch_size * conf.training.gradient_accumulation_steps * ddp_world_size
+    step_times = []                  # store micro‑step times for averaging
+    
+    if device_type == 'cuda' and master_process:
+        torch.cuda.reset_peak_memory_stats()
+
 # Used for when we are resuming training from a checkpoint.
 epochs_trained_thus_far, iters_trained_thus_far = get_epoch_from_iter(iter_num)
 data_retrievals_so_far = iters_trained_thus_far * conf.training.gradient_accumulation_steps
 continue_training = True
-for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
+for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs + 1):
     if not continue_training:
         break
     
@@ -414,6 +501,9 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
 
     # One run of this loop is essentially a micro step (grad_accum micro steps form an iteration).
     for num_micro_steps, (X, Y) in enumerate(train_dataloader):
+        if meta_benchmarking == True:
+            step_start = time.time()
+            
         # Skip over data_retrievals_so_far so we are at the correct point in the shuffle.
         # This is for the case where we resume training from a checkpoint.
         if data_retrievals_so_far > 0:
@@ -421,7 +511,8 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
             continue
             
         # Termination conditions
-        if iter_num > conf.training.max_iters or (iter_num == 0 and conf.training.eval_only):
+        if iter_num >= conf.training.max_iters or (iter_num == 0 and conf.training.eval_only):
+            continue_training = False
             break
         
         # Get learning rate for this iteration
@@ -443,17 +534,28 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
         
         with ctx:
             logits, loss, _ = model(X, Y)
+            del logits  # reduce VRAM usage (hopefully)
             # scale the loss to account for gradient accumulation
             loss = loss / conf.training.gradient_accumulation_steps 
         
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
         
+        if meta_benchmarking == True:
+            if torch.cuda.is_available():
+                # The synchronize() is crucial to get an accurate GPU step time.
+                # Learned that the hard way..
+                torch.cuda.synchronize()
+            step_time = time.time() - step_start
+            step_times.append(step_time * 1000)   # milliseconds
+        
         # ----------------------------------------------------------------------
         # Update gradients and optimizer every gradient_accumulation_steps micro steps.
         # ----------------------------------------------------------------------
         
         if b_grad_accum_steps_completed:
+            # ===== Optimizer step =====
+            
             # clip the gradient
             if conf.training.grad_clip != 0.0:
                 scaler.unscale_(optimizer)
@@ -466,15 +568,38 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
             # flush the gradients as soon as we can, no need for this memory anymore
             optimizer.zero_grad(set_to_none=True)
             
-            # Save checkpoint
+            losses = None
+            should_stop = False
+            
+            # ===== Determine if we need eval/checkpointing/logging =====
+            
+            # Computed on all ranks so they follow the same control-flow process
             eval_cond_1 = conf.training.eval_interval > 0 and (iter_num % conf.training.eval_interval == 0)
             eval_cond_2 = conf.training.eval_every_epoch and (iter_num % conf.training.iterations_per_epoch == 0)
+            log_cond = conf.training.log_interval > 0 and (iter_num % conf.training.log_interval == 0)
+            
+            # ===== Evaluation Section =====
+            # Ony master computes/logs/saves, but non-master ranks must wait while master is working. Overwise, non-master ranks
+            # can run ahead into the next backward pass and hand waiting for rank 0 in NCCL.
+            
+            if eval_cond_1 or eval_cond_2 or log_cond:
+                if ddp:
+                    dist.barrier()
+                if master_process:
+                    losses = estimate_loss()
+                if ddp:
+                    dist.barrier()
+                    
+            # ===== Checkpointing/Early stopping =====
+            # Only the master process writes logs and handles checkpoints
+            
+            # Save checkpoint
             if (eval_cond_1 or eval_cond_2) and master_process:
-                # Evaluate the loss on train/val sets and write checkpoints
-                # We save checkpoints every eval_interval. Once in ckpt.pt with the best val_loss and again in ckpt_running.pt regardless of val_loss.
+                # Evaluate the loss on train/val sets and write checkpoints. We save checkpoints every eval_interval and/or epoch. 
+                # ckpt.pt is the checkpoint with the best val_loss; ckpt_running.pt is saved regardless of val_loss; ckpt_epoch.pt is
+                # saved every epoch also regardless of val_loss. 
                 # This is to ensure we can resume training from the running checkpoint, without having to redo many of them.
                 b_save_best = False
-                losses = estimate_loss()
                 if losses['val'] < best_val_loss:
                     b_save_best = True
                     best_val_loss = losses['val']
@@ -485,6 +610,7 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
                     'model_args': model_args,
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
+                    'num_failed_checkpoint_checks': num_failed_checkpoint_checks,
                     'config': config
                 }
                 
@@ -503,29 +629,45 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
                     # On the max_num_failed_checkpoint_checks-th failure, we end training
                     num_failed_checkpoint_checks += 1
                     if num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks:
-                        continue_training = False
-                        break
+                        should_stop = True
                 
                 if eval_cond_1:
                     # We save a current checkpoint every eval_interval, regardless of val_loss to ensure we can resume training
                     # without having to redo iterations.
                     pLogging.info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {losses['val'].item()}")
-                    latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_checkpoint_filepath()
+                    latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_running_ckpt_filepath()
                     new_running_ckpt_idx = latest_running_cktp_idx + 1
                     new_running_ckpt_path = model_output_dir / f'ckpt_running_{new_running_ckpt_idx}.pt'
                     torch.save(checkpoint, new_running_ckpt_path)
                 if eval_cond_2:
                     # We save a current checkpoint every epoch
                     pLogging.info(logger_idx, f"Training progress: saving epoch {epoch_num} checkpoint @ val_loss {losses['val'].item()}")
-                    latest_running_cktp_idx, latest_running_ckpt_filepath = get_latest_checkpoint_filepath()
                     new_epoch_ckpt_path = model_output_dir / f'ckpt_epoch_{epoch_num}.pt'
                     torch.save(checkpoint, new_epoch_ckpt_path)
+                    
+            # ===== Broadcast early stop decision =====
+            # Rank 0 is the only rank to decide whether training should stop but all ranked must receive the same decision.
             
-            # Log training progress
-            if iter_num % conf.training.log_interval == 0 and master_process:
+            if ddp:
+                stop_tensor = torch.tensor([1 if should_stop else 0], device=conf.training.device, dtype=torch.int32)
+                dist.broadcast(stop_tensor, src=0)
+                should_stop = bool(stop_tensor.item())
+            
+            if should_stop:
+                continue_training = False
+                break
+            
+            # ===== Logging =====
+            # Only master logs
+            
+            if log_cond and master_process:
                 t1 = time.time()
                 dt = t1 - t0
                 t0 = t1
+                
+                if losses is None:
+                    losses = estimate_loss()
+                
                 # Get loss as float. Note: this is a CPU-GPU sync point
                 # Scale up to undo the division in loss from the training loop, approximating the true
                 # total loss (exact would have been a sum)
@@ -535,7 +677,32 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
                     mfu = raw_model.estimate_mfu(conf.training.batch_size * conf.training.gradient_accumulation_steps, dt)
                     running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
                 
-                losses = estimate_loss()
+                # ===== Benchmarking gets special metrics =====
+                if meta_benchmarking == True:
+                    # Average step time over the last log_interval micro‑steps
+                    avg_step_ms = sum(step_times[-conf.training.log_interval:]) / len(step_times[-conf.training.log_interval:]) if step_times else 0.0
+                    # Tokens processed in one log interval (all micro‑steps)
+                    tokens_per_interval = global_batch_size * conf.training.block_size * conf.training.log_interval
+                    tokens_per_sec = tokens_per_interval / dt if dt > 0 else 0.0
+                    # Peak GPU memory
+                    mem_allocated = torch.cuda.max_memory_allocated(device=conf.training.device) / (1024**3)  # GiB
+                    mem_reserved  = torch.cuda.max_memory_reserved(device=conf.training.device) / (1024**3)
+                    # Reset memory stats for next interval
+                    torch.cuda.reset_peak_memory_stats(device=conf.training.device)
+
+                    pLogging.info(logger_idx, "Benchmarking progress", {
+                        "iter": iter_num,
+                        "loss": lossf,
+                        "train_loss": losses['train'].item(),
+                        "val_loss": losses['val'].item(),
+                        "time_ms": dt * 1000,                 # wall clock since last log
+                        "step_ms": avg_step_ms,               # average micro‑step time
+                        "tok_per_sec": tokens_per_sec,        # throughput
+                        "mem_alloc_gb": mem_allocated,        # peak allocated memory
+                        "mem_res_gb": mem_reserved,           # peak reserved memory
+                        "mfu": running_mfu,
+                    })
+                
                 pLogging.info(logger_idx, "Training progress", {
                     "iter": iter_num,
                     "loss": lossf,
@@ -548,7 +715,9 @@ for epoch_num in range(epochs_trained_thus_far, conf.training.max_epochs):
             iter_num += 1
             local_iter_num += 1
 
-pLogging.info(logger_idx, "Training finished.")
-
+if ddp:
+    dist.barrier() # ensure all processes have finished training before master prints final message and/or cleanup
+if master_process:
+    pLogging.info(logger_idx, "Training finished.")
 if ddp:
     destroy_process_group()

@@ -31,6 +31,7 @@ class TrainingConfiguration:
     # model
     n_layer: int = 12
     n_head: int = 12
+    n_kv_heads: int = 0   # 0 means same as n_head (standard MHA)
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = False
@@ -48,6 +49,8 @@ class TrainingConfiguration:
     cycle_steps_mult: float = 1
     base_lr_decay_mult: float = 1
     lr_scheduler: str = "cosine_annealing_with_warmup" # cosine_annealing_with_warmup, cosine_annealing_with_warm_restarts
+    
+    loss_sigma = 1.0
 
     # learning rate decay
     warmup_iters: int = 2000
@@ -62,6 +65,8 @@ class TrainingConfiguration:
     dtype: str = field(init=False)
     compile: bool = True
     iterations_per_epoch: int = 0
+    
+    meta_benchmarking: bool = False
 
     def __post_init__(self):
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
@@ -129,7 +134,15 @@ def perform_configuration(config_file_path):
 
 # Configurator should only run if a config file is provided as an argument.
 # All expected exceptions will be handled here.
-arg_one_exceptions = [ '--help', '-h', 'all', 'single_threaded']
-if len(sys.argv) > 1 and sys.argv[1] not in arg_one_exceptions:
-    config_file_path = sys.argv[1]
-    generic, training, sampling = perform_configuration(config_file_path)
+arg_one_exceptions = [ '--help', '-h', 'all', 'single_threaded', '--benchmark']
+if not len(sys.argv) > 1:
+    print("WARNING: No config file or options provided.")
+else:
+    # Assume first argument is config file path
+    if sys.argv[1] not in arg_one_exceptions:
+        config_file_path = sys.argv[1]
+        generic, training, sampling = perform_configuration(config_file_path)
+    
+    if '--benchmark' in sys.argv:
+        training.meta_benchmarking = True
+    

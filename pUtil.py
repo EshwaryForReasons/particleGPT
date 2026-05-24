@@ -9,6 +9,7 @@ CONFIG_DIR_NAME = 'config'
 GENERATED_SAMPLES_DIR_NAME = 'generated_samples'
 TRAINED_MODELS_DIR_NAME = 'trained_models'
 DATASETS_DIR_NAME = 'data'
+PREPARATIONS_DIR_NAME = 'preparations'
 TEMP_DIR_NAME = 'temp'
 
 def get_sampling_dir(model_name):
@@ -18,7 +19,7 @@ def get_training_dir(model_name):
     return script_dir / TRAINED_MODELS_DIR_NAME / model_name
 
 def get_preparation_dir(preparation_name):
-    return script_dir / DATASETS_DIR_NAME / preparation_name
+    return script_dir / PREPARATIONS_DIR_NAME / preparation_name
 
 def get_data_dir():
     return script_dir / DATASETS_DIR_NAME
@@ -32,10 +33,13 @@ def get_temp_dir(model_name=None):
 
 
 
+
+
+
 def get_model_config_filepath(model_name):
     # The model name will be the name of the config file unless specified otherwise within the file.
     config_dir = script_dir / CONFIG_DIR_NAME
-    config_files = list(config_dir.glob("*.json"))
+    config_files = list(config_dir.rglob("*.json"))
     
     correct_config_file = None
     for config_file in config_files:
@@ -52,6 +56,44 @@ def get_model_config_filepath(model_name):
         raise ValueError(f"No config file found for model name {model_name}.")
     
     return correct_config_file
+
+# ===== Preparation =====
+
+def get_model_preparation_name(model_name):
+    config_filepath = get_model_config_filepath(model_name)
+    with open(config_filepath, 'r') as f:
+        config = json.load(f)
+    
+    preparation_name = config.get('preparation_name', None)
+    if preparation_name is None:
+        raise ValueError(f"No preparation name found in config for model {model_name}.")
+
+    return preparation_name
+
+# Gets the preparation directory of a model given the model name
+def get_model_preparation_dir(model_name):
+    preparation_name = get_model_preparation_name(model_name)
+    preparation_dir = script_dir / PREPARATIONS_DIR_NAME / preparation_name
+    return preparation_dir
+
+
+def get_model_tokenized_data_filepath(model_name, split):
+    preparation_name = get_model_preparation_name(model_name)
+    preparation_dir = get_model_preparation_dir(model_name)
+    
+    prep_data_filepath = preparation_dir / 'preparation.json'
+    if not prep_data_filepath.exists():
+        raise ValueError(f"preparation.json not found for preparation {preparation_name}.")
+    
+    with open(prep_data_filepath, 'r') as f:
+        prep_data = json.load(f)
+    
+    if not f'{split}_bin' in prep_data or not 'tokenized_dataset' in prep_data[f'{split}_bin']:
+        raise ValueError(f"Tokenized dataset information not found for split {split} in preparation {preparation_name}.")
+    tokenized_dataset_name = prep_data[f'{split}_bin']['tokenized_dataset']
+
+    tokenized_data_filepath = script_dir / DATASETS_DIR_NAME / 'tokenized' / tokenized_dataset_name / 'tokenized_data.csv'
+    return tokenized_data_filepath
                     
 # Gets the meta file of the preparation a model is trained on
 def get_model_meta_filepath(model_name):
@@ -65,30 +107,8 @@ def get_model_meta_filepath(model_name):
 
     meta_filepath = script_dir / DATASETS_DIR_NAME / preparation_name / 'meta.pkl'
     return meta_filepath
-
-# Gets the preparation directory of a model given the model name
-def get_model_preparation_dir(model_name):
-    config_filepath = get_model_config_filepath(model_name)
-    with open(config_filepath, 'r') as f:
-        config = json.load(f)
-        preparation_name = config.get('preparation_name', None)
     
-    if preparation_name is None:
-        raise ValueError(f"No preparation name found in config for model {model_name}.")
 
-    preparation_dir = script_dir / DATASETS_DIR_NAME / preparation_name
-    return preparation_dir
-    
-def get_model_preparation_name(model_name):
-    config_filepath = get_model_config_filepath(model_name)
-    with open(config_filepath, 'r') as f:
-        config = json.load(f)
-        preparation_name = config.get('preparation_name', None)
-    
-    if preparation_name is None:
-        raise ValueError(f"No preparation name found in config for model {model_name}.")
-
-    return preparation_name
 
 def get_model_dataset_name(model_name):
     config_filepath = get_model_config_filepath(model_name)

@@ -73,9 +73,17 @@ def bin_data_fast():
     data = np.loadtxt(tokenized_data_filename, dtype=np.uint16)
 
     # Step 2: Calculate the number of rows for each split
-    train_data = data[:dataset_info.num_train_events]
-    val_data = data[dataset_info.num_train_events:dataset_info.num_train_events + dataset_info.num_val_events]
-    test_data = data[dataset_info.num_train_events + dataset_info.num_val_events:]
+    if dictionary.num_train_events_override is not None:
+        dict_events_total = dictionary.num_train_events_override + dictionary.num_val_events_override + dictionary.num_test_events_override
+        assert dict_events_total <= dataset_info.num_events_total, "dict_events_total must be <= total number of events in the dataset."
+        
+        train_data = data[:dictionary.num_train_events_override]
+        val_data = data[dictionary.num_train_events_override:dictionary.num_train_events_override + dictionary.num_val_events_override]
+        test_data = data[dictionary.num_train_events_override + dictionary.num_val_events_override:]
+    else:
+        train_data = data[:dataset_info.num_train_events]
+        val_data = data[dataset_info.num_train_events:dataset_info.num_train_events + dataset_info.num_val_events]
+        test_data = data[dataset_info.num_train_events + dataset_info.num_val_events:]
 
     # Step 3: Write each section to the corresponding binary file
     with open(train_bin_filename, 'wb') as train_out, open(val_bin_filename, 'wb') as val_out, open(test_tokenized_bin_filename, 'wb') as test_tokenized_out:

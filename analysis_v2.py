@@ -210,17 +210,42 @@ class plotting_v2:
     fontsize_ticks = 16
     sns_palette = 'colorblind'
     
+    # color_palette = [
+    #     "petroff:blue",
+    #     "petroff:orange",
+    #     "petroff:red",
+    #     "petroff:gray",
+    #     "petroff:purple",
+    #     "black",
+    #     "petroff:brown",
+    #     "petroff:orange2",
+    #     "petroff:tan",
+    #     "petroff:gray2",
+    #     "petroff:lightBlue"
+    #     "petroff:terquiose"
+    # ]
+    
     color_palette = [
-        "petroff:blue",
-        "petroff:orange",
-        "petroff:red",
-        "petroff:gray",
-        "petroff:purple",
-        "petroff:brown",
-        "petroff:orange2",
-        "petroff:tan",
-        "petroff:gray2",
-        "petroff:lightBlue"
+        "#1f77b4",  # blue
+        "#ff7f0e",  # orange
+        "#2ca02c",  # green
+        "#d62728",  # red
+        "#9467bd",  # purple
+        "#8c564b",  # brown
+        "#e377c2",  # pink
+        "#7f7f7f",  # gray
+        "#bcbd22",  # olive
+        "#17becf",  # cyan
+        "#393b79",  # dark blue
+        "#637939",  # dark olive green
+        "#8c6d31",  # muted brown
+        "#843c39",  # dark red
+        "#7b4173",  # deep purple
+        "#3182bd",  # lighter blue
+        "#e6550d",  # burnt orange
+        "#31a354",  # medium green
+        "#756bb1",  # soft purple-blue
+        "#636363"   # dark gray
     ]
     
     verbose_columns = ["pdgid", "e", "px", "py", "pz", "pt", "eta", "theta", "phi"]
@@ -867,6 +892,7 @@ class plotting_v2:
         use_log=False,
         out_file=None,
         show_lr_schedule=False,
+        title=None,
         figsize=(6.9, 3.2),
         show_raw=True,
         smooth_alpha=0.02,
@@ -874,7 +900,7 @@ class plotting_v2:
         smoothing_function=None, # options: "none", "bin_average", "savgol", "rolling"
         show_output=True,
     ):
-        palette = sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
+        palette = cls.color_palette #sns.color_palette(cls.sns_palette, n_colors=max(3, len(model_names) + 1))
         
         model_names = np.atleast_1d(model_names)
 
@@ -947,14 +973,16 @@ class plotting_v2:
                     lrax.yaxis.set_major_formatter(FuncFormatter(plotting_v2._sci_notation))
 
                 # make LR faint so it doesn't dominate
-                lrax.plot(iters, lrs, color='black', linewidth=1.0, linestyle=':', alpha=0.35, label="LR")
+                lrax.plot(iters, lrs, color=color, linewidth=1.0, linestyle=':', alpha=0.35, label="LR")
                 
                 # Append to handles
                 unique_handles['Learning Rate'] = mpl.lines.Line2D([0], [0], color='black', linewidth=1.0, linestyle=":", alpha=0.35, label="Learning Rate")
 
             if show_train_loss == True:
+                linestype = '-' if show_val_loss else '--'
+                
                 if show_raw:
-                    ax.plot(x, yt, linewidth=1.0, alpha=0.25 if smoothing_function is not None else 1, color=color)
+                    ax.plot(x, yt, linewidth=2.0, alpha=0.25 if smoothing_function is not None else 1, color=color, linestyle='--')
                 
                 if smoothing_function == "savgol":
                     yt_s = plotting_v2._smooth_savgol(yt, window=301, poly=3)
@@ -972,12 +1000,11 @@ class plotting_v2:
                     ax.scatter([best["iter"]], [best["train_loss"]], s=22, color=color, zorder=5, marker='o')
                 
                 # Append to handles
-                linestype = '-' if show_val_loss else '--'
                 unique_handles[model_legend_title[idx]] = mpl.lines.Line2D([0], [0], linestyle=linestype, color=color, linewidth=2, label=model_legend_title[idx])
                 
             if show_val_loss == True:
                 if show_raw:
-                    ax.plot(x, yv, linewidth=1.0, alpha=0.25 if smoothing_function is not None else 1, color=color)
+                    ax.plot(x, yv, linewidth=2.0, alpha=0.25 if smoothing_function is not None else 1, color=color)
                 
                 if smoothing_function == "savgol":
                     yv_s = plotting_v2._smooth_savgol(yv, window=301, poly=3)
@@ -1000,6 +1027,10 @@ class plotting_v2:
         unique_handles = list(unique_handles.values())
         ax.legend(handles=unique_handles, loc="best", frameon=False, fontsize=cls.fontsize_legend)
         fig.subplots_adjust(right=0.80)
+        
+        # Useful for slides etc, where the figure might be standalone
+        if title:
+            fig.suptitle(title, fontsize=cls.fontsize_axes_labels)
         
         plt.xticks(fontsize=cls.fontsize_ticks)
         plt.yticks(fontsize=cls.fontsize_ticks)
@@ -1379,7 +1410,7 @@ class plotting_v2:
             label=model_legend_titles[0], color='black', linewidth=0, alpha=0.8, width=0.9, align='center', error_kw=error_kw
         )
         model_to_gen_counts = {}
-        for i, mn in enumerate(model_names):
+        for i, mn in enumerate(model_names, start=1):
             g_y = g_y_dict[mn]
             g_err = g_err_dict[mn]
             
@@ -1388,9 +1419,9 @@ class plotting_v2:
 
             axd.bar(
                 x, g_y_dict[mn], yerr=g_err,
-                label=model_legend_titles[i], color=cls.color_palette[i], linewidth=0, alpha=0.8, width=(0.9 - 0.3 * i), align='center', error_kw=error_kw
+                label=model_legend_titles[i], color=cls.color_palette[i - 1], linewidth=0, alpha=0.8, width=(0.9 - 0.3 * i), align='center', error_kw=error_kw
             )
-            
+                        
         cls._plot_ratios(axr, real_counts_raw.astype(float), list(model_to_gen_counts.values()), x, ratio_ylim)
         
         # ===== Writing =====
@@ -1669,7 +1700,7 @@ class plotting_v2:
             x + offsets[0], r_y, yerr=r_err,
             label=model_legend_titles[0], color='black', linewidth=0, alpha=0.8, width=bar_width, align='center', error_kw=error_kw
         )
-        for i, mn in enumerate(model_names, start=1):
+        for i, mn in enumerate(model_names):
             g_y = g_y_dict[mn]
             g_err = g_err_dict[mn]
             top_y_arrays.append(g_y)
@@ -2565,7 +2596,7 @@ class tables:
     """
     
     model_metadata_columns          = ['vocab_size', 'max_sequence_length', 'num_train_tokens', 'num_val_tokens']
-    model_config_columns            = ['batch_size', 'block_size', 'learning_rate', 'min_lr', 'lr_decay_iters', 'lr_scheduler', 'n_layer', 'n_head', 'n_embd', 'num_params']
+    model_config_columns            = ['batch_size', 'block_size', 'learning_rate', 'min_lr', 'lr_warmup_iters', 'lr_decay_iters', 'lr_scheduler', 'n_layer', 'n_head', 'n_embd', 'num_params']
     model_training_columns          = ['iters_trained', 'iters_saved', 'min_saved_train_loss', 'min_saved_val_loss', 'compute_time_trained', 'compute_time_saved']
     model_metrics_columns           = ['coverage', 'mmd', 'kpd_median', 'fpd_value', 'w1m_score', 'w1p_avg_eta', 'w1p_avg_phi', 'w1p_avg_pt']
     model_metrics_columns_verbose   = ['kpd_error', 'fpd_error', 'w1m_score_std', 'w1p_avg_eta_std', 'w1p_avg_phi_std', 'w1p_avg_pt_std']
@@ -2573,19 +2604,30 @@ class tables:
     model_all_columns_verbose       = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns + model_metrics_columns_verbose
     
     @staticmethod
-    def get_meta_data(model_name):
-        meta_filename = pUtil.get_model_meta_filepath(model_name)
-        if not meta_filename.exists():
-            return None
+    def get_meta_data(model_name):            
+        preparation_dir = pUtil.get_model_preparation_dir(model_name)
+        preparation_name = pUtil.get_model_preparation_name(model_name)
+        prep_data_filepath = preparation_dir / 'preparation.json'
+        prep_info_filepath = preparation_dir / 'preparation_info.json'
+        if not prep_data_filepath.exists() or not prep_info_filepath.exists():
+            raise Exception(f"Preparation data or info file for found for preparation name {preparation_name}")
         
-        with open(meta_filename, 'rb') as meta_file:
-            meta_data = pickle.load(meta_file)
+        with open(prep_data_filepath, 'r') as pdf:
+            prep_data = json.load(pdf)
+            if not 'train_bin' in prep_data:
+                raise Exception(f"Preparation data file does not have a 'train_bin' key!")
+            if not 'validation_bin' in prep_data:
+                raise Exception(f"Preparation data file does not have a 'validation_bin' key!")
+            
+        with open(prep_info_filepath, 'r') as pif:
+            prep_info = json.load(pif)
         
+        max_sequence_length = prep_info.get('max_sequence_length', np.nan)
         return SimpleNamespace(
-            vocab_size              = meta_data.get('vocab_size', np.nan),
-            max_sequence_length     = meta_data.get('max_sequence_length', np.nan),
-            num_train_tokens        = meta_data.get('num_train_tokens', np.nan),
-            num_val_tokens          = meta_data.get('num_val_tokens', np.nan)
+            vocab_size              = prep_info.get('vocab_size', np.nan),
+            max_sequence_length     = max_sequence_length,
+            num_train_tokens        = max_sequence_length * prep_data['train_bin'].get('num_events', np.nan),
+            num_val_tokens          = max_sequence_length * prep_data['validation_bin'].get('num_events', np.nan),
         )
     
     @staticmethod
@@ -2621,6 +2663,7 @@ class tables:
             block_size              = block_size,
             learning_rate           = training_config.get('learning_rate', np.nan),
             min_lr                  = training_config.get('min_lr', np.nan),
+            lr_warmup_iters         = training_config.get('warmup_iters', np.nan),
             lr_decay_iters          = training_config.get('lr_decay_iters', np.nan),
             lr_scheduler            = training_config.get('lr_scheduler', 'cosine_annealing_with_warmup'),
             n_layer                 = training_config.get('n_layer', np.nan),

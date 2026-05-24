@@ -7,6 +7,7 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
 
+import json
 import math
 import inspect
 from pathlib import Path
@@ -23,14 +24,27 @@ from dictionary import Dictionary
 from dictionary import ETokenTypes
 
 script_dir = Path(__file__).resolve().parent
-dictionary = Dictionary(script_dir / 'data' / conf.generic.preparation_name / 'dictionary.json')
 
-logger_idx = -1
 # Model will never be used on its own. It will be accessed by the training or generation script.
 # Therefore, we inherit the logger from the accessing script.
+logger_idx = -1
 def set_logger(in_logger_idx):
     global logger_idx
     logger_idx = in_logger_idx
+
+# ===== Load the dictionary =====
+
+try:
+    prep_filepath = script_dir / 'preparations' / conf.generic.preparation_name / 'preparation.json'
+    with open(prep_filepath, 'r') as f:
+        prep_data = json.load(f)
+    prop_tokenized_dataset_name = prep_data['train_bin']['tokenized_dataset']
+    
+    dictionary_filepath = script_dir / 'data' / 'tokenized' / prop_tokenized_dataset_name / 'dictionary.json'
+    dictionary = Dictionary(dictionary_filepath)
+except Exception as e:
+    pLogging.info(logger_idx, f"Error occurred while trying to load dictionary: {e}")
+    raise Exception("Error occurred while trying to load dictionary!")
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -195,6 +209,7 @@ class GPT(nn.Module):
 
         # report number of parameters
         pLogging.info(logger_idx, "Model info", {"num_params": str(self.get_num_params() / 1e6) + "M" })
+        pLogging.info(logger_idx, "Model info", {"num_params_embedding_incl": str(self.get_num_params(non_embedding=False) / 1e6) + "M" })
     
     def get_token_type_ids(self, idx):
         # Map token id ranges to type ids

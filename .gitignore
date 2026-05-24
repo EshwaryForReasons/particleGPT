@@ -1,33 +1,35 @@
 __pycache__/
 .ipynb_checkpoints/
 
-wandb/
-
-outputs/
 logs/
 temp/
 trained_models/
 generated_samples/
+scripts/
+
+# Ignore everything job queueing related
 job_scripts/
+job_outputs/
+# Ignore .out files; these are job log files
+*.out
 
-data/preparation_100k_4/
-data/preparation_100k_4_backup/
-data/preparation_100k_4_schemes/
-data/preparation_10M_5_8_NO/
-data/preparation_10M_5_9_testing/
+# Ignore everything except dictionary.json since that is all
+# that is needed for reproduction.
+data/**
+!data/
+!data/**/dictionary.json
 
-data/*/temp/
-data/*/*.csv
-data/*/*.bin
-data/*/*.pkl
-data/*.csv
+# Same for preparations but now we store preparation.json
+preparations/**
+!preparations/
+!preparations/**/preparation.json
 
-pTokenizer/build/
-pTokenizer/dist/
-pTokenizer/pTokenizer.egg-info/
+# Ignore analysis_notebooks because those should generally remain private
+# Exceptions are those that showcase results (e.g. docs)
+analysis_notebooks/**
+!analysis_notebooks
+!analysis_notebooks/**
+!analysis_notebooks/analysis_common.py
+!analysis_notebooks/analysis_v2_showcase.ipynb
 
 setup.sh
-*.out
-outputs/
-
-analysis_notebooks/publication_1

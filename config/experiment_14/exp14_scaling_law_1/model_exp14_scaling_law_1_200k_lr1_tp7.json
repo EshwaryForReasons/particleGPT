@@ -1,0 +1,33 @@
+{
+    "preparation_name": "preparation_exp14_200k",
+    "dataset": "dataset_exp11_100k.csv",
+    "training_config": {
+        "eval_interval": 100,
+        "eval_iters": 200,
+        "log_interval": 10,
+        "gradient_accumulation_steps": 12,
+        "batch_size": 64,
+        "context_events": 1,
+        "n_layer": 10,
+        "n_head": 7,
+        "n_embd": 448,
+        "dropout": 0.1,
+        "learning_rate": 0.00015,
+        "max_iters": 500000,
+        "lr_decay_iters": 120,
+        "min_lr": 1.5e-05,
+        "beta1": 0.9,
+        "beta2": 0.95,
+        "warmup_iters": 75,
+        "max_num_failed_checkpoint_checks": 16,
+        "eval_every_epoch": true
+    },
+    "sampling_config": {
+        "temperature": 0.8,
+        "top_k": 200,
+        "seed": 1337,
+        "device": "cuda",
+        "compile": true
+    },
+    "model_name": "model_exp14_scaling_law_1_200k_lr1_tp7"
+}
