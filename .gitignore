@@ -29,8 +29,8 @@ preparations/**
 # Ignore analysis_notebooks because those should generally remain private
 # Exceptions are those that showcase results (e.g. docs)
 analysis_notebooks/**/*.*
-!analysis_notebooks
-!analysis_notebooks/**
+!analysis_notebooks/
+!analysis_notebooks/**/
 !analysis_notebooks/analysis_common.py
 !analysis_notebooks/analysis_v2_showcase.ipynb
 
