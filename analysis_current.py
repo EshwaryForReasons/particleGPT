@@ -10,7 +10,7 @@ from dictionary import Dictionary
 from dictionary import ETokenTypes
 import pUtil
 import data_manager
-import analysis as anal
+import analysis_v2 as anal
 import untokenizer
 import wandb_doer
 
