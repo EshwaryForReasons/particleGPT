@@ -31,6 +31,7 @@ import math
 import os
 import re
 import time
+import socket
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -1150,6 +1152,70 @@ def log_training_configuration(
             "backend": conf.training.backend,
         },
     )
+    
+def find_free_port() -> int:
+    """Find an available localhost port for single-node internal DDP."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+def should_launch_internal_ddp() -> bool:
+    """
+    Decide whether plain `python train.py` should internally spawn one process
+    per GPU.
+
+    This is intentionally disabled when torchrun already provided RANK. Using
+    torchrun manually implies the user wants to control DDP themselves, likely
+    to run on multiple nodes or with custom environment variables.
+    """
+    if int(os.environ.get("RANK", -1)) != -1:
+        return False
+
+    if os.environ.get("PARTICLEGPT_INTERNAL_DDP", "0") == "1":
+        return False
+
+    if not torch.cuda.is_available():
+        return False
+
+    if torch.cuda.device_count() <= 1:
+        return False
+
+    return bool(getattr(conf.training, "auto_ddp", False))
+
+def internal_ddp_worker(local_rank: int, world_size: int, master_addr: str, master_port: int) -> None:
+    """
+    Worker entrypoint used by `python train.py` internal DDP.
+
+    This sets the same environment variables torchrun would normally set,
+    then calls the normal training main().
+    """
+    os.environ["PARTICLEGPT_INTERNAL_DDP"] = "1"
+    os.environ["MASTER_ADDR"] = master_addr
+    os.environ["MASTER_PORT"] = str(master_port)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["RANK"] = str(local_rank)
+    os.environ["LOCAL_RANK"] = str(local_rank)
+    os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
+    main()
+
+def launch_internal_ddp() -> None:
+    """Launch single-node DDP from plain `python train.py`."""
+    world_size = int(getattr(conf.training, "auto_ddp_world_size", torch.cuda.device_count()))
+    world_size = min(world_size, torch.cuda.device_count())
+
+    if world_size <= 1:
+        main()
+        return
+
+    master_addr = str(getattr(conf.training, "auto_ddp_master_addr", "127.0.0.1"))
+    master_port = int(getattr(conf.training, "auto_ddp_master_port", 0)) or find_free_port()
+
+    mp.spawn(
+        internal_ddp_worker,
+        args=(world_size, master_addr, master_port),
+        nprocs=world_size,
+        join=True,
+    )
 
 def main() -> None:
     ddp_state = init_distributed()
@@ -1222,4 +1288,7 @@ def main() -> None:
         destroy_distributed(ddp_state)
 
 if __name__ == "__main__":
-    main()
+    if should_launch_internal_ddp():
+        launch_internal_ddp()
+    else:
+        main()

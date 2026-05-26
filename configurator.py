@@ -59,6 +59,11 @@ class TrainingConfiguration:
 
     # DDP settings
     backend: str = 'nccl'
+    
+    auto_ddp = True
+    auto_ddp_world_size = 4
+    auto_ddp_master_addr = "127.0.0.1"
+    auto_ddp_master_port = 0
 
     # system
     device: str = 'cuda'

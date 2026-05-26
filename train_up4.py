@@ -34,8 +34,8 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-import model as model
-from model import GPTConfig, GPT
+import model_up4 as model
+from model_up4 import GPTConfig, GPT
 import pLogging
 import configurator as conf
 
