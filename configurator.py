@@ -7,10 +7,19 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GenericConfiguration:
-    config_file_path:      str = ''
-    preparation_name:      str = ''
-    model_name:            str = ''
-    dataset:               str = ''
+    config_file_path:           str = ''
+    preparation_name:           str = ''
+    model_name:                 str = ''
+    dataset:                    str = ''
+    data_mode:                  str = 'particle' # 'particle' or 'generic'
+    mlp_type:                   str = "swiglu"   # 'swiglu', 'relu2', 'gelu'
+    mlp_ratio:                  float = 4.0
+    qk_norm:                    bool = True
+    embd_norm_type:             str = "none" # 'none' or 'rmsnorm'
+    embd_norm_init_scale:       float = 0.02
+    use_particle_index_embd:    bool = False
+    use_bin_value_embd:         bool = False
+    bin_value_embd_init_scale:  float = 0.0
 
 @dataclass
 class TrainingConfiguration:

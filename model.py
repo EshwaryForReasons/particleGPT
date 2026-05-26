@@ -22,7 +22,7 @@ import json
 import math
 import multiprocessing as mp
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -32,8 +32,38 @@ from torch.nn import functional as F
 
 import configurator as conf
 import pLogging
-from dictionary import Dictionary, ETokenTypes
 
+# Won't always have a dictionary if training on generic data
+try:
+    from dictionary import Dictionary, ETokenTypes
+except Exception as exc:  # Allows generic/non-particle training without dictionary.py.
+    Dictionary = None
+    ETokenTypes = None
+    _dictionary_import_error = exc
+else:
+    _dictionary_import_error = None
+    
+    
+def _conf_data_mode() -> str:
+    """Import-time default: particle keeps old behavior; generic skips dictionary loading."""
+    return str(getattr(conf.generic, "data_mode", "particle")).lower()
+
+def _default_num_token_types() -> int:
+    """Default token-type table size when particle token types exist."""
+    return len(ETokenTypes) if ETokenTypes is not None else 1
+
+def _require_particle_dictionary(feature_name: str):
+    """Return the particle dictionary or explain which feature requested it."""
+    if dictionary is None or ETokenTypes is None:
+        raise RuntimeError(
+            f"{feature_name} requires the particle Dictionary/ETokenTypes. "
+            "For natural-language/generic training, set data_mode='generic' and leave "
+            "use_token_type_embeddings=False, use_bin_value_embeddings=False, "
+            "use_particle_index_embeddings=False, and use_event_grammar=False."
+        )
+    return dictionary
+    
+    
 script_dir = Path(__file__).resolve().parent
 
 # The model is normally constructed from a training or generation script. Logging is
@@ -49,17 +79,22 @@ def set_logger(in_logger_idx: int) -> None:
 # Dictionary loading
 # =====================
 
-try:
-    prep_filepath = script_dir / "preparations" / conf.generic.preparation_name / "preparation.json"
-    with open(prep_filepath, "r") as f:
-        prep_data = json.load(f)
+dictionary = None
+if _conf_data_mode() == "particle":
+    if Dictionary is None:
+        raise RuntimeError("Could not import particle dictionary module.") from _dictionary_import_error
 
-    tokenized_dataset_name = prep_data["train_bin"]["tokenized_dataset"]
-    dictionary_filepath = script_dir / "data" / "tokenized" / tokenized_dataset_name / "dictionary.json"
-    dictionary = Dictionary(dictionary_filepath)
-except Exception as exc:
-    pLogging.info(logger_idx, f"Error occurred while trying to load dictionary: {exc}")
-    raise RuntimeError("Error occurred while trying to load dictionary.") from exc
+    try:
+        prep_filepath = script_dir / "preparations" / conf.generic.preparation_name / "preparation.json"
+        with open(prep_filepath, "r") as f:
+            prep_data = json.load(f)
+
+        tokenized_dataset_name = prep_data["train_bin"]["tokenized_dataset"]
+        dictionary_filepath = script_dir / "data" / "tokenized" / tokenized_dataset_name / "dictionary.json"
+        dictionary = Dictionary(dictionary_filepath)
+    except Exception as exc:
+        pLogging.info(logger_idx, f"Error occurred while trying to load dictionary: {exc}")
+        raise RuntimeError("Error occurred while trying to load dictionary.") from exc
 
 # =====================
 # Normalization layers
@@ -433,7 +468,18 @@ class GPTConfig:
     n_kv_heads: int = 0  # 0/None means standard MHA with n_kv_heads == n_head.
     dropout: float = 0.0
     bias: bool = True
-    num_token_types: int = len(ETokenTypes)
+    
+    # Domain controls. "particle" keeps the original particleGPT behavior.
+    # "generic" disables all particle/event grammar features for ordinary LM data.
+    data_mode: str = "particle"  # "particle" or "generic".
+    use_token_type_embeddings: bool = True
+    num_token_types: int = field(default_factory=_default_num_token_types)
+    use_event_grammar: bool = True
+
+    # Generic generation/loss controls. For particle mode, None means use dictionary values.
+    padding_token_id: int = 0
+    eos_token_id: Optional[int] = None
+    loss_ignore_index: Optional[int] = None
 
     mlp_type: str = "swiglu"  # "gelu", "relu2", or "swiglu".
     mlp_ratio: float = 4.0
@@ -454,8 +500,19 @@ class GPTConfig:
 
     def __post_init__(self) -> None:
         self.n_kv_heads = int(self.n_kv_heads or self.n_head)
+        self.data_mode = self.data_mode.lower()
         self.mlp_type = self.mlp_type.lower()
         self.embedding_norm_type = self.embedding_norm_type.lower()
+        
+        if self.data_mode not in {"particle", "generic"}:
+            raise ValueError(f"Unknown data_mode: {self.data_mode}")
+
+        # Natural-language/generic training should not accidentally inherit particle grammar.
+        if self.data_mode == "generic":
+            self.use_token_type_embeddings = False
+            self.use_particle_index_embeddings = False
+            self.use_bin_value_embeddings = False
+            self.use_event_grammar = False
 
         if self.n_embd % self.n_head != 0:
             raise ValueError(f"n_embd={self.n_embd} must be divisible by n_head={self.n_head}")
@@ -467,10 +524,12 @@ class GPTConfig:
             raise ValueError(f"Unknown mlp_type: {self.mlp_type}")
         if self.embedding_norm_type not in {"none", "rmsnorm"}:
             raise ValueError(f"Unknown embedding_norm_type: {self.embedding_norm_type}")
-        if self.num_features_per_particle <= 0:
+        if self.use_particle_index_embeddings and self.num_features_per_particle <= 0:
             raise ValueError("num_features_per_particle must be positive")
-        if self.max_particles_per_event <= 0:
+        if self.use_particle_index_embeddings and self.max_particles_per_event <= 0:
             raise ValueError("max_particles_per_event must be positive")
+        if self.use_token_type_embeddings and self.num_token_types <= 0:
+            raise ValueError("num_token_types must be positive when token type embeddings are enabled")
 
 def batched_multiGPU_worker(
     split_index: int,
@@ -515,17 +574,21 @@ def batched_multiGPU_worker(
 
 class GPT(nn.Module):
     """Particle-aware GPT language model."""
-
-    ORDINAL_TOKEN_TYPES = {
-        ETokenTypes.ENERGY.value,
-        ETokenTypes.ETA.value,
-        ETokenTypes.THETA.value,
-        ETokenTypes.PHI.value,
-        ETokenTypes.PT.value,
-        ETokenTypes.PX.value,
-        ETokenTypes.PY.value,
-        ETokenTypes.PZ.value,
-    }
+    
+    ORDINAL_TOKEN_TYPES = (
+        set()
+        if ETokenTypes is None
+        else {
+            ETokenTypes.ENERGY.value,
+            ETokenTypes.ETA.value,
+            ETokenTypes.THETA.value,
+            ETokenTypes.PHI.value,
+            ETokenTypes.PT.value,
+            ETokenTypes.PX.value,
+            ETokenTypes.PY.value,
+            ETokenTypes.PZ.value,
+        }
+    )
 
     def __init__(self, config: GPTConfig):
         super().__init__()
@@ -533,15 +596,24 @@ class GPT(nn.Module):
             raise ValueError("config.vocab_size and config.block_size must be set")
 
         self.config = config
+        
+        if config.data_mode == "particle":
+            _require_particle_dictionary("particle data_mode")
 
         modules: dict[str, nn.Module] = {
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
-            "type_emb": nn.Embedding(config.num_token_types, config.n_embd),
+            # "type_emb": nn.Embedding(config.num_token_types, config.n_embd),
             "emb_norm": choose_embedding_norm(config),
             "drop": nn.Dropout(config.dropout),
             "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             "ln_f": RMSNorm(config.n_embd),
         }
+        
+        if config.use_token_type_embeddings:
+            modules["type_emb"] = nn.Embedding(config.num_token_types, config.n_embd)
+        
+        if config.use_token_type_embeddings:
+            modules["type_emb"] = nn.Embedding(config.num_token_types, config.n_embd)
 
         if config.use_bin_value_embeddings:
             modules["bin_value_mlp"] = nn.Sequential(
@@ -572,7 +644,10 @@ class GPT(nn.Module):
             if param_name.endswith("c_proj.weight"):
                 nn.init.normal_(param, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
-        self._precompute_token_type_ranges()
+        if config.data_mode == "particle":
+            self._precompute_token_type_ranges()
+        else:
+            self.token_type_ranges = {}
 
         pLogging.info(logger_idx, "Model info", {"num_params": f"{self.get_num_params() / 1e6:.3f}M"})
         pLogging.info(
@@ -594,21 +669,22 @@ class GPT(nn.Module):
         `SPECIAL_TOKENS_OFFSET + 1` so that token 0/padding is not accidentally treated
         as a normal special token.
         """
+        d = _require_particle_dictionary("token type ranges")
         return (
             (
                 ETokenTypes.SPECIAL,
-                dictionary.SPECIAL_TOKENS_OFFSET + 1,
-                max(dictionary.num_special_tokens - 1, 0),
+                d.SPECIAL_TOKENS_OFFSET + 1,
+                max(d.num_special_tokens - 1, 0),
             ),
-            (ETokenTypes.PDGID, dictionary.PDGID_OFFSET, dictionary.num_particles),
-            (ETokenTypes.ENERGY, dictionary.ENERGY_OFFSET, len(dictionary.e_bins)),
-            (ETokenTypes.ETA, dictionary.ETA_OFFSET, len(dictionary.eta_bins)),
-            (ETokenTypes.THETA, dictionary.THETA_OFFSET, len(dictionary.theta_bins)),
-            (ETokenTypes.PHI, dictionary.PHI_OFFSET, len(dictionary.phi_bins)),
-            (ETokenTypes.PT, dictionary.PT_OFFSET, len(dictionary.pt_bins)),
-            (ETokenTypes.PX, dictionary.PX_OFFSET, len(dictionary.px_bins)),
-            (ETokenTypes.PY, dictionary.PY_OFFSET, len(dictionary.py_bins)),
-            (ETokenTypes.PZ, dictionary.PZ_OFFSET, len(dictionary.pz_bins)),
+            (ETokenTypes.PDGID, d.PDGID_OFFSET, d.num_particles),
+            (ETokenTypes.ENERGY, d.ENERGY_OFFSET, len(d.e_bins)),
+            (ETokenTypes.ETA, d.ETA_OFFSET, len(d.eta_bins)),
+            (ETokenTypes.THETA, d.THETA_OFFSET, len(d.theta_bins)),
+            (ETokenTypes.PHI, d.PHI_OFFSET, len(d.phi_bins)),
+            (ETokenTypes.PT, d.PT_OFFSET, len(d.pt_bins)),
+            (ETokenTypes.PX, d.PX_OFFSET, len(d.px_bins)),
+            (ETokenTypes.PY, d.PY_OFFSET, len(d.py_bins)),
+            (ETokenTypes.PZ, d.PZ_OFFSET, len(d.pz_bins)),
         )
 
     def _precompute_token_type_ranges(self) -> None:
@@ -625,8 +701,12 @@ class GPT(nn.Module):
         Unknown/out-of-range ids remain marked as padding. This keeps masking safe in
         generation, but this issue really should never happen.
         """
+        if self.config.data_mode != "particle":
+            return torch.zeros_like(idx)
+
+        d = _require_particle_dictionary("token type ids")
         type_ids = torch.full_like(idx, fill_value=ETokenTypes.PADDING.value)
-        type_ids[idx == dictionary.padding_token] = ETokenTypes.PADDING.value
+        type_ids[idx == d.padding_token] = ETokenTypes.PADDING.value
 
         for token_type, start, length in self._token_type_specs():
             if length <= 0:
@@ -682,6 +762,7 @@ class GPT(nn.Module):
         `features[token_id] = [normalized_scalar, sin(phi), cos(phi)]`.
         For non-continuous tokens the feature row and mask are zero.
         """
+        d = _require_particle_dictionary("bin value embeddings")
         features = torch.zeros(vocab_size, 3, dtype=torch.float32)
         mask = torch.zeros(vocab_size, 1, dtype=torch.float32)
 
@@ -713,14 +794,14 @@ class GPT(nn.Module):
             features[offset : offset + length, 2] = torch.cos(centers)
             mask[offset : offset + length, 0] = 1.0
 
-        fill_scalar(dictionary.ENERGY_OFFSET, dictionary.e_bins, len(dictionary.e_bins))
-        fill_scalar(dictionary.ETA_OFFSET, dictionary.eta_bins, len(dictionary.eta_bins))
-        fill_scalar(dictionary.THETA_OFFSET, dictionary.theta_bins, len(dictionary.theta_bins))
-        fill_scalar(dictionary.PT_OFFSET, dictionary.pt_bins, len(dictionary.pt_bins))
-        fill_scalar(dictionary.PX_OFFSET, dictionary.px_bins, len(dictionary.px_bins))
-        fill_scalar(dictionary.PY_OFFSET, dictionary.py_bins, len(dictionary.py_bins))
-        fill_scalar(dictionary.PZ_OFFSET, dictionary.pz_bins, len(dictionary.pz_bins))
-        fill_phi(dictionary.PHI_OFFSET, dictionary.phi_bins, len(dictionary.phi_bins))
+        fill_scalar(d.ENERGY_OFFSET, d.e_bins, len(d.e_bins))
+        fill_scalar(d.ETA_OFFSET, d.eta_bins, len(d.eta_bins))
+        fill_scalar(d.THETA_OFFSET, d.theta_bins, len(d.theta_bins))
+        fill_scalar(d.PT_OFFSET, d.pt_bins, len(d.pt_bins))
+        fill_scalar(d.PX_OFFSET, d.px_bins, len(d.px_bins))
+        fill_scalar(d.PY_OFFSET, d.py_bins, len(d.py_bins))
+        fill_scalar(d.PZ_OFFSET, d.pz_bins, len(d.pz_bins))
+        fill_phi(d.PHI_OFFSET, d.phi_bins, len(d.phi_bins))
 
         return features, mask
 
@@ -743,7 +824,8 @@ class GPT(nn.Module):
             return n_params
 
         n_embed = self.transformer.wte.weight.numel()
-        n_embed += self.transformer.type_emb.weight.numel()
+        if hasattr(self.transformer, "type_emb"):
+            n_embed += self.transformer.type_emb.weight.numel()
         if hasattr(self.transformer, "particle_index_emb"):
             n_embed += self.transformer.particle_index_emb.weight.numel()
         return n_params - n_embed
@@ -781,10 +863,14 @@ class GPT(nn.Module):
             target_idxs: Flattened targets with shape `(N,)`.
             sigma: Width of the Gaussian target in token-bin units. Must be positive.
         """
+        if self.config.data_mode != "particle":
+            raise RuntimeError("distance_sensitive_loss is only valid for particle data_mode")
+        d = _require_particle_dictionary("distance_sensitive_loss")
+        
         if sigma <= 0:
             raise ValueError(f"sigma must be positive for distance_sensitive_loss, got {sigma}")
 
-        valid_mask = target_idxs != dictionary.padding_token
+        valid_mask = target_idxs != d.padding_token
         if not valid_mask.any():
             return logits.sum() * 0.0
 
@@ -867,6 +953,7 @@ class GPT(nn.Module):
 
         Non-physics tokens map to id 0.
         """
+        _require_particle_dictionary("particle index embeddings")
         physics_mask = (type_ids != ETokenTypes.PADDING.value) & (type_ids != ETokenTypes.SPECIAL.value)
 
         if position_ids is not None:
@@ -889,12 +976,18 @@ class GPT(nn.Module):
     def _embed_inputs(self, idx: torch.Tensor, position_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Shared embedding path for training, prefill, and cached decode.
-
         Keeping all call paths here prevents training/generation representation drift.
+        
+        In generic mode this is just token embeddings.
+        In particle mode it can additionally use token-type, bin-value, and particle-index embeddings.
         """
-        tok_emb = self.transformer.wte(idx)
-        type_ids = self.get_token_type_ids(idx)
-        x = tok_emb + self.transformer.type_emb(type_ids)
+        x = self.transformer.wte(idx)
+
+        type_ids = None
+
+        if self.config.use_token_type_embeddings:
+            type_ids = self.get_token_type_ids(idx)
+            x = x + self.transformer.type_emb(type_ids)
 
         if self.config.use_bin_value_embeddings:
             bin_features = self.bin_feature_lut[idx].to(dtype=x.dtype)
@@ -903,6 +996,8 @@ class GPT(nn.Module):
             x = x + self.bin_emb_scale.to(dtype=x.dtype) * bin_mask * bin_emb
 
         if self.config.use_particle_index_embeddings:
+            if type_ids is None:
+                type_ids = self.get_token_type_ids(idx)
             particle_index_ids = self._particle_index_ids(idx, type_ids, position_ids)
             x = x + self.transformer.particle_index_emb(particle_index_ids)
 
@@ -944,30 +1039,34 @@ class GPT(nn.Module):
             EVENT_END   -> PAD
             PAD         -> PAD
         """
+        if not self.config.use_event_grammar:
+            raise RuntimeError("grammar_mask=True but config.use_event_grammar=False")
+        d = _require_particle_dictionary("event grammar mask")
+        
         allowed = torch.zeros_like(logits, dtype=torch.bool)
         prev_type = self.get_token_type_ids(prev_token)
 
-        is_start = prev_token == dictionary.event_start_token
-        allowed[is_start, dictionary.PDGID_OFFSET : dictionary.PDGID_OFFSET + dictionary.num_particles] = True
+        is_start = prev_token == d.event_start_token
+        allowed[is_start, d.PDGID_OFFSET : d.PDGID_OFFSET + d.num_particles] = True
 
         is_pdgid = prev_type == ETokenTypes.PDGID.value
-        allowed[is_pdgid, dictionary.PT_OFFSET : dictionary.PT_OFFSET + len(dictionary.pt_bins)] = True
+        allowed[is_pdgid, d.PT_OFFSET : d.PT_OFFSET + len(d.pt_bins)] = True
 
         is_pt = prev_type == ETokenTypes.PT.value
-        allowed[is_pt, dictionary.ETA_OFFSET : dictionary.ETA_OFFSET + len(dictionary.eta_bins)] = True
+        allowed[is_pt, d.ETA_OFFSET : d.ETA_OFFSET + len(d.eta_bins)] = True
 
         is_eta = prev_type == ETokenTypes.ETA.value
-        allowed[is_eta, dictionary.PHI_OFFSET : dictionary.PHI_OFFSET + len(dictionary.phi_bins)] = True
+        allowed[is_eta, d.PHI_OFFSET : d.PHI_OFFSET + len(d.phi_bins)] = True
 
         is_phi = prev_type == ETokenTypes.PHI.value
-        allowed[is_phi, dictionary.PDGID_OFFSET : dictionary.PDGID_OFFSET + dictionary.num_particles] = True
-        allowed[is_phi, dictionary.event_end_token] = True
+        allowed[is_phi, d.PDGID_OFFSET : d.PDGID_OFFSET + d.num_particles] = True
+        allowed[is_phi, d.event_end_token] = True
 
-        is_end = prev_token == dictionary.event_end_token
-        allowed[is_end, dictionary.padding_token] = True
+        is_end = prev_token == d.event_end_token
+        allowed[is_end, d.padding_token] = True
 
-        is_pad = prev_token == dictionary.padding_token
-        allowed[is_pad, dictionary.padding_token] = True
+        is_pad = prev_token == d.padding_token
+        allowed[is_pad, d.padding_token] = True
 
         # Safety fallback: never create a row of all -inf logits.
         empty_rows = ~allowed.any(dim=-1)
@@ -984,6 +1083,28 @@ class GPT(nn.Module):
             yield
         finally:
             self.train(was_training)
+    
+    def _padding_token_id(self) -> int:
+        """Padding id used for generation utilities."""
+        if self.config.data_mode == "particle" and dictionary is not None:
+            return int(dictionary.padding_token)
+        return int(self.config.padding_token_id)
+
+    def _eos_token_id(self) -> Optional[int]:
+        """EOS id used for early stopping in generation. None means never early-stop."""
+        if self.config.eos_token_id is not None:
+            return int(self.config.eos_token_id)
+        if self.config.data_mode == "particle" and dictionary is not None:
+            return int(dictionary.event_end_token)
+        return None
+
+    def _loss_ignore_index(self) -> int:
+        """Ignore index for CE loss. Generic LM defaults to -100, particle mode to PAD."""
+        if self.config.loss_ignore_index is not None:
+            return int(self.config.loss_ignore_index)
+        if self.config.data_mode == "particle" and dictionary is not None:
+            return int(dictionary.padding_token)
+        return -100
 
     # ----------------------------------------------------------------------------------
     # Forward paths
@@ -1038,14 +1159,6 @@ class GPT(nn.Module):
                 device=device,
             ).unsqueeze(0).expand(batch_size, -1)
 
-        # if position_ids is None:
-        #     position_ids = torch.arange(
-        #         cache_len,
-        #         cache_len + seq_len,
-        #         dtype=torch.long,
-        #         device=device,
-        #     ).unsqueeze(0).expand(batch_size, -1)
-
         x = self._embed_inputs(idx, position_ids=position_ids)
 
         layer_past = kv_cache if kv_cache is not None else [None] * len(self.transformer.h)
@@ -1070,7 +1183,7 @@ class GPT(nn.Module):
             flat_targets = targets.view(-1)
 
             if conf.training.loss_function == "cross_entropy":
-                loss = F.cross_entropy(flat_logits, flat_targets, ignore_index=dictionary.padding_token)
+                loss = F.cross_entropy(flat_logits, flat_targets, ignore_index=self._loss_ignore_index())
             elif conf.training.loss_function == "distance_sensitive":
                 loss = self.distance_sensitive_loss(
                     flat_logits,
@@ -1239,10 +1352,13 @@ class GPT(nn.Module):
             max_new_tokens = min(max_new_tokens, self.config.block_size - prompt_len)
             if max_new_tokens <= 0:
                 return idx
+            
+            pad_token_id = self._padding_token_id()
+            eos_token_id = self._eos_token_id()
 
             output = torch.full(
                 (batch_size, prompt_len + max_new_tokens),
-                fill_value=dictionary.padding_token,
+                fill_value=pad_token_id,
                 dtype=torch.long,
                 device=device,
             )
@@ -1257,7 +1373,11 @@ class GPT(nn.Module):
 
             next_tokens = self._sample_next_token(logits, temperature=temperature, top_k=top_k)
             output[:, prompt_len] = next_tokens
-            unfinished = next_tokens != dictionary.event_end_token
+            unfinished = (
+                torch.ones_like(next_tokens, dtype=torch.bool)
+                if eos_token_id is None
+                else next_tokens != eos_token_id
+            )
 
             for step in range(1, max_new_tokens):
                 input_ids = output[:, prompt_len + step - 1].unsqueeze(1)
@@ -1268,16 +1388,18 @@ class GPT(nn.Module):
                     logits = self.mask_logits_for_next_token(logits, input_ids[:, 0])
 
                 next_tokens = self._sample_next_token(logits, temperature=temperature, top_k=top_k)
-                next_tokens = torch.where(
-                    unfinished,
-                    next_tokens,
-                    torch.full_like(next_tokens, dictionary.padding_token),
-                )
+                if eos_token_id is not None:
+                    next_tokens = torch.where(
+                        unfinished,
+                        next_tokens,
+                        torch.full_like(next_tokens, pad_token_id),
+                    )
 
                 output[:, prompt_len + step] = next_tokens
-                unfinished = unfinished & (next_tokens != dictionary.event_end_token)
-                if not unfinished.any():
-                    break
+                if eos_token_id is not None:
+                    unfinished = unfinished & (next_tokens != eos_token_id)
+                    if not unfinished.any():
+                        break
 
             return output
 
@@ -1310,7 +1432,10 @@ class GPT(nn.Module):
             if batch_size <= 0:
                 raise ValueError(f"batch_size must be positive, got {batch_size}")
 
-            seq_lens = (idx != dictionary.padding_token).sum(dim=1)
+            pad_token_id = self._padding_token_id()
+            eos_token_id = self._eos_token_id()
+
+            seq_lens = (idx != pad_token_id).sum(dim=1)
             if not torch.all(seq_lens == seq_lens[0]):
                 raise ValueError(
                     "generate_batched_singleGPU expects all prompts to have the same "
@@ -1325,7 +1450,7 @@ class GPT(nn.Module):
 
             output = torch.full(
                 (original_batch_size, prompt_len + max_new_tokens),
-                fill_value=dictionary.padding_token,
+                fill_value=pad_token_id,
                 dtype=torch.long,
                 device=device,
             )
@@ -1345,7 +1470,11 @@ class GPT(nn.Module):
 
                 next_tokens = self._sample_next_token(logits, temperature=temperature, top_k=top_k)
                 cur_output[:, prompt_len] = next_tokens
-                unfinished = next_tokens != dictionary.event_end_token
+                unfinished = (
+                    torch.ones_like(next_tokens, dtype=torch.bool)
+                    if eos_token_id is None
+                    else next_tokens != eos_token_id
+                )
 
                 for step in range(1, max_new_tokens):
                     input_ids = cur_output[:, prompt_len + step - 1].unsqueeze(1)
@@ -1356,16 +1485,18 @@ class GPT(nn.Module):
                         logits = self.mask_logits_for_next_token(logits, input_ids[:, 0])
 
                     next_tokens = self._sample_next_token(logits, temperature=temperature, top_k=top_k)
-                    next_tokens = torch.where(
-                        unfinished,
-                        next_tokens,
-                        torch.full_like(next_tokens, dictionary.padding_token),
-                    )
+                    if eos_token_id is not None:
+                        next_tokens = torch.where(
+                            unfinished,
+                            next_tokens,
+                            torch.full_like(next_tokens, pad_token_id),
+                        )
 
                     cur_output[:, prompt_len + step] = next_tokens
-                    unfinished = unfinished & (next_tokens != dictionary.event_end_token)
-                    if not unfinished.any():
-                        break
+                    if eos_token_id is not None:
+                        unfinished = unfinished & (next_tokens != eos_token_id)
+                        if not unfinished.any():
+                            break
 
             return output
 

@@ -440,6 +440,16 @@ def build_model_args(prep_vocab_size: int) -> Dict[str, Any]:
         "bias": conf.training.bias,
         "vocab_size": prep_vocab_size,
         "dropout": conf.training.dropout,
+        # --
+        "data_mode": conf.generic.data_mode,
+        "mlp_type": conf.generic.mlp_type,
+        "mlp_ratio": conf.generic.mlp_ratio,
+        "qk_norm": conf.generic.qk_norm,
+        "embedding_norm_type": conf.generic.embd_norm_type,
+        "embedding_norm_init_scale": conf.generic.embd_norm_init_scale,
+        "use_particle_index_embeddings": conf.generic.use_particle_index_embd,
+        "use_bin_value_embeddings": conf.generic.use_bin_value_embd,
+        "bin_embedding_init_scale": conf.generic.bin_value_embd_init_scale,
     }
 
     optional_config_fields = (
