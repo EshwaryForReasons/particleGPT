@@ -46,9 +46,9 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 import configurator as conf
-import model_fixes1_v1_polish_pass as model_module
+import model as model_module
 import pLogging
-from model_fixes1_v1_polish_pass import GPT, GPTConfig
+from model import GPT, GPTConfig
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
