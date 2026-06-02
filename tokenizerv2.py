@@ -63,7 +63,7 @@ class BaseTokenizer():
         dtype=np.uint16,
         sequence_length: int = 1024,
         flush_tokens: int = 1024 ** 2,
-        clean_temp_dir: bool = False
+        clean_temp_dir: bool = True
     ):
         self.dictionary = dictionary
         self.in_paths = in_paths
@@ -81,6 +81,14 @@ class BaseTokenizer():
             raise ValueError("sequence_length must be positive.")
         if not np.issubdtype(self.dtype, np.integer):
             raise TypeError(f"dtype must be an integer dtype, got {self.dtype}")
+        
+        # Ensure provided dtype can handle our token values (0, vocab_size)
+        dtype_info = np.iinfo(self.dtype)
+        if self.dictionary.vocab_size - 1 > dtype_info.max:
+            raise ValueError(
+                f"Provided dtype={self.dtype} cannot handle the vocab size of {self.dictionary.vocab_size}.\n"
+                f"dtype range=[{dtype_info.min}, {dtype_info.max}]"
+            )
     
     def encode_event(self, tokens: list[float]) -> list[int]:
         raise NotImplementedError("Subclasses must implement this method.")
@@ -118,6 +126,10 @@ class BaseTokenizer():
         if self.clean_temp_dir:
             for f in self.in_paths.temp_data_dir.glob("token_stream_batch_*.bin"):
                 f.unlink()
+            for f in self.in_paths.temp_data_dir.glob("token_stream_batch_*.temp"):
+                f.unlink()
+            for f in self.in_paths.temp_data_dir.glob("concatenated_data.bin"):
+                f.unlink()
         
         self.in_paths.temp_data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,7 +158,13 @@ class BaseTokenizer():
         print(f"Tokenized {self.total_events_written:,} valid events, composed of {self.total_tokens_written:,} tokens.")
         print(f"Concatenating data.")
         
-        self.concatenate_encoded_batches()
+        worker_indices = [worker_idx for worker_idx, _, _ in ranges]
+        concat_tokens = self.concatenate_encoded_batches(worker_indices)
+        if concat_tokens != self.total_tokens_written:
+            raise RuntimeError(
+                f"Token count mismatch: workers reported {self.total_tokens_written}, "
+                f"but concatenated file contains {concat_tokens}."
+            )
 
     def encode_byte_range_worker(
         self,
@@ -162,13 +180,14 @@ class BaseTokenizer():
         Event @ end_type is NOT ignored even if it is a partial event.
         The above setup ensures all events are encoded.
         """
+        temp_output_data_filepath = temp_data_dir / f"token_stream_batch_{worker_idx}.temp"
         output_data_filepath = temp_data_dir / f"token_stream_batch_{worker_idx}.bin"
 
         num_events_written = 0
         num_tokens_written = 0
         token_buffer: list[int] = []
         with open(input_data_filepath, "rb", buffering=IO_BUFFER) as in_file, \
-             open(output_data_filepath, "wb", buffering=IO_BUFFER) as out_file:
+             open(temp_output_data_filepath, "wb", buffering=IO_BUFFER) as out_file:
 
             if start_byte == 0:
                 in_file.seek(0)
@@ -187,22 +206,29 @@ class BaseTokenizer():
                 if not line:
                     break
 
-                line = line.decode("utf-8").strip()
+                line = line.strip()
                 if not line:
                     continue
 
                 try:
-                    event = list(map(
-                        float,
-                        (
-                            feature_str for particle_str in line.split(";")
-                            for feature_str in particle_str.split()
-                        )
-                    ))
+                    event = np.fromstring(line.replace(b";", b" "), sep=" ", dtype=np.float64)
                 except ValueError as exc:
                     raise RuntimeError(
                         f"Worker {worker_idx} failed to parse line near byte {in_file.tell()}: {line[:500]}"
                     ) from exc
+
+                # try:
+                #     event = list(map(
+                #         float,
+                #         (
+                #             feature_str for particle_str in line.split(";")
+                #             for feature_str in particle_str.split()
+                #         )
+                #     ))
+                # except ValueError as exc:
+                #     raise RuntimeError(
+                #         f"Worker {worker_idx} failed to parse line near byte {in_file.tell()}: {line[:500]}"
+                #     ) from exc
 
                 tokenized_event = self.encode_event(event)
                 if tokenized_event is None or len(tokenized_event) == 0:
@@ -221,7 +247,8 @@ class BaseTokenizer():
             if token_buffer:
                 self.flush_binary_tokens(token_buffer, out_file)
                 token_buffer.clear()
-
+                
+        temp_output_data_filepath.replace(output_data_filepath)
         return worker_idx, num_events_written, num_tokens_written
 
     def flush_binary_tokens(self, token_buffer: list[int], out_file):
@@ -232,22 +259,26 @@ class BaseTokenizer():
         if not token_buffer:
             return None
         
-        arr = np.array(token_buffer, dtype=np.int64)
+        # arr = np.array(token_buffer, dtype=np.int64)
         
-        # Ensure this datatype can handle our token values
-        dtype_info = np.iinfo(self.dtype)
-        arr_min = int(arr.min())
-        arr_max = int(arr.max())
-        if arr_min < dtype_info.min or arr_max > dtype_info.max:
-            raise ValueError(
-                f"Token ID out of range for dtype={self.dtype}: "
-                f"min={arr_min}, max={arr_max}, "
-                f"dtype range=[{dtype_info.min}, {dtype_info.max}]"
-            )
+        # # Ensure this datatype can handle our token values. Technically, this check
+        # # is done in __init__ but good to have it here in case something goes horribly
+        # # wrong
+        # # dtype_info = np.iinfo(self.dtype)
+        # # arr_min = int(arr.min())
+        # # arr_max = int(arr.max())
+        # # if arr_min < dtype_info.min or arr_max > dtype_info.max:
+        # #     raise ValueError(
+        # #         f"Token ID out of range for dtype={self.dtype}: "
+        # #         f"min={arr_min}, max={arr_max}, "
+        # #         f"dtype range=[{dtype_info.min}, {dtype_info.max}]"
+        # #     )
         
-        arr.astype(self.dtype, copy=False).tofile(out_file)
+        # arr.astype(self.dtype, copy=False).tofile(out_file)
+        
+        np.asarray(token_buffer, dtype=self.dtype).tofile(out_file)
     
-    def concatenate_encoded_batches(self) -> int:
+    def concatenate_encoded_batches(self, worker_indices: list[int]) -> int:
         """
         Concatenate worker .bin streams in worker-index order.
 
@@ -257,16 +288,18 @@ class BaseTokenizer():
         The output is a flattened sequence of encoded events. To read properly, use the
         associated metadata file.
         """
-        token_stream_files = sorted(
-            [
-                f
-                for f in self.in_paths.temp_data_dir.iterdir()
-                if f.name.startswith("token_stream_batch_")
-                and f.name.endswith(".bin")
-            ],
-            key=lambda x: int(x.stem.split("_")[-1])
-        )
-
+        token_stream_files = [
+            self.in_paths.temp_data_dir / f"token_stream_batch_{worker_idx}.bin"
+            for worker_idx in sorted(worker_indices)
+        ]
+        
+        missing = [p for p in token_stream_files if not p.exists()]
+        if missing:
+            raise RuntimeError(
+                "Missing expected worker output files:\n"
+                + "\n".join(str(p) for p in missing)
+            )
+        
         itemsize = self.dtype.itemsize
         total_tokens = 0
 
@@ -301,9 +334,12 @@ class BaseTokenizer():
         Write sidecar metadata needed to safely reload the raw binary file.
         """
         metadata = {
+            "tokenizer_class": type(self).__name__,
             "format": "base_tokenizer",
+            "tokenization_schema": self.dictionary.tokenization_schema,
             "dtype": self.dtype.name,
-            "vocab_size": dictionary.vocab_size,
+            "byte_order": sys.byteorder,
+            "vocab_size": self.dictionary.vocab_size,
             "sequence_length": self.sequence_length,
             "total_events": int(self.total_events_written),
             "total_tokens": int(self.total_tokens_written),
@@ -321,6 +357,16 @@ class BaseTokenizer():
 
 class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
     """
+    This tokenizer does the following:
+    1) Each particle has features as defined in dictionary.json.
+    2) EVENT_START and EVENT_END tokens are at the start and end of each event.
+    3) All events are padded to a uniform sequence length.
+    4) Each sequence contains 1 event.
+    
+    Example (N particles with 4 features per particle.):
+    EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END PAD-- PAD-- PAD-- PAD--
+    EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 EVENT_END PAD-- PAD-- PAD-- PAD-- PAD-- PAD-- PAD-- PAD--
+    EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END PAD-- PAD-- PAD-- PAD--
     """
     
     def __init__(
@@ -329,7 +375,7 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
         in_paths: Paths,
         dtype=np.uint16,
         flush_tokens: int = 1024 ** 2,
-        clean_temp_dir: bool = False,
+        clean_temp_dir: bool = True,
     ):
         num_events, num_particles_max = analyze_dataset(in_paths.input_data_filepath)
         print(f"Found {num_events:,} events in input dataset.")
@@ -345,6 +391,9 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
             num_particles_max = dictionary.particle_count_override
         
         self.padding_sequence = dictionary.get_padding_sequence()
+        if len(self.padding_sequence) == 0:
+            raise ValueError("padding_sequence cannot be empty.")
+        
         # This tokenizer pads to the max possible particles. +2 to handle EVENT_START and EVENT_END tokens.
         sequence_length = num_particles_max * dictionary.num_tokens_per_particle + 2
         super().__init__(dictionary, in_paths, dtype, sequence_length, flush_tokens, clean_temp_dir)
@@ -353,7 +402,10 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
         """
         Tokenizes and returns a single event.
         """
-        tokenized_event = [dictionary.event_start_token]
+        tokenized_event = [self.dictionary.event_start_token]
+        assert len(event) % NUM_FEATURES_PER_PARTICLE_RAW == 0, (
+            f"Malformed event: got {len(event)} float, which is not divisible by {NUM_FEATURES_PER_PARTICLE_RAW}"
+        )
         num_particles = len(event) // NUM_FEATURES_PER_PARTICLE_RAW
         
         for particle_idx in range(num_particles):
@@ -363,44 +415,51 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
             py     = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 3]
             pz     = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 4]
             
+            # Finite checks
+            if not all(math.isfinite(x) for x in (energy, px, py, pz)):
+                return None
+            
             r      = math.sqrt(px ** 2 + py ** 2 + pz ** 2)
             pt     = math.sqrt(px ** 2 + py ** 2)
+            if pt == 0.0:
+                return None
+            
             theta  = math.acos(pz / r) if r != 0 else 0.0
             phi    = math.atan2(py, px)
-            eta    = -math.log(math.tan(theta / 2)) if theta != 0 else 0.0
+            eta    = math.asinh(pz / pt)
             
-            # Eta constrain
-            if abs(eta) > 4:
-                return []
+            # Eta finite check and constrain
+            if not math.isfinite(eta) or abs(eta) > 4:
+                return None
             
-            particle_index = int(dictionary.pdgids_to_index[int(pdgid)])
-            for schema in dictionary.tokenization_schema:
+            particle_index = int(self.dictionary.pdgids_to_index[int(pdgid)])
+            for schema in self.dictionary.tokenization_schema:
                 if schema == "pdgid":
-                    tokenized_event.append(particle_index + dictionary.PDGID_OFFSET)
+                    tokenized_event.append(particle_index + self.dictionary.PDGID_OFFSET)
                 elif schema == "pt":
-                    tokenized_event.append(custom_searchsorted(pt, dictionary.pt_bins) + dictionary.PT_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pt, self.dictionary.pt_bins) + self.dictionary.PT_OFFSET)
                 elif schema == "px":
-                    tokenized_event.append(custom_searchsorted(px, dictionary.px_bins) + dictionary.PX_OFFSET)
+                    tokenized_event.append(custom_searchsorted(px, self.dictionary.px_bins) + self.dictionary.PX_OFFSET)
                 elif schema == "py":
-                    tokenized_event.append(custom_searchsorted(py, dictionary.py_bins) + dictionary.PY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(py, self.dictionary.py_bins) + self.dictionary.PY_OFFSET)
                 elif schema == "pz":
-                    tokenized_event.append(custom_searchsorted(pz, dictionary.pz_bins) + dictionary.PZ_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pz, self.dictionary.pz_bins) + self.dictionary.PZ_OFFSET)
                 elif schema == "energy":
-                    tokenized_event.append(custom_searchsorted(energy, dictionary.e_bins) + dictionary.ENERGY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(energy, self.dictionary.e_bins) + self.dictionary.ENERGY_OFFSET)
                 elif schema == "eta":
-                    tokenized_event.append(custom_searchsorted(eta, dictionary.eta_bins) + dictionary.ETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(eta, self.dictionary.eta_bins) + self.dictionary.ETA_OFFSET)
                 elif schema == "theta":
-                    tokenized_event.append(custom_searchsorted(theta, dictionary.theta_bins) + dictionary.THETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(theta, self.dictionary.theta_bins) + self.dictionary.THETA_OFFSET)
                 elif schema == "phi":
-                    tokenized_event.append(custom_searchsorted(phi, dictionary.phi_bins) + dictionary.PHI_OFFSET)
+                    tokenized_event.append(custom_searchsorted(phi, self.dictionary.phi_bins) + self.dictionary.PHI_OFFSET)
                 elif schema == "particle_start":
-                    tokenized_event.append(dictionary.particle_start_token)
+                    tokenized_event.append(self.dictionary.particle_start_token)
                 elif schema == "particle_end":
-                    tokenized_event.append(dictionary.particle_end_token)
+                    tokenized_event.append(self.dictionary.particle_end_token)
                 else:
                     raise RuntimeError(f"pTokenizer: Unknown tokenization schema: {schema}")
         
-        tokenized_event.append(dictionary.event_end_token)
+        tokenized_event.append(self.dictionary.event_end_token)
         return tokenized_event
 
     def pad_sequence(self, event: list[float]) -> list[float]:
@@ -412,7 +471,7 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
         from the dictionary's tokenization schema.
         """
         
-        if len(event) == 0:
+        if event is None or len(event) == 0:
             return None
 
         len_pad_required = self.sequence_length - len(event)
@@ -420,6 +479,11 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
             raise RuntimeError(
                 f"Tokenized event length {len(event)} exceeds "
                 f"sequence_length {self.sequence_length}"
+            )
+        if len_pad_required % len(self.padding_sequence) != 0:
+            raise RuntimeError(
+                f"Cannot pad exactly: need {len_pad_required} tokens, "
+                f"but padding_sequence has length {len(self.padding_sequence)}."
             )
 
         num_padding_sequences_required = len_pad_required // len(self.padding_sequence)
@@ -429,6 +493,12 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
     def encode_event(self, tokens: list[float]) -> list[int]:
         tokenized_event = self.tokenize_event(tokens)
         padded_event = self.pad_sequence(tokenized_event)
+        
+        if padded_event is not None and len(padded_event) != self.sequence_length:
+            raise RuntimeError(
+                f"Padding failed: got {len(padded_event)}, expected {self.sequence_length}."
+            )
+            
         return padded_event
     
     def postprocess_data(self):
@@ -449,13 +519,28 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
     
 class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
     """
+    The goal is to create natural language style packed tokens.
+    
+    This tokenizer does the following:
+    1) Each particle has features as defined in dictionary.json.
+    2) EVENT_START and EVENT_END tokens are at the start and end of each event.
+    3) Events are packed into sequences, no padding is applied.
+    4) Each sequence contains whatever number of events. Sequences can contain partial events.
+    
+    Example (N particles with 4 features per particle.):
+    EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END EVENT_START P1_F1 P1_F2 P1_F3
+    P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4
+    P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END
     """
 
     def tokenize_event(self, event: list[float]) -> list[int]:
         """
         Tokenizes and returns a single event.
         """
-        tokenized_event = [dictionary.event_start_token]
+        tokenized_event = [self.dictionary.event_start_token]
+        assert len(event) % NUM_FEATURES_PER_PARTICLE_RAW == 0, (
+            f"Malformed event: got {len(event)} float, which is not divisible by {NUM_FEATURES_PER_PARTICLE_RAW}"
+        )
         num_particles = len(event) // NUM_FEATURES_PER_PARTICLE_RAW
         
         for particle_idx in range(num_particles):
@@ -465,44 +550,50 @@ class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
             py     = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 3]
             pz     = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 4]
             
+            # Finite checks
+            if not all(math.isfinite(x) for x in (energy, px, py, pz)):
+                return None
+            
             r      = math.sqrt(px ** 2 + py ** 2 + pz ** 2)
             pt     = math.sqrt(px ** 2 + py ** 2)
+            if pt == 0.0:
+                return None
             theta  = math.acos(pz / r) if r != 0 else 0.0
             phi    = math.atan2(py, px)
-            eta    = -math.log(math.tan(theta / 2)) if theta != 0 else 0.0
+            eta    = math.asinh(pz / pt)
             
-            # Eta constrain
-            if abs(eta) > 4:
-                return []
+            # Eta finite check and constrain
+            if not math.isfinite(eta) or abs(eta) > 4:
+                return None
             
-            particle_index = int(dictionary.pdgids_to_index[int(pdgid)])
-            for schema in dictionary.tokenization_schema:
+            particle_index = int(self.dictionary.pdgids_to_index[int(pdgid)])
+            for schema in self.dictionary.tokenization_schema:
                 if schema == "pdgid":
-                    tokenized_event.append(particle_index + dictionary.PDGID_OFFSET)
+                    tokenized_event.append(particle_index + self.dictionary.PDGID_OFFSET)
                 elif schema == "pt":
-                    tokenized_event.append(custom_searchsorted(pt, dictionary.pt_bins) + dictionary.PT_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pt, self.dictionary.pt_bins) + self.dictionary.PT_OFFSET)
                 elif schema == "px":
-                    tokenized_event.append(custom_searchsorted(px, dictionary.px_bins) + dictionary.PX_OFFSET)
+                    tokenized_event.append(custom_searchsorted(px, self.dictionary.px_bins) + self.dictionary.PX_OFFSET)
                 elif schema == "py":
-                    tokenized_event.append(custom_searchsorted(py, dictionary.py_bins) + dictionary.PY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(py, self.dictionary.py_bins) + self.dictionary.PY_OFFSET)
                 elif schema == "pz":
-                    tokenized_event.append(custom_searchsorted(pz, dictionary.pz_bins) + dictionary.PZ_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pz, self.dictionary.pz_bins) + self.dictionary.PZ_OFFSET)
                 elif schema == "energy":
-                    tokenized_event.append(custom_searchsorted(energy, dictionary.e_bins) + dictionary.ENERGY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(energy, self.dictionary.e_bins) + self.dictionary.ENERGY_OFFSET)
                 elif schema == "eta":
-                    tokenized_event.append(custom_searchsorted(eta, dictionary.eta_bins) + dictionary.ETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(eta, self.dictionary.eta_bins) + self.dictionary.ETA_OFFSET)
                 elif schema == "theta":
-                    tokenized_event.append(custom_searchsorted(theta, dictionary.theta_bins) + dictionary.THETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(theta, self.dictionary.theta_bins) + self.dictionary.THETA_OFFSET)
                 elif schema == "phi":
-                    tokenized_event.append(custom_searchsorted(phi, dictionary.phi_bins) + dictionary.PHI_OFFSET)
+                    tokenized_event.append(custom_searchsorted(phi, self.dictionary.phi_bins) + self.dictionary.PHI_OFFSET)
                 elif schema == "particle_start":
-                    tokenized_event.append(dictionary.particle_start_token)
+                    tokenized_event.append(self.dictionary.particle_start_token)
                 elif schema == "particle_end":
-                    tokenized_event.append(dictionary.particle_end_token)
+                    tokenized_event.append(self.dictionary.particle_end_token)
                 else:
                     raise RuntimeError(f"pTokenizer: Unknown tokenization schema: {schema}")
         
-        tokenized_event.append(dictionary.event_end_token)
+        tokenized_event.append(self.dictionary.event_end_token)
         return tokenized_event
 
     def encode_event(self, tokens: list[float]) -> list[int] | None:
@@ -525,6 +616,19 @@ class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
 
 
 class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
+    """
+    This tokenizer does the following:
+    1) Each unique particle gets a unique token.
+        e.g for 20 bins across 3 features we get 20**3=8,000 unique tokens.
+    2) EVENT_START and EVENT_END tokens are at the start and end of each event.
+    3) All events are padded to a uniform sequence length.
+    4) Each sequence contains 1 event.
+    
+    Example (N particles with 4 features per particle.):
+    EVENT_START P_1 P_2 P_3 P_4 EVENT_END PAD-- PAD-- PAD--
+    EVENT_START P_1 P_2 P_3 P_4 P_5 P_6 EVENT_END PAD-- PAD--
+    EVENT_START P_1 P_2 P_3 EVENT_END PAD-- PAD-- PAD-- PAD--
+    """
     
     def __init__(
         self,
@@ -532,7 +636,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         in_paths: Paths,
         dtype=np.uint16,
         flush_tokens: int = 1024 ** 2,
-        clean_temp_dir: bool = False,
+        clean_temp_dir: bool = True,
     ):
         num_events, num_particles_max = analyze_dataset(in_paths.input_data_filepath)
         print(f"Found {num_events:,} events in input dataset.")
@@ -559,11 +663,14 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         This version uses the following mixed-radix encoding to ensure a unique
         token per particle:
         
-        token = base_offset + eta_bin + (offset_due_to_eta * pt_bin) + (offset_due_to_eta * offset_due_to_pt * phi_bin)
+        token = base_offset + eta_bin + (n_eta_bins * pt_bin) + (n_eta_bins * n_pt_bins * phi_bin)
         
         Notably, the PDGID is ignored.
         """
-        tokenized_event = [dictionary.event_start_token]
+        tokenized_event = [self.dictionary.event_start_token]
+        assert len(event) % NUM_FEATURES_PER_PARTICLE_RAW == 0, (
+            f"Malformed event: got {len(event)} float, which is not divisible by {NUM_FEATURES_PER_PARTICLE_RAW}"
+        )
         num_particles = len(event) // NUM_FEATURES_PER_PARTICLE_RAW
         
         for particle_idx in range(num_particles):
@@ -573,24 +680,34 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
             py     = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 3]
             pz     = event[particle_idx * NUM_FEATURES_PER_PARTICLE_RAW + 4]
             
+            # Finite checks
+            if not all(math.isfinite(x) for x in (energy, px, py, pz)):
+                return None
+            
             r      = math.sqrt(px ** 2 + py ** 2 + pz ** 2)
             pt     = math.sqrt(px ** 2 + py ** 2)
+            if pt == 0.0:
+                return None
             theta  = math.acos(pz / r) if r != 0 else 0.0
             phi    = math.atan2(py, px)
-            eta    = -math.log(math.tan(theta / 2)) if theta != 0 else 0.0
+            eta    = math.asinh(pz / pt)
             
-            # Eta constrain
-            if abs(eta) > 4:
-                return []
+            # Eta finite check and constrain
+            if not math.isfinite(eta) or abs(eta) > 4:
+                return None
             
-            pt_bin = custom_searchsorted(pt, dictionary.pt_bins)
-            eta_bin = custom_searchsorted(eta, dictionary.eta_bins)
-            phi_bin = custom_searchsorted(phi, dictionary.phi_bins)
+            n_pt_bins = len(self.dictionary.pt_bins)
+            n_eta_bins = len(self.dictionary.eta_bins)
+            n_phi_bins = len(self.dictionary.phi_bins)
             
-            token = dictionary.ETA_OFFSET + eta_bin + (dictionary.ETA_OFFSET * pt_bin) + (dictionary.ETA_OFFSET * dictionary.PT_OFFSET * phi_bin)
+            pt_bin = custom_searchsorted(pt, self.dictionary.pt_bins)
+            eta_bin = custom_searchsorted(eta, self.dictionary.eta_bins)
+            phi_bin = custom_searchsorted(phi, self.dictionary.phi_bins)
+            
+            token = self.dictionary.ETA_OFFSET + eta_bin + (n_eta_bins * pt_bin) + (n_eta_bins * n_pt_bins * phi_bin)
             tokenized_event.append(token)
         
-        tokenized_event.append(dictionary.event_end_token)
+        tokenized_event.append(self.dictionary.event_end_token)
         return tokenized_event
 
     def pad_sequence(self, event: list[float]) -> list[float]:
@@ -602,7 +719,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         from the dictionary's tokenization schema.
         """
         
-        if len(event) == 0:
+        if event is None or len(event) == 0:
             return None
 
         len_pad_required = self.sequence_length - len(event)
@@ -610,6 +727,11 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
             raise RuntimeError(
                 f"Tokenized event length {len(event)} exceeds "
                 f"sequence_length {self.sequence_length}"
+            )
+        if len_pad_required % len(self.padding_sequence) != 0:
+            raise RuntimeError(
+                f"Cannot pad exactly: need {len_pad_required} tokens, "
+                f"but padding_sequence has length {len(self.padding_sequence)}."
             )
 
         num_padding_sequences_required = len_pad_required // len(self.padding_sequence)
@@ -619,6 +741,12 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
     def encode_event(self, tokens: list[float]) -> list[int]:
         tokenized_event = self.tokenize_event(tokens)
         padded_event = self.pad_sequence(tokenized_event)
+        
+        if padded_event is not None and len(padded_event) != self.sequence_length:
+            raise RuntimeError(
+                f"Padding failed: got {len(padded_event)}, expected {self.sequence_length}."
+            )
+        
         return padded_event
     
     def postprocess_data(self):
@@ -640,7 +768,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         """
         Write sidecar metadata needed to safely reload the raw binary file.
         """
-        vocab_size = dictionary.ETA_OFFSET + (len(dictionary.eta_bins) * len(dictionary.pt_bins) * len(dictionary.phi_bins))
+        vocab_size = self.dictionary.ETA_OFFSET + (len(self.dictionary.eta_bins) * len(self.dictionary.pt_bins) * len(self.dictionary.phi_bins))
         metadata = {
             "format": "whole_particle",
             "dtype": self.dtype.name,
