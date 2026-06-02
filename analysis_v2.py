@@ -2585,22 +2585,17 @@ class plotting_v2:
         
         return fig, (axd, axr)
 
-
-
-
-
-
 class tables:
     """
     This class primarily aggregates all the data from the model meta, config, training and metrics files into various useful formats.
     """
     
     model_metadata_columns          = ['vocab_size', 'max_sequence_length', 'num_train_tokens', 'num_val_tokens']
-    model_config_columns            = ['batch_size', 'block_size', 'learning_rate', 'min_lr', 'lr_warmup_iters', 'lr_decay_iters', 'lr_scheduler', 'n_layer', 'n_head', 'n_embd', 'num_params']
+    model_config_columns            = ['batch_size', 'gradient_accumulation_steps', 'block_size', 'learning_rate', 'min_lr', 'lr_warmup_iters', 'lr_decay_iters', 'lr_scheduler', 'n_layer', 'n_head', 'n_embd', 'num_params']
     model_training_columns          = ['iters_trained', 'iters_saved', 'min_saved_train_loss', 'min_saved_val_loss', 'compute_time_trained', 'compute_time_saved']
     model_metrics_columns           = ['coverage', 'mmd', 'kpd_median', 'fpd_value', 'w1m_score', 'w1p_avg_eta', 'w1p_avg_phi', 'w1p_avg_pt']
     model_metrics_columns_verbose   = ['kpd_error', 'fpd_error', 'w1m_score_std', 'w1p_avg_eta_std', 'w1p_avg_phi_std', 'w1p_avg_pt_std']
-    model_all_columns               = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns
+    model_all_columns               = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns + ['running_df', 'checkpointed_df']
     model_all_columns_verbose       = ['model_name'] + model_metadata_columns + model_config_columns + model_training_columns + model_metrics_columns + model_metrics_columns_verbose
     
     @staticmethod
@@ -2659,19 +2654,20 @@ class tables:
                     num_params = int(float(num_params.replace("M", "")) * 1e6)
         
         return SimpleNamespace(
-            batch_size              = training_config.get('batch_size', np.nan),
-            block_size              = block_size,
-            learning_rate           = training_config.get('learning_rate', np.nan),
-            min_lr                  = training_config.get('min_lr', np.nan),
-            lr_warmup_iters         = training_config.get('warmup_iters', np.nan),
-            lr_decay_iters          = training_config.get('lr_decay_iters', np.nan),
-            lr_scheduler            = training_config.get('lr_scheduler', 'cosine_annealing_with_warmup'),
-            n_layer                 = training_config.get('n_layer', np.nan),
-            n_head                  = training_config.get('n_head', np.nan),
-            n_embd                  = training_config.get('n_embd', np.nan),
-            scheme                  = training_config.get('scheme', 'unknown'),
-            preparation_name        = training_config.get('preparation_name', 'unknown'),
-            num_params              = num_params
+            batch_size                  = training_config.get('batch_size', np.nan),
+            gradient_accumulation_steps = training_config.get('gradient_accumulation_steps', np.nan),
+            block_size                  = block_size,
+            learning_rate               = training_config.get('learning_rate', np.nan),
+            min_lr                      = training_config.get('min_lr', np.nan),
+            lr_warmup_iters             = training_config.get('warmup_iters', np.nan),
+            lr_decay_iters              = training_config.get('lr_decay_iters', np.nan),
+            lr_scheduler                = training_config.get('lr_scheduler', 'cosine_annealing_with_warmup'),
+            n_layer                     = training_config.get('n_layer', np.nan),
+            n_head                      = training_config.get('n_head', np.nan),
+            n_embd                      = training_config.get('n_embd', np.nan),
+            scheme                      = training_config.get('scheme', 'unknown'),
+            preparation_name            = training_config.get('preparation_name', 'unknown'),
+            num_params                  = num_params
         )
 
     @staticmethod

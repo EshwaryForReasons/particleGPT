@@ -20,6 +20,16 @@ N_WORKERS = 256
 IO_BUFFER = 16 * 1024 * 1024  # 16 MB
 COPY_BUFFER = 256 * 1024 * 1024  # 256 MB
 
+@dataclass
+class Paths:
+    # Input raw data
+    input_data_filepath: Path = None
+    # Output tokenized data
+    tokenized_data_filepath: Path = None
+    # Directory to store temp tokenized files before concatenation
+    temp_data_dir: Path = None
+    
+
 def analyze_dataset(dataset_filepath, delimiter = ';'):
     num_events = 0
     num_particles_max = 0
@@ -55,15 +65,6 @@ def custom_searchsorted(value, bins):
     elif value >= bins[-1]:
         return len(bins) - 1
     return np.searchsorted(bins, value, side='right')
-
-@dataclass
-class Paths:
-    # Input raw data
-    input_data_filepath: Path = None
-    # Output tokenized data
-    tokenized_data_filepath: Path = None
-    # Directory to store temp tokenized files before concatenation
-    temp_data_dir: Path = None
 
 def tokenize_event(event: list[float]) -> list[int]:
     """
