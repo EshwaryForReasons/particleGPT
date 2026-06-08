@@ -7,6 +7,8 @@ import logging.config
 import logging.handlers
 import datetime as dt
 import os
+import copy
+from pathlib import Path
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -133,24 +135,34 @@ def file_only(self, message, *args, **kwargs):
     if self.isEnabledFor(FILE_ONLY_LEVEL):
         self._log(FILE_ONLY_LEVEL, message, args, **kwargs)
         
-def update_config(log_filename, log_directory='logs'):
-    
-    # Update all handlers to have absolute paths
-    for handler_name, handler in config['handlers'].items():
-        if 'filename' in handler:
-            handler['filename'] = os.path.join(script_dir, f'{log_directory}/{log_filename}' if log_filename != None else handler['filename'])
-    
-    logging.config.dictConfig(config)
+def update_config(log_filename=None, log_directory="logs"):
+    cfg = copy.deepcopy(config)
+
+    # Default setup: stdout only. No logs/ directory, no empty file.
+    if log_filename is None:
+        cfg["loggers"]["root"]["handlers"] = ["stdout"]
+        cfg["handlers"].pop("file", None)
+        logging.config.dictConfig(cfg)
+        return
+
+    # File logging setup: only create the directory when a real log is requested.
+    log_dir = Path(script_dir) / log_directory
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg["handlers"]["file"]["filename"] = str(log_dir / log_filename)
+    cfg["handlers"]["file"]["delay"] = True  # don't create the file until first actual log write
+    cfg["loggers"]["root"]["handlers"] = ["file", "stdout"]
+
+    logging.config.dictConfig(cfg)
         
 def setup_logging():
     logging.addLevelName(ALL_OUTPUT_LEVEL, "AllOutput")
     logging.addLevelName(FILE_ONLY_LEVEL, "FileOnly")
-    
+
     logging.Logger.all_output = all_output
     logging.Logger.file_only = file_only
-    
+
     update_config(None)
-    logging.basicConfig(level="FileOnly")
     
 def create_logger(phase):
     now = dt.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")

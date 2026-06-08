@@ -1,691 +1,526 @@
 """
-Sample sequences from a trained particleGPT model.
+particleGPT sampling entrypoint.
 
-This script is intentionally executable as a script, not as an import-time program:
-    python sample.py
+This script samples from a trained checkpoint using the current particleGPT data
+pipeline:
+  - one flat tokenized binary dataset
+  - one tokenized metadata JSON file
+  - one preparation JSON file that selects train/validation/test ranges
 
-Main design goals:
-    1. Keep all side effects inside main(), so multiprocessing workers are safe.
-    2. Validate required files before loading large checkpoints/models.
-    3. Use one clear sampling path for CPU/single-GPU and a separate explicit path
-       for multi-GPU sampling.
-    4. Write samples atomically so interrupted jobs do not leave a partially named
-       final output file.
+Sampling behavior
+-----------------
+- Starters come from test_bin.
+- The starter for each generated event is the first `sampling.starter_tokens`
+  tokens of each selected test sequence. The default is 5.
+- By default, sampling uses the full configured test_bin. Set
+  `sampling.max_test_sequences` to cap this for quick testing, for example 10_000.
+- Generation is batched. Each model call receives a 2D tensor with shape
+  (batch_size, starter_tokens).
+- All visible CUDA GPUs are used by default. Single-GPU sampling can be forced
+  with sampling.single_gpu=True, sampling.num_gpus=1, sampling.use_all_gpus=False,
+  sampling.device="cuda:0", or PARTICLEGPT_SAMPLE_NUM_GPUS=1.
+- Each worker writes one temporary CSV shard. Rank-order concatenation produces
+  one final CSV:
+      PROJECT_DIR/generated_samples/<model_name>/sampling_<sample_idx>/samples.csv
 
-Output format:
-    One generated event per line, with token ids separated by spaces. The filename
-    keeps the historical .csv suffix for compatibility with existing utilities.
+The final CSV contains one generated event per row. Each row is a comma-separated
+list of token ids and includes the starter tokens at the beginning of the row.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import traceback
-from dataclasses import dataclass
-from pathlib import Path
+import re
+import time
 from contextlib import nullcontext
-from timeit import default_timer as timer
-from typing import Iterator
+from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-import pLogging
-import pUtil
 import configurator as conf
-import model as model_module
-from model import GPTConfig, GPT
-from dictionary import Dictionary
+from particleGPT.model import GPT, GPTConfig
+from train import (
+    DataloaderSplitConfig,
+    EPOCH_CKPT_RE,
+    ESplitTypes,
+    RUNNING_CKPT_RE,
+    TokenizedMetadataConfig,
+    clean_state_dict_keys,
+    find_latest_indexed_checkpoint,
+)
 
-script_dir = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent
+FINAL_CSV_NAME = "samples.csv"
+SHARD_SUFFIX = ".csv.part"
 
-# =====================
-# Small data containers
-# =====================
 
-@dataclass(frozen=True)
-class SamplingPaths:
-    """All filesystem paths used by one sampling run."""
-
-    prep_info: Path
-    prep_data: Path
-    test_bin: Path
-    checkpoint: Path
-    samples_output: Path
-
-@dataclass(frozen=True)
-class SamplingRuntime:
-    """Torch runtime settings used for sampling."""
-
-    device: torch.device
-    device_type: str
-    dtype: torch.dtype
-    seed: int
-
-    def autocast_context(self):
-        """Return the right autocast context for this runtime."""
-        if self.device_type == "cuda" and self.dtype in (torch.float16, torch.bfloat16):
-            return torch.amp.autocast(device_type="cuda", dtype=self.dtype)
-        return nullcontext()
-
-# =====================
-# Configuration/path helpers
-# =====================
-
-def build_sampling_paths(sampling_id: int) -> SamplingPaths:
-    """Resolve every path needed by this sampling run."""
-    prep_dir = script_dir / "preparations" / conf.generic.preparation_name
-    sampling_dir = pUtil.get_sampling_dir(conf.generic.model_name) / f"sampling_{sampling_id}"
-
-    return SamplingPaths(
-        prep_info=prep_dir / "preparation_info.json",
-        prep_data=prep_dir / "preparation.json",
-        test_bin=prep_dir / "test.bin",
-        checkpoint=pUtil.get_training_dir(conf.generic.model_name) / "ckpt.pt",
-        samples_output=sampling_dir / "generated_samples.csv",
-    )
-
-def validate_required_files(paths: SamplingPaths) -> None:
-    """Fail early if any required input file is missing."""
-    missing = [
-        path for path in (paths.prep_info, paths.prep_data, paths.test_bin, paths.checkpoint)
-        if not path.exists()
-    ]
-    if missing:
-        missing_str = "\n".join(f"  - {path}" for path in missing)
-        raise FileNotFoundError(f"Missing required sampling input file(s):\n{missing_str}")
-
-def load_json_file(path: Path) -> dict:
-    """Read a JSON file with a useful error message."""
-    try:
-        with path.open("r") as f:
-            return json.load(f)
-    except Exception as exc:
-        raise RuntimeError(f"Could not read JSON file {path}: {exc}") from exc
-
-def load_dictionary(paths: SamplingPaths) -> Dictionary:
-    """Load the dictionary associated with the prepared tokenized dataset."""
-    prep_data = load_json_file(paths.prep_data)
-    tokenized_dataset_name = prep_data["train_bin"]["tokenized_dataset"]
-    dictionary_path = script_dir / "data" / "tokenized" / tokenized_dataset_name / "dictionary.json"
-    return Dictionary(dictionary_path)
-
-def resolve_starter_len(max_sequence_len: int) -> int:
+def get_sampling_config(name: str, default: Any) -> Any:
     """
-    Determine prompt length.
+    Read a sampling option while tolerating both config layouts used in this project.
 
-    Default is 5 for the current event format:
-        EVENT_START, incident PDGID, incident PT, incident ETA, incident PHI
+    Newer configs should use conf.sampling. The conf.sampling_config fallback is
+    only here to avoid breaking older local config files.
     """
-    starter_len = int(getattr(conf.sampling, "starter_len", 5))
-    if starter_len <= 0:
-        raise ValueError(f"conf.sampling.starter_len must be positive, got {starter_len}")
-    if starter_len > max_sequence_len:
-        raise ValueError(
-            f"starter_len={starter_len} exceeds max_sequence_length={max_sequence_len}"
-        )
-    return starter_len
+    for namespace_name in ("sampling", "sampling_config"):
+        namespace = getattr(conf, namespace_name, None)
+        if namespace is not None and hasattr(namespace, name):
+            return getattr(namespace, name)
+    return default
 
-def resolve_max_new_tokens(max_sequence_len: int, starter_len: int) -> int:
-    """Use the configured max_new_tokens without exceeding the prepared sequence length."""
-    max_possible = max_sequence_len - starter_len
-    configured = getattr(conf.sampling, "max_new_tokens", -1)
+def get_training_config(name: str, default: Any) -> Any:
+    """Read a training option with a safe default for settings shared by sampling."""
+    namespace = getattr(conf, "training", None)
+    if namespace is not None and hasattr(namespace, name):
+        return getattr(namespace, name)
+    return default
 
-    if configured is None or int(configured) < 0:
-        return max_possible
-
-    return min(int(configured), max_possible)
-
-def resolve_num_samples(total_events: int) -> int:
-    """Allow optional subsampling through conf.sampling.num_samples; default samples all."""
-    configured = int(getattr(conf.sampling, "num_samples", -1))
-    if configured <= 0:
-        return total_events
-    return min(configured, total_events)
-
-def resolve_batch_size() -> int:
-    """Return the per-device generation batch size."""
-    batch_size = int(getattr(conf.sampling, "batch_size", 128))
-    if batch_size <= 0:
-        raise ValueError(f"conf.sampling.batch_size must be positive, got {batch_size}")
-    return batch_size
-
-def resolve_temperature() -> float:
-    """Validate and return sampling temperature."""
-    temperature = float(getattr(conf.sampling, "temperature", 1.0))
-    if temperature < 0:
-        raise ValueError(f"temperature must be non-negative, got {temperature}")
-    return temperature
-
-def resolve_top_k():
-    """Normalize top_k so non-positive values mean no top-k filtering."""
-    top_k = getattr(conf.sampling, "top_k", None)
-    if top_k is None:
+def parse_optional_int(value: Any) -> Optional[int]:
+    """Parse an optional integer config value."""
+    if value is None:
         return None
-    top_k = int(top_k)
-    return top_k if top_k > 0 else None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return int(value)
 
-def resolve_log_every_chunks() -> int:
-    """Return progress-log interval in chunks; non-positive disables chunk logging."""
-    return int(getattr(conf.sampling, "log_every_chunks", 10))
+def parse_bool(value: Any) -> bool:
+    """Parse a permissive bool from config strings, ints, or real bools."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"Cannot parse boolean value from {value!r}.")
 
-def resolve_chunk_size(num_samples: int, batch_size: int, use_multi_gpu: bool) -> int:
+def resolve_checkpoint_path(model_output_dir: Path) -> Path:
     """
-    Determine how many starters to process before writing to disk.
+    Resolve the checkpoint to sample from.
 
-    Multi-GPU default: process all requested samples at once to avoid repeatedly
-    respawning workers. For very large test sets, set conf.sampling.chunk_size.
-
-    Single-device default: process one generation batch at a time to keep memory bounded.
+    Defaults to ckpt.pt, which is the best validation checkpoint written by
+    train.py. Set sampling.checkpoint_path for an exact path, or set
+    sampling.checkpoint_name to a file inside the model output directory.
     """
-    default_chunk_size = num_samples if use_multi_gpu else batch_size
-    chunk_size = int(getattr(conf.sampling, "chunk_size", default_chunk_size))
-    if chunk_size <= 0:
-        chunk_size = default_chunk_size
-    return max(1, chunk_size)
+    checkpoint_path = get_sampling_config("checkpoint_path", None)
+    if checkpoint_path is not None:
+        path = Path(checkpoint_path)
+        if not path.is_absolute():
+            path = model_output_dir / path
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint does not exist: {path}")
+        return path.resolve()
 
-# =====================
-# Torch/model helpers
-# =====================
+    checkpoint_name = get_sampling_config("checkpoint_name", "ckpt.pt")
+    if checkpoint_name == "latest_running":
+        _, path = find_latest_indexed_checkpoint(model_output_dir, RUNNING_CKPT_RE)
+        if path is None:
+            raise FileNotFoundError(f"No ckpt_running_N.pt checkpoint found in {model_output_dir}")
+        return path.resolve()
+    if checkpoint_name == "latest_epoch":
+        _, path = find_latest_indexed_checkpoint(model_output_dir, EPOCH_CKPT_RE)
+        if path is None:
+            raise FileNotFoundError(f"No ckpt_epoch_N.pt checkpoint found in {model_output_dir}")
+        return path.resolve()
+
+    path = model_output_dir / str(checkpoint_name)
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint does not exist: {path}")
+    return path.resolve()
+
+def resolve_device_names(total_starters: int) -> tuple[str, ...]:
+    """
+    Resolve which devices sampling should use.
+
+    All visible CUDA GPUs are used by default. Single-GPU mode can be requested
+    through config or PARTICLEGPT_SAMPLE_NUM_GPUS=1.
+    """
+    requested_device = str(get_sampling_config("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    if requested_device == "cpu":
+        return ("cpu",)
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested for sampling, but torch.cuda.is_available() is False.")
+    if requested_device.startswith("cuda:"):
+        return (requested_device,)
+    if not torch.cuda.is_available():
+        return ("cpu",)
+
+    cuda_count = torch.cuda.device_count()
+    gpu_ids_config = get_sampling_config("gpu_ids", None)
+    if gpu_ids_config is None:
+        gpu_ids = list(range(cuda_count))
+    elif isinstance(gpu_ids_config, str):
+        gpu_ids = [int(x) for x in re.split(r"[\s,]+", gpu_ids_config.strip()) if x != ""]
+    else:
+        gpu_ids = [int(x) for x in gpu_ids_config]
+
+    bad_ids = [idx for idx in gpu_ids if idx < 0 or idx >= cuda_count]
+    if bad_ids:
+        raise ValueError(f"Requested invalid local CUDA device ids {bad_ids}; visible CUDA count is {cuda_count}.")
+
+    env_num_gpus = os.environ.get("PARTICLEGPT_SAMPLE_NUM_GPUS", None)
+    requested_num_gpus = parse_optional_int(env_num_gpus)
+    if requested_num_gpus is None:
+        requested_num_gpus = parse_optional_int(get_sampling_config("num_gpus", None))
+
+    use_all_gpus = parse_bool(get_sampling_config("use_all_gpus", True))
+    single_gpu = parse_bool(get_sampling_config("single_gpu", False))
+    if single_gpu:
+        requested_num_gpus = 1
+    elif requested_num_gpus is None:
+        requested_num_gpus = len(gpu_ids) if use_all_gpus else 1
+
+    requested_num_gpus = max(1, min(int(requested_num_gpus), len(gpu_ids), total_starters))
+    return tuple(f"cuda:{idx}" for idx in gpu_ids[:requested_num_gpus])
+
+def resolve_sample_idx(generated_samples_dir: Path) -> int:
+    """
+    Resolve the numeric sample index used in sampling_<sample_idx>.
+
+    If sampling.sample_idx or sampling.sampling_idx is set, that value is used.
+    Otherwise, the next numeric index after existing sampling_N directories is used.
+    """
+    configured_idx = get_sampling_config("sample_idx", get_sampling_config("sampling_idx", None))
+    if configured_idx is not None:
+        return int(configured_idx)
+
+    max_idx = -1
+    if generated_samples_dir.exists():
+        for path in generated_samples_dir.iterdir():
+            if not path.is_dir():
+                continue
+            match = re.fullmatch(r"sampling_(\d+)", path.name)
+            if match:
+                max_idx = max(max_idx, int(match.group(1)))
+    return max_idx + 1
 
 def dtype_from_config(dtype_name: str) -> torch.dtype:
-    """Map config dtype strings to torch dtypes."""
+    """Convert a config dtype string into the torch dtype used for autocast."""
     dtype_map = {
         "float32": torch.float32,
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
     }
     if dtype_name not in dtype_map:
-        raise ValueError(f"Unknown sampling dtype {dtype_name!r}; expected one of {sorted(dtype_map)}")
+        raise ValueError(f"Unknown dtype {dtype_name!r}; expected one of {sorted(dtype_map)}")
     return dtype_map[dtype_name]
 
-def setup_torch_runtime() -> SamplingRuntime:
-    """Set seeds/backends and return the runtime object used by generation."""
-    seed = int(getattr(conf.sampling, "seed", 1337))
-    device = torch.device(conf.sampling.device)
-    device_type = "cuda" if device.type == "cuda" else "cpu"
+def autocast_context(device_type: str, dtype: torch.dtype):
+    """Return the correct inference autocast context for the selected device/dtype."""
+    if device_type == "cuda" and dtype == torch.float16:
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    if device_type == "cuda" and dtype == torch.bfloat16:
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
 
-    if device_type == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("conf.sampling.device requests CUDA, but CUDA is not available.")
-        device_index = device.index if device.index is not None else 0
-        torch.cuda.set_device(device_index)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
+def shard_path(output_dir: Path, rank: int) -> Path:
+    """Return the temporary CSV shard path for one worker."""
+    return output_dir / f"worker_{rank:03d}{SHARD_SUFFIX}"
 
-    torch.manual_seed(seed)
-
-    return SamplingRuntime(
-        device=device,
-        device_type=device_type,
-        dtype=dtype_from_config(conf.sampling.dtype),
-        seed=seed,
-    )
-
-def torch_load_checkpoint(path: Path, map_location):
-    """Load checkpoints across PyTorch versions with explicit pickle behavior when supported."""
-    try:
-        return torch.load(path, map_location=map_location, weights_only=False)
-    except TypeError:
-        return torch.load(path, map_location=map_location)
-
-def strip_known_state_dict_prefixes(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def generate_batch(model: torch.nn.Module, idx: torch.Tensor, max_new_tokens: int, temperature: float, top_k: Optional[int], require_batch_generate: bool) -> torch.Tensor:
     """
-    Clean state dict keys saved from DDP and/or torch.compile wrappers.
+    Run batched generation through the model's batch-capable generation path.
 
-    Handles old checkpoints containing prefixes such as:
-        module.transformer...
-        _orig_mod.transformer...
-        module._orig_mod.transformer...
+    idx must have shape (batch_size, starter_tokens). If the model exposes an
+    explicit batch-generation method, this uses it. Otherwise, it falls back to
+    model.generate(idx, ...), which is batch-capable for nanoGPT-style models
+    when idx is 2D.
     """
-    prefixes = ("module.", "_orig_mod.")
-    cleaned = {}
+    if idx.ndim != 2:
+        raise ValueError(f"Expected batched idx with shape (B, T), got shape={tuple(idx.shape)}.")
 
-    for key, value in state_dict.items():
-        new_key = key
-        changed = True
-        while changed:
-            changed = False
-            for prefix in prefixes:
-                if new_key.startswith(prefix):
-                    new_key = new_key[len(prefix):]
-                    changed = True
-        cleaned[new_key] = value
+    for method_name in ("generate_batch", "batch_generate", "generate_batched"):
+        method = getattr(model, method_name, None)
+        if callable(method):
+            return method(idx, max_new_tokens, temperature=temperature, top_k=top_k)
 
-    return cleaned
-
-def load_checkpoint_payload(checkpoint_path: Path) -> tuple[GPTConfig, dict[str, torch.Tensor]]:
-    """Load model config and a CPU state dict from a checkpoint."""
-    checkpoint = torch_load_checkpoint(checkpoint_path, map_location="cpu")
-
-    if "model_args" not in checkpoint or "model" not in checkpoint:
-        raise KeyError(
-            f"Checkpoint {checkpoint_path} must contain 'model_args' and 'model' entries."
+    if require_batch_generate:
+        raise AttributeError(
+            "sampling.require_batch_generate=True, but the model does not expose "
+            "generate_batch, batch_generate, or generate_batched."
         )
+    if not hasattr(model, "generate"):
+        raise AttributeError("Model does not expose generate(...), so sampling cannot continue.")
+    return model.generate(idx, max_new_tokens, temperature=temperature, top_k=top_k)
 
-    gpt_config = GPTConfig(**checkpoint["model_args"])
-    state_dict = strip_known_state_dict_prefixes(checkpoint["model"])
-    state_dict = {key: value.detach().cpu() for key, value in state_dict.items()}
-    return gpt_config, state_dict
+def load_model_for_sampling(checkpoint_path: str, device: str, compile_model: bool) -> torch.nn.Module:
+    """Load the checkpoint model onto one sampling worker device."""
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    model_args = dict(checkpoint["model_args"])
+    model = GPT(GPTConfig(**model_args))
+    model.load_state_dict(clean_state_dict_keys(checkpoint["model"]))
+    del checkpoint
 
-def build_model(
-    gpt_config: GPTConfig,
-    state_dict: dict[str, torch.Tensor],
-    runtime: SamplingRuntime,
-    *,
-    compile_model: bool,
-    logger_idx: int,
-):
-    """Construct, load, move, optionally compile, and return a model for single-device sampling."""
-    sampling_model = GPT(gpt_config)
-    sampling_model.load_state_dict(state_dict)
-    sampling_model.to(runtime.device)
-    sampling_model.eval()
+    model.to(device)
+    model.eval()
+    if compile_model:
+        model = torch.compile(model, mode="default", dynamic=False, fullgraph=False)
+    return model
 
-    if not compile_model:
-        return sampling_model
+def sampling_worker(rank: int, job: dict[str, Any]) -> None:
+    """
+    Generate one contiguous shard of test starters on one worker/device.
 
-    try:
-        compiled = torch.compile(sampling_model, dynamic=False, fullgraph=False)
-        # Some PyTorch versions expose custom nn.Module methods through the compiled wrapper;
-        # some do not. Sampling relies on generate*/forward_prefill/forward_decode methods.
-        if hasattr(compiled, "generate"):
-            pLogging.info(logger_idx, "Sampling info", {"compiled_model": True})
-            return compiled
-    except Exception as exc:
-        pLogging.info(logger_idx, "Sampling info", {"compiled_model": False, "compile_error": str(exc)})
-        return sampling_model
+    This must remain a top-level function because torch.multiprocessing.spawn
+    needs a pickleable entrypoint. Each worker owns a contiguous slice of the
+    first `job["total_starters"]` test sequences.
+    """
+    device = job["device_names"][rank]
+    if device.startswith("cuda"):
+        torch.cuda.set_device(torch.device(device))
 
-    pLogging.info(
-        logger_idx,
-        "Sampling info",
-        {"compiled_model": False, "reason": "compiled wrapper did not expose generate()"},
+    worker_seed = int(job["seed"]) + rank
+    torch.manual_seed(worker_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(worker_seed)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    total_starters = int(job["total_starters"])
+    world_size = len(job["device_names"])
+    start_sequence_idx = (total_starters * rank) // world_size
+    end_sequence_idx = (total_starters * (rank + 1)) // world_size
+
+    data = np.memmap(job["tokenized_data_filepath"], dtype=np.dtype(job["tokenized_dtype"]), mode="r")
+    split_token_start = int(job["split_start_token_idx"])
+    sequence_length = int(job["sequence_length"])
+    starter_tokens = int(job["starter_tokens"])
+    split_tokens = total_starters * sequence_length
+    test_sequences = data[split_token_start:split_token_start + split_tokens].reshape(total_starters, sequence_length)
+
+    model = load_model_for_sampling(job["checkpoint_path"], device, bool(job["compile"]))
+    dtype = dtype_from_config(job["dtype_name"])
+    device_type = "cuda" if device.startswith("cuda") else "cpu"
+    output_path = shard_path(Path(job["output_dir"]), rank)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    written = 0
+    t0 = time.time()
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        with torch.no_grad():
+            for batch_start in range(start_sequence_idx, end_sequence_idx, int(job["batch_size"])):
+                batch_end = min(batch_start + int(job["batch_size"]), end_sequence_idx)
+                starter_batch = test_sequences[batch_start:batch_end, :starter_tokens].astype(np.int64, copy=True)
+                idx = torch.from_numpy(starter_batch).to(device, non_blocking=True)
+
+                with autocast_context(device_type, dtype):
+                    generated = generate_batch(
+                        model,
+                        idx,
+                        max_new_tokens=int(job["max_new_tokens"]),
+                        temperature=float(job["temperature"]),
+                        top_k=job["top_k"],
+                        require_batch_generate=bool(job["require_batch_generate"]),
+                    )
+
+                generated_np = generated.detach().cpu().numpy().astype(np.int64, copy=False)
+                for row in generated_np:
+                    csv_row = " ".join(str(int(token)) for token in row) + "\n"
+                    handle.write(csv_row)
+                written += int(generated_np.shape[0])
+
+                if int(job["log_interval"]) > 0 and written % int(job["log_interval"]) == 0:
+                    elapsed = max(time.time() - t0, 1e-12)
+                    print(
+                        f"worker {rank}: wrote {written:,} / {end_sequence_idx - start_sequence_idx:,} events "
+                        f"({written / elapsed:.2f} events/s)",
+                        flush=True,
+                    )
+
+    print(
+        f"worker {rank}: finished {written:,} events from test sequences "
+        f"[{start_sequence_idx:,}, {end_sequence_idx:,}) -> {output_path}",
+        flush=True,
     )
-    return sampling_model
-
-def should_use_multi_gpu(runtime: SamplingRuntime) -> bool:
-    """Decide whether to use all visible CUDA devices for sampling."""
-    if runtime.device_type != "cuda":
-        return False
-
-    num_cuda = torch.cuda.device_count()
-    if num_cuda <= 1:
-        return False
-
-    configured = getattr(conf.sampling, "multi_gpu", None)
-    if configured is not None:
-        return bool(configured)
-
-    # If the user explicitly selected cuda:N, treat that as a single-device request
-    # unless conf.sampling.multi_gpu=True is set.
-    if runtime.device.index is not None:
-        return False
-
-    return True
-
-# =====================
-# Data iteration/output helpers
-# =====================
-
-def open_test_memmap(test_bin_path: Path, max_sequence_len: int) -> np.memmap:
-    """Open test.bin as a 2D event matrix of uint16 token ids."""
-    raw = np.memmap(test_bin_path, dtype=np.uint16, mode="r")
-    if raw.size % max_sequence_len != 0:
-        raise ValueError(
-            f"test.bin has {raw.size} tokens, which is not divisible by "
-            f"max_sequence_length={max_sequence_len}."
-        )
-    return raw.reshape(-1, max_sequence_len)
-
-def iter_starter_batches(
-    test_data: np.memmap,
-    *,
-    starter_len: int,
-    num_samples: int,
-    chunk_size: int,
-) -> Iterator[np.ndarray]:
-    """Yield copied int64 starter-token batches from the test memmap."""
-    for start in range(0, num_samples, chunk_size):
-        end = min(start + chunk_size, num_samples)
-        yield np.asarray(test_data[start:end, :starter_len], dtype=np.int64)
-
-def trim_generated_sequence(
-    seq: list[int],
-    dictionary: Dictionary,
-    *,
-    trim_after_event_end: bool,
-) -> list[int]:
-    """Trim tokens after EVENT_END, preserving EVENT_END itself."""
-    if not trim_after_event_end:
-        return seq
-
-    event_end_token = int(dictionary.event_end_token)
-    if event_end_token in seq:
-        return seq[: seq.index(event_end_token) + 1]
-    return seq
-
-def write_generated_sequences(
-    out_file,
-    generated: torch.Tensor,
-    dictionary: Dictionary,
-    *,
-    trim_after_event_end: bool,
-) -> None:
-    """Write generated token sequences to the output file."""
-    for seq in generated.cpu():
-        seq_list = [int(tok) for tok in seq.tolist()]
-        seq_list = trim_generated_sequence(
-            seq_list,
-            dictionary,
-            trim_after_event_end=trim_after_event_end,
-        )
-        out_file.write(" ".join(map(str, seq_list)) + "\n")
-
-# =====================
-# Generation paths
-# =====================
-
-def generate_single_device(
-    sampling_model,
-    starters_np: np.ndarray,
-    runtime: SamplingRuntime,
-    *,
-    max_new_tokens: int,
-    temperature: float,
-    top_k,
-    batch_size: int,
-    grammar_mask: bool,
-) -> torch.Tensor:
-    """Generate a batch on CPU or one CUDA device."""
-    starters = torch.as_tensor(starters_np, dtype=torch.long, device=runtime.device)
-
-    with torch.inference_mode(), runtime.autocast_context():
-        if hasattr(sampling_model, "generate_batched_singleGPU"):
-            generated = sampling_model.generate_batched_singleGPU(
-                starters,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                batch_size=batch_size,
-                grammar_mask=grammar_mask,
-            )
-        else:
-            # Backward-compatible fallback for older model files.
-            generated = sampling_model.generate(
-                starters,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                grammar_mask=grammar_mask,
-            )
-
-    return generated.cpu()
-
-def _multi_gpu_worker(
-    split_index: int,
-    device_id: int,
-    gpt_config: GPTConfig,
-    state_dict_cpu: dict[str, torch.Tensor],
-    starters_cpu: torch.Tensor,
-    max_new_tokens: int,
-    temperature: float,
-    top_k,
-    batch_size: int,
-    grammar_mask: bool,
-    dtype_name: str,
-    seed: int,
-    compile_worker_model: bool,
-    return_queue,
-) -> None:
-    """Worker process used by generate_multi_gpu()."""
-    try:
-        torch.cuda.set_device(device_id)
-        device = torch.device(f"cuda:{device_id}")
-        torch.manual_seed(seed + split_index)
-        torch.cuda.manual_seed_all(seed + split_index)
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-
-        dtype = dtype_from_config(dtype_name)
-        runtime = SamplingRuntime(
-            device=device,
-            device_type="cuda",
-            dtype=dtype,
-            seed=seed + split_index,
-        )
-
-        worker_model = GPT(gpt_config)
-        worker_model.load_state_dict(state_dict_cpu)
-        worker_model.to(device)
-        worker_model.eval()
-
-        if compile_worker_model:
-            worker_model = torch.compile(worker_model, dynamic=False, fullgraph=False)
-
-        starters = starters_cpu.to(device, non_blocking=True)
-
-        with torch.inference_mode(), runtime.autocast_context():
-            if hasattr(worker_model, "generate_batched_singleGPU"):
-                generated = worker_model.generate_batched_singleGPU(
-                    starters,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    batch_size=batch_size,
-                    grammar_mask=grammar_mask,
-                )
-            else:
-                generated = worker_model.generate(
-                    starters,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    grammar_mask=grammar_mask,
-                )
-
-        return_queue.put((split_index, "ok", generated.cpu()))
-    except Exception:
-        return_queue.put((split_index, "error", traceback.format_exc()))
-
-def generate_multi_gpu(
-    gpt_config: GPTConfig,
-    state_dict_cpu: dict[str, torch.Tensor],
-    starters_np: np.ndarray,
-    runtime: SamplingRuntime,
-    *,
-    max_new_tokens: int,
-    temperature: float,
-    top_k,
-    batch_size: int,
-    grammar_mask: bool,
-    compile_worker_model: bool,
-) -> torch.Tensor:
-    """Generate a batch by splitting it across all visible CUDA devices."""
-    if runtime.device_type != "cuda" or not torch.cuda.is_available():
-        raise RuntimeError("Multi-GPU sampling requires CUDA.")
-
-    num_devices = torch.cuda.device_count()
-    if num_devices <= 1:
-        raise RuntimeError("Multi-GPU sampling requested, but only one CUDA device is visible.")
-
-    starters_cpu = torch.as_tensor(starters_np, dtype=torch.long, device="cpu")
-    starter_splits = torch.chunk(starters_cpu, num_devices, dim=0)
-
-    ctx = mp.get_context("spawn")
-    return_queue = ctx.Queue()
-    processes = []
-
-    for split_index, starters_chunk in enumerate(starter_splits):
-        if starters_chunk.numel() == 0:
-            continue
-
-        process = ctx.Process(
-            target=_multi_gpu_worker,
-            args=(
-                split_index,
-                split_index,  # device id in the visible CUDA namespace
-                gpt_config,
-                state_dict_cpu,
-                starters_chunk,
-                max_new_tokens,
-                temperature,
-                top_k,
-                batch_size,
-                grammar_mask,
-                conf.sampling.dtype,
-                runtime.seed,
-                compile_worker_model,
-                return_queue,
-            ),
-        )
-        process.start()
-        processes.append((split_index, process))
-
-    results: dict[int, torch.Tensor] = {}
-    errors: list[str] = []
-
-    for _ in processes:
-        split_index, status, payload = return_queue.get()
-        if status == "ok":
-            results[split_index] = payload
-        else:
-            errors.append(f"Worker split {split_index} failed:\n{payload}")
-
-    for split_index, process in processes:
-        process.join()
-        if process.exitcode != 0:
-            errors.append(f"Worker split {split_index} exited with code {process.exitcode}")
-
-    if errors:
-        raise RuntimeError("\n".join(errors))
-
-    ordered = [results[idx] for idx, _ in processes]
-    return torch.cat(ordered, dim=0)
-
-# =====================
-# Main script
-# =====================
 
 def main() -> None:
-    """Run one sampling job."""
-    sampling_id = pUtil.get_latest_sampling_id(conf.generic.model_name) + 1
-    paths = build_sampling_paths(sampling_id)
-    paths.samples_output.parent.mkdir(parents=True, exist_ok=True)
+    """Sample generated events from the first configured subset of test_bin sequences."""
+    if conf.generic.preparation_config_file is None:
+        raise ValueError("preparation_config_file in configuration cannot be None!")
 
-    logger_idx = pLogging.create_sampling_logger(conf.generic.model_name, sampling_id)
-    model_module.set_logger(logger_idx)
+    model_output_dir = PROJECT_DIR / "trained_models" / conf.generic.model_name
+    checkpoint_path = resolve_checkpoint_path(model_output_dir)
+    preparation_config_file = Path(conf.generic.preparation_config_file)
+    dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_file)
+    if not dls_conf.verify():
+        raise RuntimeError("Failure when verifying test split config. Ensure all required arguments exist.")
 
-    start_time = timer()
+    tmd_conf = TokenizedMetadataConfig(Path(dls_conf.tokenized_metadata_filepath))
+    if not tmd_conf.verify():
+        raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
 
-    try:
-        validate_required_files(paths)
-
-        runtime = setup_torch_runtime()
-        dictionary = load_dictionary(paths)
-        prep_info = load_json_file(paths.prep_info)
-        max_sequence_len = int(prep_info["max_sequence_length"])
-
-        starter_len = resolve_starter_len(max_sequence_len)
-        max_new_tokens = resolve_max_new_tokens(max_sequence_len, starter_len)
-        batch_size = resolve_batch_size()
-        temperature = resolve_temperature()
-        top_k = resolve_top_k()
-        log_every_chunks = resolve_log_every_chunks()
-
-        test_data = open_test_memmap(paths.test_bin, max_sequence_len)
-        num_samples = resolve_num_samples(total_events=len(test_data))
-
-        gpt_config, state_dict_cpu = load_checkpoint_payload(paths.checkpoint)
-        use_multi_gpu = should_use_multi_gpu(runtime)
-        chunk_size = resolve_chunk_size(num_samples, batch_size, use_multi_gpu)
-
-        grammar_mask = bool(getattr(conf.sampling, "grammar_mask", False))
-        trim_after_event_end = bool(getattr(conf.sampling, "trim_after_event_end", True))
-        compile_single_device = bool(getattr(conf.sampling, "compile", False)) and not use_multi_gpu
-        compile_worker_model = bool(getattr(conf.sampling, "compile_workers", False)) and use_multi_gpu
-
-        sampling_model = None
-        if not use_multi_gpu:
-            sampling_model = build_model(
-                gpt_config, state_dict_cpu, runtime,
-                compile_model=compile_single_device,
-                logger_idx=logger_idx,
-            )
-
-        pLogging.info(logger_idx, "Sample generation started.")
-        pLogging.info(logger_idx, "Sampling info", {
-            "preparation": conf.generic.preparation_name,
-            "model_path": str(paths.checkpoint),
-            "samples_output_filename": str(paths.samples_output),
-            "num_samples": num_samples,
-            "total_test_events": len(test_data),
-            "starter_len": starter_len,
-            "max_sequence_length": max_sequence_len,
-            "configured_max_new_tokens": getattr(conf.sampling, "max_new_tokens", -1),
-            "effective_max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-            "top_k": top_k,
-            "batch_size": batch_size,
-            "chunk_size": chunk_size,
-            "grammar_mask": grammar_mask,
-            "trim_after_event_end": trim_after_event_end,
-            "seed": runtime.seed,
-            "device": str(runtime.device),
-            "device_type": runtime.device_type,
-            "dtype": conf.sampling.dtype,
-            "compile_single_device": compile_single_device,
-            "use_multi_gpu": use_multi_gpu,
-            "num_cuda_devices": torch.cuda.device_count() if torch.cuda.is_available() else 0,
-            "compile_worker_model": compile_worker_model,
-        })
-
-        temp_output = paths.samples_output.with_suffix(paths.samples_output.suffix + ".tmp")
-
-        with temp_output.open("w") as out_file:
-            for batch_idx, starters_np in enumerate(iter_starter_batches(test_data, starter_len=starter_len, num_samples=num_samples, chunk_size=chunk_size)):
-                if use_multi_gpu:
-                    generated = generate_multi_gpu(
-                        gpt_config, state_dict_cpu, starters_np, runtime,
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        top_k=top_k,
-                        batch_size=batch_size,
-                        grammar_mask=grammar_mask,
-                        compile_worker_model=compile_worker_model,
-                    )
-                else:
-                    generated = generate_single_device(
-                        sampling_model, starters_np, runtime,
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        top_k=top_k,
-                        batch_size=batch_size,
-                        grammar_mask=grammar_mask,
-                    )
-
-                write_generated_sequences(out_file, generated, dictionary, trim_after_event_end=trim_after_event_end)
-
-                if log_every_chunks > 0 and (batch_idx + 1) % log_every_chunks == 0:
-                    pLogging.info(logger_idx, "Sampling progress", {
-                        "chunks_completed": batch_idx + 1,
-                        "samples_completed_upper_bound": min((batch_idx + 1) * chunk_size, num_samples),
-                    })
-
-        os.replace(temp_output, paths.samples_output)
-
-        elapsed = timer() - start_time
-        pLogging.info(
-            logger_idx,
-            f"Sample generation finished in {elapsed} seconds.",
-            {"time_seconds": elapsed, "samples_written": num_samples},
+    file_bytes = tmd_conf.tokenized_data_filepath.stat().st_size
+    dtype_bytes = np.dtype(tmd_conf.dtype).itemsize
+    if file_bytes % dtype_bytes != 0:
+        raise ValueError(
+            f"Size of tokenized data file ({file_bytes} bytes) is not divisible by dtype size {dtype_bytes}."
         )
 
-    except Exception as exc:
-        pLogging.info(logger_idx, "Sample generation failed.", {"error": str(exc)})
-        raise
+    data_total_tokens = file_bytes // dtype_bytes
+    if data_total_tokens != tmd_conf.total_tokens:
+        raise ValueError(
+            f"Tokenized data contains {data_total_tokens:,} tokens, but metadata expected {tmd_conf.total_tokens:,}."
+        )
+
+    raw_split_tokens = dls_conf.num_sequences * tmd_conf.sequence_length
+    if dls_conf.from_end:
+        raw_end = (tmd_conf.num_full_sequences - dls_conf.skip_sequences) * tmd_conf.sequence_length
+        raw_start = raw_end - raw_split_tokens
+    else:
+        raw_start = dls_conf.skip_sequences * tmd_conf.sequence_length
+        raw_end = raw_start + raw_split_tokens
+
+    if raw_start < 0 or raw_end > tmd_conf.total_tokens or raw_start >= raw_end:
+        raise ValueError(
+            f"Invalid test split range: raw_start={raw_start}, raw_end={raw_end}, total_tokens={tmd_conf.total_tokens}."
+        )
+
+    starter_tokens = int(get_sampling_config("starter_tokens", 5))
+    if starter_tokens <= 0:
+        raise ValueError(f"starter_tokens must be positive, got {starter_tokens}.")
+    if starter_tokens > tmd_conf.sequence_length:
+        raise ValueError(f"starter_tokens={starter_tokens}, but sequence_length={tmd_conf.sequence_length}.")
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    model_args = dict(checkpoint["model_args"])
+    del checkpoint
+
+    if int(model_args["vocab_size"]) != int(tmd_conf.vocab_size):
+        raise ValueError(
+            f"Checkpoint vocab_size={model_args['vocab_size']}, but tokenized metadata vocab_size={tmd_conf.vocab_size}."
+        )
+    if starter_tokens > int(model_args["block_size"]):
+        raise ValueError(
+            f"starter_tokens={starter_tokens}, but checkpoint block_size={model_args['block_size']}."
+        )
+
+    configured_max_new_tokens = get_sampling_config("max_new_tokens", None)
+    if configured_max_new_tokens is None:
+        max_new_tokens = int(tmd_conf.sequence_length) - starter_tokens
+    else:
+        max_new_tokens = int(configured_max_new_tokens)
+    if max_new_tokens <= 0:
+        raise ValueError(f"max_new_tokens must be positive, got {max_new_tokens}.")
+
+    max_test_sequences = get_sampling_config("max_test_sequences", get_sampling_config("max_starters", None))
+    if max_test_sequences is None:
+        total_starters = int(dls_conf.num_sequences)
+        max_test_sequences_metadata = None
+    else:
+        max_test_sequences = int(max_test_sequences)
+        if max_test_sequences <= 0:
+            raise ValueError(f"max_test_sequences must be positive when configured, got {max_test_sequences}.")
+        total_starters = min(int(dls_conf.num_sequences), max_test_sequences)
+        max_test_sequences_metadata = max_test_sequences
+
+    device_names = resolve_device_names(total_starters)
+    batch_size = int(get_sampling_config("batch_size", get_training_config("batch_size", 32)))
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}.")
+
+    top_k_value = get_sampling_config("top_k", 200)
+    top_k = None if top_k_value is None or int(top_k_value) <= 0 else int(top_k_value)
+    generated_samples_dir = PROJECT_DIR / "generated_samples" / conf.generic.model_name
+    sample_idx = resolve_sample_idx(generated_samples_dir)
+    output_dir = generated_samples_dir / f"sampling_{sample_idx}"
+    output_csv_name = str(get_sampling_config("output_csv_name", FINAL_CSV_NAME))
+
+    sample_t0 = time.time()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for path in output_dir.glob(f"*{SHARD_SUFFIX}"):
+        path.unlink()
+    for path in output_dir.glob("*.tmp"):
+        path.unlink()
+
+    job = {
+        "checkpoint_path": str(checkpoint_path),
+        "output_dir": str(output_dir),
+        "device_names": tuple(device_names),
+        "batch_size": batch_size,
+        "starter_tokens": starter_tokens,
+        "max_new_tokens": max_new_tokens,
+        "temperature": float(get_sampling_config("temperature", 0.8)),
+        "top_k": top_k,
+        "dtype_name": str(get_sampling_config("dtype", get_training_config("dtype", "float32"))),
+        "seed": int(get_sampling_config("seed", get_training_config("seed", 1337))),
+        "compile": parse_bool(get_sampling_config("compile", False)),
+        "total_starters": total_starters,
+        "keep_shards": parse_bool(get_sampling_config("keep_shards", False)),
+        "log_interval": int(get_sampling_config("log_interval", 1000)),
+        "output_csv_name": output_csv_name,
+        "require_batch_generate": parse_bool(get_sampling_config("require_batch_generate", False)),
+        "tokenized_data_filepath": str(tmd_conf.tokenized_data_filepath),
+        "tokenized_dtype": np.dtype(tmd_conf.dtype).name,
+        "sequence_length": int(tmd_conf.sequence_length),
+        "split_start_token_idx": int(raw_start),
+        "max_test_sequences": max_test_sequences_metadata,
+    }
+
+    print(f"Sampling from checkpoint: {checkpoint_path}")
+    print(f"Sampling output directory: {output_dir}")
+    print(f"Sampling test starters: {total_starters:,} / {dls_conf.num_sequences:,}")
+    print(f"Starter tokens per event: {starter_tokens}")
+    print(f"New tokens per event: {max_new_tokens}")
+    print(f"Batch size per worker: {batch_size}")
+    print(f"Worker devices: {', '.join(device_names)}")
+
+    world_size = len(device_names)
+    if world_size == 1:
+        sampling_worker(0, job)
+    else:
+        mp.spawn(sampling_worker, args=(job,), nprocs=world_size, join=True)
+
+    final_path = output_dir / output_csv_name
+    tmp_final_path = output_dir / f"{output_csv_name}.tmp"
+    with tmp_final_path.open("w", encoding="utf-8", newline="") as out_handle:
+        for rank in range(world_size):
+            part_path = shard_path(output_dir, rank)
+            if not part_path.exists():
+                raise FileNotFoundError(f"Expected worker shard does not exist: {part_path}")
+            with part_path.open("r", encoding="utf-8") as in_handle:
+                while True:
+                    chunk = in_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out_handle.write(chunk)
+    os.replace(tmp_final_path, final_path)
+
+    if not parse_bool(get_sampling_config("keep_shards", False)):
+        for rank in range(world_size):
+            part_path = shard_path(output_dir, rank)
+            if part_path.exists():
+                part_path.unlink()
+
+    sampling_elapsed_seconds = time.time() - sample_t0
+    num_gpus_used = sum(1 for device_name in device_names if device_name.startswith("cuda"))
+
+    metadata = dict(job)
+    metadata["sample_idx"] = sample_idx
+    metadata["sampling_dir_name"] = f"sampling_{sample_idx}"
+    metadata["model_name"] = conf.generic.model_name
+    metadata["final_csv_path"] = str(final_path)
+    metadata["sampling_metadata_path"] = str(output_dir / "sampling_metadata.json")
+    metadata["split"] = "test_bin"
+    metadata["starter_source"] = "first tokens of the first configured test_bin sequences"
+    metadata["sampling_elapsed_seconds"] = sampling_elapsed_seconds
+    metadata["num_gpus_used"] = num_gpus_used
+    metadata["num_devices_used"] = len(device_names)
+
+    for path_key in ("output_dir", "final_csv_path", "sampling_metadata_path"):
+        metadata[path_key] = os.path.relpath(metadata[path_key], PROJECT_DIR)
+
+    with (output_dir / "sampling_metadata.json").open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=4)
+
+    print(f"Finished. Final generated samples CSV: {final_path}")
+    print(f"Sampling took {sampling_elapsed_seconds:.2f} seconds using {num_gpus_used} GPU(s).")
 
 if __name__ == "__main__":
     main()

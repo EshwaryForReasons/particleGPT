@@ -1,54 +1,193 @@
 import sys
 import json
-import pickle
+import os
 import numpy as np
 from pathlib import Path
 import time
 
 import configurator as conf
 from dictionary import Dictionary
-from dictionary import ETokenTypes
-import pUtil
 import data_manager
-import analysis_v2 as anal
-import untokenizer
-import wandb_doer
+import matplotlib.pyplot as plt
+import analysis_v2 as analv2
+import particleGPT.untokenizer as untokenizer
+from train import DataloaderSplitConfig
+from train import ESplitTypes
+from train import TokenizedMetadataConfig
 
-script_dir = Path(__file__).resolve().parent
+script_dir = untokenizer.PROJECT_DIR
 
 class Analyzer:
+    
+    @staticmethod
+    def get_latest_sampling_dir(model_name):
+        """
+        Return the selected sampling directory for the current sampling pipeline.
+
+        The sampler writes generated samples to:
+            PROJECT_DIR/generated_samples/<model_name>/sampling_<idx>/
+
+        untokenizer.resolve_sampling_idx handles explicit sample_idx config values
+        and otherwise chooses the newest sampling_<idx> directory.
+        """
+        generated_samples_dir = script_dir / 'generated_samples' / model_name
+        try:
+            sampling_idx = untokenizer.resolve_sampling_idx(generated_samples_dir)
+        except FileNotFoundError:
+            return generated_samples_dir / 'sampling_0'
+        return generated_samples_dir / f'sampling_{sampling_idx}'
+
     def __init__(self, model_name):
         self.model_name = model_name
-        
-        preparation_dir = pUtil.get_model_preparation_dir(model_name)
-        self.latest_sampling_dir = pUtil.get_latest_sampling_dir(model_name)
+        self.latest_sampling_dir = self.get_latest_sampling_dir(model_name)
 
-        self.dictionary_filename                  = preparation_dir / 'dictionary.json'
-        self.meta_filename                        = preparation_dir / 'meta.pkl'
-        self.test_real_bin_filename               = preparation_dir / 'test_real.bin'
-        self.real_leading_test_particles_filename = preparation_dir / 'real_leading_test_particles.csv'
-        self.generated_samples_filename           = self.latest_sampling_dir / 'generated_samples.csv'
-        self.filtered_samples_filename            = self.latest_sampling_dir / 'filtered_samples.csv'
-        self.sampled_leading_particles_filename   = self.latest_sampling_dir / 'sampled_leading_particles.csv'
-        self.verbose_particles_filename           = self.latest_sampling_dir / 'untokenized_samples_verbose.csv'
-        self.untokenized_samples_filename         = self.latest_sampling_dir / 'untokenized_samples.csv'
-        self.metrics_results_filename             = self.latest_sampling_dir / 'metrics_results.json'
-        
-        if not self.meta_filename.exists():
-            print("Data has not been prepared! Please prepare data first!")
-            exit()
-            
-        with open(self.meta_filename, 'rb') as f:
-            meta = pickle.load(f)
-            self.num_particles_per_event = meta['num_particles_per_event']
-            
+        if conf.generic.preparation_config_file is None:
+            raise ValueError("preparation_config_file in configuration cannot be None!")
+
+        # This is a split-selection config file now. It is not an old preparation
+        # directory, but the config key name is kept for compatibility with train.py.
+        self.preparation_config_filename = untokenizer.resolve_project_path(conf.generic.preparation_config_file)
+        self.dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, self.preparation_config_filename)
+        if not self.dls_conf.verify():
+            raise RuntimeError("Failure when verifying dataloader split config. Ensure all required arguments exist.")
+
+        self.tokenized_metadata_filename = untokenizer.resolve_project_path(self.dls_conf.tokenized_metadata_filepath)
+        try:
+            with open(self.tokenized_metadata_filename, 'r') as f:
+                self.tokenized_metadata = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Failure while trying to load json from {self.tokenized_metadata_filename}! Exception:\n{exc}") from exc
+
+        # TokenizedMetadataConfig is reused from train.py. Temporarily using the
+        # project directory as cwd makes relative paths in tokenized metadata behave
+        # the same way as scripts launched from PROJECT_DIR.
+        current_dir = Path.cwd()
+        try:
+            os.chdir(script_dir)
+            self.tmd_conf = TokenizedMetadataConfig(self.tokenized_metadata_filename)
+        finally:
+            os.chdir(current_dir)
+
+        if not self.tmd_conf.verify():
+            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
+        if not self.tmd_conf.tokenized_data_filepath.is_absolute():
+            self.tmd_conf.tokenized_data_filepath = untokenizer.resolve_project_path(self.tmd_conf.tokenized_data_filepath)
+
+        # The tokenized metadata stores the dictionary path relative to PROJECT_DIR.
+        # Reuse the untokenizer's resolver so analysis and untokenization agree.
+        self.dictionary_filename = untokenizer.resolve_dictionary_filepath(self.tokenized_metadata, self.tokenized_metadata_filename)
+        self.real_test_tokens_filename                  = self.latest_sampling_dir / 'real_test_tokens.csv'
+        self.real_test_untokenized_filename             = self.latest_sampling_dir / 'real_test_untokenized_samples.csv'
+        self.real_test_untokenizing_metadata_filename   = self.latest_sampling_dir / 'real_test_untokenizing_metadata.json'
+        self.real_test_invalid_tokens_filename          = self.latest_sampling_dir / 'real_test_invalid_token_events.json'
+        self.generated_samples_filename                 = self.latest_sampling_dir / untokenizer.DEFAULT_INPUT_CSV_NAME
+        self.filtered_samples_filename                  = self.latest_sampling_dir / 'filtered_samples.csv'
+        self.sampled_leading_particles_filename         = self.latest_sampling_dir / 'sampled_leading_particles.csv'
+        self.verbose_particles_filename                 = self.latest_sampling_dir / 'untokenized_samples_verbose.csv'
+        self.untokenized_samples_filename               = self.latest_sampling_dir / untokenizer.DEFAULT_OUTPUT_CSV_NAME
+        self.untokenizing_metadata_filename             = self.latest_sampling_dir / untokenizer.DEFAULT_METADATA_NAME
+        self.invalid_tokens_filename                    = self.latest_sampling_dir / untokenizer.DEFAULT_INVALID_TOKENS_NAME
+        self.metrics_results_filename                   = self.latest_sampling_dir / 'metrics_results.json'
+        self.sampling_metadata_filename                 = self.latest_sampling_dir / 'sampling_metadata.json'
+        self.plotted_distributions_dir                  = self.latest_sampling_dir / 'plotted_distributions'
+
+        if self.sampling_metadata_filename.exists():
+            with open(self.sampling_metadata_filename, 'r') as f:
+                self.sampling_metadata = json.load(f)
+            final_csv_path = self.sampling_metadata.get('final_csv_path', None)
+            if final_csv_path is not None:
+                final_csv_path = Path(final_csv_path)
+                if not final_csv_path.is_absolute():
+                    final_csv_path = untokenizer.resolve_project_path(final_csv_path)
+                if final_csv_path.exists():
+                    self.generated_samples_filename = final_csv_path
+        else:
+            self.sampling_metadata = {}
+
+        if not self.dictionary_filename.exists():
+            raise FileNotFoundError(f'dictionary_filename does not exist: {self.dictionary_filename}')
+        if not self.generated_samples_filename.exists():
+            raise FileNotFoundError(f'generated_samples_filename does not exist: {self.generated_samples_filename}')
+
+        file_bytes = self.tmd_conf.tokenized_data_filepath.stat().st_size
+        dtype_bytes = np.dtype(self.tmd_conf.dtype).itemsize
+        if file_bytes % dtype_bytes != 0:
+            raise ValueError(
+                f"Size of tokenized data file ({file_bytes} bytes) is not divisible by dtype size {dtype_bytes}."
+            )
+
+        data_total_tokens = file_bytes // dtype_bytes
+        if data_total_tokens != self.tmd_conf.total_tokens:
+            raise ValueError(
+                f"Tokenized data contains {data_total_tokens:,} tokens, but metadata expected {self.tmd_conf.total_tokens:,}."
+            )
+
+        raw_split_tokens = self.dls_conf.num_sequences * self.tmd_conf.sequence_length
+        if self.dls_conf.from_end:
+            raw_end = (self.tmd_conf.num_full_sequences - self.dls_conf.skip_sequences) * self.tmd_conf.sequence_length
+            raw_start = raw_end - raw_split_tokens
+        else:
+            raw_start = self.dls_conf.skip_sequences * self.tmd_conf.sequence_length
+            raw_end = raw_start + raw_split_tokens
+
+        if raw_start < 0 or raw_end > self.tmd_conf.total_tokens or raw_start >= raw_end:
+            raise ValueError(
+                f"Invalid test split range: raw_start={raw_start}, raw_end={raw_end}, total_tokens={self.tmd_conf.total_tokens}."
+            )
+
+        self.test_split_start_token_idx = raw_start
+        self.test_split_end_token_idx = raw_end
         self.dictionary = Dictionary(self.dictionary_filename)
-        
+
+    def build_untokenizer(self, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath):
+        """
+        Build the matching untokenizer for this tokenized dataset.
+
+        This is shared by generated samples and real test-token rows so both are
+        decoded with the exact same tokenizer-format logic.
+        """
+        tokenization_format = str(self.tokenized_metadata.get('format', 'base_tokenizer'))
+        tokenizer_class = str(self.tokenized_metadata.get('tokenizer_class', ''))
+        if tokenization_format == 'whole_particle' or tokenizer_class == 'EventPerSequenceWholeParticleTokenizer':
+            return untokenizer.WholeParticleUntokenizer(
+                self.dictionary,
+                input_samples_filepath,
+                output_samples_filepath,
+                output_metadata_filepath,
+                output_invalid_tokens_filepath,
+                self.tokenized_metadata,
+            )
+        return untokenizer.ParticleFeatureUntokenizer(
+            self.dictionary,
+            input_samples_filepath,
+            output_samples_filepath,
+            output_metadata_filepath,
+            output_invalid_tokens_filepath,
+            self.tokenized_metadata,
+        )
+
+    def untokenize_generated_data(self):
+        """
+        Untokenize the generated samples from the selected sampling directory.
+
+        Invalid generated rows are dropped by the current untokenizer and recorded
+        in invalid_token_events.json with the invalid token and reason.
+        """
+        sample_untokenizer = self.build_untokenizer(
+            self.generated_samples_filename,
+            self.untokenized_samples_filename,
+            self.untokenizing_metadata_filename,
+            self.invalid_tokens_filename,
+        )
+        sample_untokenizer.untokenize_file()
+
     def generate_verbose_particle_information(self):
         # Output will be num_particles, pdgid, e, px, py, pz, pt, eta, theta, phi
 
+        if not self.untokenized_samples_filename.exists():
+            self.untokenize_generated_data()
         untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=np.nan)
-        
+
         NUM_FEATURES_PER_PARTICLE_VERBOSE = 9
         verbose_data = np.full(shape=(untokenized_data.shape[0], untokenized_data.shape[1], NUM_FEATURES_PER_PARTICLE_VERBOSE), fill_value=np.nan, dtype=np.float64)
         for idx_e, event in enumerate(untokenized_data):
@@ -56,16 +195,16 @@ class Analyzer:
                 if particle[0] == np.nan:
                     verbose_data[idx_e, idx_p] = [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan]
                     continue
-                
+
                 pdgid, e, px, py, pz = particle
                 r = np.sqrt(px * px + py * py + pz * pz)
                 pt = np.sqrt(px * px + py * py)
                 theta = np.arccos(pz / r) if r != 0 else 0
                 phi = np.arctan2(py, px)
                 eta = -np.log(np.tan(theta / 2))
-                
+
                 verbose_data[idx_e, idx_p] = [pdgid, e, px, py, pz, pt, eta, theta, phi]
-        
+
         with open(self.verbose_particles_filename, 'w') as out_file:
             for event in verbose_data:
                 for particle in event:
@@ -74,116 +213,268 @@ class Analyzer:
                         continue
                     out_file.write(f'{int(pdgid)} {e:.5f} {px:.5f} {py:.5f} {pz:.5f} {pt:.5f} {eta:.5f} {theta:.5f} {phi:.5f};')
                 out_file.write('\n')
-        
+
     def filter_data(self):
-        num_features_per_particle = 4
-        
-        # Load data
-        tokenized_data = []
-        with open(self.generated_samples_filename) as gen_samples_file:
-            for event in gen_samples_file:
-                event = [int(x) for x in event.strip().split()]
-                tokenized_data.append(event)
-        
-        # Ensure valid borders
-        tokenized_data = [e for e in tokenized_data if e[0] == self.dictionary.event_start_token and e[-1] == self.dictionary.event_end_token]
-        
-        # Remove special tokens
-        tokenized_data = [[x for x in e if x not in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]] for e in tokenized_data]
-            
-        # Ensure events are well formed (at least num_features_per_particle features per particle and an number of particles)
-        tokenized_data = [e for e in tokenized_data if len(e) > num_features_per_particle and len(e) % num_features_per_particle == 0]
-        
-        # Util function; works on non-uniform 2D lists.
-        def convert_2D_list_to_array(lst, pad_token=np.nan, dtype=np.uint32):
-            max_len = max(len(sub) for sub in lst)
-            padded = np.full((len(lst), max_len), pad_token, dtype=dtype)
-            for i, sub in enumerate(lst):
-                padded[i, :len(sub)] = sub
-            return padded
-        
-        def vectorized_token_range_filtration():
-            nonlocal tokenized_data
-            tokenized_data = convert_2D_list_to_array(tokenized_data, pad_token=0, dtype=np.uint16)
-            
-            # Precompute (token, token type) mapping.
-            token_type_lookup = np.empty(self.dictionary.vocab_size, dtype=np.uint8)
-            for token in range(self.dictionary.vocab_size):
-                token_type_lookup[token] = self.dictionary.get_token_type(token).value
-            
-            # Convert token IDs to token types via lookup table.
-            token_types = token_type_lookup[tokenized_data]
+        """
+        Compatibility wrapper for the old analysis entrypoint.
 
-            # Build expected pattern based on token position in particle (pdgid, pt, eta, phi).
-            expected_pattern_arr = []
-            for type_str in self.dictionary.tokenization_schema:
-                if type_str == 'pdgid':
-                    expected_pattern_arr.append(ETokenTypes.PDGID.value)
-                elif type_str == 'pt':
-                    expected_pattern_arr.append(ETokenTypes.PT.value)
-                elif type_str == 'eta':
-                    expected_pattern_arr.append(ETokenTypes.ETA.value)
-                elif type_str == 'theta':
-                    expected_pattern_arr.append(ETokenTypes.THETA.value)
-                elif type_str == 'phi':
-                    expected_pattern_arr.append(ETokenTypes.PHI.value)
-                elif type_str == 'energy':
-                    expected_pattern_arr.append(ETokenTypes.ENERGY.value)
-                elif type_str == 'px':
-                    expected_pattern_arr.append(ETokenTypes.PX.value)
-                elif type_str == 'py':
-                    expected_pattern_arr.append(ETokenTypes.PY.value)
-                elif type_str == 'pz':
-                    expected_pattern_arr.append(ETokenTypes.PZ.value)
+        Filtering and invalid-token reporting now belong to untokenizer.py. This
+        method keeps older analysis calls working while using the current pipeline.
+        """
+        self.untokenize_generated_data()
 
-            expected_pattern = np.array(expected_pattern_arr, dtype=token_types.dtype)
-            expected_token_types = np.tile(expected_pattern, tokenized_data.shape[1] // num_features_per_particle)[:tokenized_data.shape[1]]
-            # Ensure padding is not counted among the expected token types.
-            padding_mask = tokenized_data == self.dictionary.padding_token
-            expected_token_types = np.where(~padding_mask, expected_token_types, ETokenTypes.PADDING.value).astype(int)
-            
-            # Filter rows where all tokens match the expected pattern.
-            valid_mask = np.all(token_types == expected_token_types, axis=1)
-            filtered_data = tokenized_data[valid_mask]
+    def generate_real_test_data(self):
+        """
+        Materialize and untokenize the real test sequences matching the samples.
 
-            return filtered_data
-        
-        tokenized_data = vectorized_token_range_filtration()
-        
-        # Output data
-        with open(self.filtered_samples_filename, 'w') as filtered_file:
+        The real comparison set comes from the same configured test_bin token
+        range used by sample.py. It is written into the sampling directory so
+        every sampling run has its own matching real-token and real-untokenized
+        files.
+        """
+        total_starters = self.sampling_metadata.get('total_starters', None)
+        if total_starters is None:
+            with open(self.generated_samples_filename) as gen_samples_file:
+                total_starters = sum(1 for event in gen_samples_file if event.strip() != '')
+        num_test_sequences = min(int(total_starters), int(self.dls_conf.num_sequences))
+
+        data = np.memmap(self.tmd_conf.tokenized_data_filepath, dtype=self.tmd_conf.dtype, mode='r')
+        token_start = self.test_split_start_token_idx
+        token_end = token_start + num_test_sequences * self.tmd_conf.sequence_length
+        if token_end > self.test_split_end_token_idx:
+            raise ValueError(
+                f"Requested real test token_end={token_end}, but test split ends at {self.test_split_end_token_idx}."
+            )
+
+        tokenized_data = data[token_start:token_end].reshape(num_test_sequences, self.tmd_conf.sequence_length)
+        with open(self.real_test_tokens_filename, 'w') as real_test_tokens_file:
             for event in tokenized_data:
-                event = [str(x) for x in event if x != self.dictionary.padding_token]
-                event = ' '.join(event)
-                filtered_file.write(event + '\n')
-     
+                real_test_tokens_file.write(' '.join(str(int(token)) for token in event) + '\n')
+
+        real_untokenizer = self.build_untokenizer(
+            self.real_test_tokens_filename,
+            self.real_test_untokenized_filename,
+            self.real_test_untokenizing_metadata_filename,
+            self.real_test_invalid_tokens_filename,
+        )
+        real_untokenizer.untokenize_file()
+
+    def convert_to_verbose_particles(self, untokenized_data):
+        """
+        Convert raw-style particles into the verbose analysis layout.
+
+        Input rows are expected to contain:
+            pdgid, e, px, py, pz
+
+        Output rows contain the columns expected by analysis_v2.plotting_v2:
+            pdgid, e, px, py, pz, pt, eta, theta, phi
+        """
+        NUM_FEATURES_PER_PARTICLE_VERBOSE = 9
+        verbose_data = np.full(shape=(untokenized_data.shape[0], untokenized_data.shape[1], NUM_FEATURES_PER_PARTICLE_VERBOSE), fill_value=np.nan, dtype=np.float64)
+        for idx_e, event in enumerate(untokenized_data):
+            for idx_p, particle in enumerate(event):
+                pdgid = particle[0]
+                if np.isnan(pdgid):
+                    continue
+
+                pdgid, e, px, py, pz = particle
+                r = np.sqrt(px * px + py * py + pz * pz)
+                pt = np.sqrt(px * px + py * py)
+                theta = np.arccos(np.clip(pz / r, -1.0, 1.0)) if r != 0 else 0
+                phi = np.arctan2(py, px)
+                eta = -np.log(np.tan(theta / 2)) if theta != 0 else np.inf
+
+                verbose_data[idx_e, idx_p] = [pdgid, e, px, py, pz, pt, eta, theta, phi]
+        return verbose_data
+
+    def extract_energy_conservation_for_analysis(self, in_dataset):
+        """
+        Return |E_in - E_out| for raw-style or verbose particle arrays.
+
+        This mirrors the old energy-conservation comparison without depending on
+        analysis_v2.dataset.extract_ein_eout_for_analysis, which still resolves
+        dictionaries through the old preparation-directory path.
+        """
+        e_in = in_dataset[:, 0, 1]
+        e_out = np.nansum(in_dataset[:, 1:, 1], axis=1)
+        return np.abs(e_in - e_out)
+
     def generate_distributions(self):
-        plotter = anal.plotting()
-        plotter.load_data_by_model_names([self.model_name])
-        
-        # The full training run probably isn't too useful, but we plot it anyway.
-        # plotter.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid.png')
-        # plotter.plot_pdgid_distribution_leading([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_leading_pdgid_log.png')
-        # plotter.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_all_pdgid.png')
-        # plotter.plot_pdgid_distribution_all([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_all_pdgid_log.png')
-        # plotter.plot_energy_conservation([self.model_name], normalized=True, use_log=True, out_file=self.latest_sampling_dir / 'distribution_energy_conservation_log.png')
-        # plotter.plot_energy_conservation([self.model_name], normalized=True, use_log=False, out_file=self.latest_sampling_dir / 'distribution_energy_conservation.png')
-        plotter.plot_num_particles([self.model_name], normalized=False, use_log=False, out_file=self.latest_sampling_dir / 'distribution_num_particles.png')
-        # for column_name in ['e', 'px', 'py', 'pz', 'pt', 'eta', 'theta', 'phi']:
-        #     plotter.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_{column_name}.png')
-        #     plotter.plot_distribution_leading([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_leading_log_{column_name}.png', use_log=True)
-        #     plotter.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_{column_name}.png')
-        #     plotter.plot_distribution_all([self.model_name], column_name, out_file=self.latest_sampling_dir / f'distribution_all_log_{column_name}.png', use_log=True)
+        """
+        Generate distribution plots with the current analysis_v2.py API.
+
+        analysis_v2.py exposes dataset-processing utilities and plotting_v2
+        methods directly. It no longer provides the old plotting() object with a
+        load_data_by_model_names(...) step, so this method loads the real and
+        generated files explicitly before plotting.
+        """
+        if not self.untokenized_samples_filename.exists():
+            self.untokenize_generated_data()
+        if not self.real_test_untokenized_filename.exists():
+            self.generate_real_test_data()
+
+        self.plotted_distributions_dir.mkdir(parents=True, exist_ok=True)
+
+        real_data = data_manager.load_geant4_dataset(self.real_test_untokenized_filename, pad_token=np.nan)
+        generated_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=np.nan)
+        real_verbose_data = self.convert_to_verbose_particles(real_data)
+        generated_verbose_data = self.convert_to_verbose_particles(generated_data)
+        model_legend_titles = ['Geant4', self.model_name]
+
+        real_leading_pdgid = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid', return_only_leading=True)
+        generated_leading_pdgid = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, 'pdgid', return_only_leading=True)
+        real_all_pdgid = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid')
+        generated_all_pdgid = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, 'pdgid')
+        real_energy_conservation = self.extract_energy_conservation_for_analysis(real_verbose_data)
+        generated_energy_conservation = self.extract_energy_conservation_for_analysis(generated_verbose_data)
+        real_num_particles = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, 'num_particles')
+        generated_num_particles = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, 'num_particles')
+
+        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+            column_name='pdgid',
+            ref_vals=real_leading_pdgid,
+            comp_vals_dict={self.model_name: generated_leading_pdgid},
+            model_legend_titles=model_legend_titles,
+            density=True,
+            use_log=False,
+            out_file=self.plotted_distributions_dir / 'distribution_leading_pdgid.png',
+            show_output=False,
+            sort_descending=True,
+        )
+        plt.close(fig)
+
+        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+            column_name='pdgid',
+            ref_vals=real_leading_pdgid,
+            comp_vals_dict={self.model_name: generated_leading_pdgid},
+            model_legend_titles=model_legend_titles,
+            density=True,
+            use_log=True,
+            out_file=self.plotted_distributions_dir / 'distribution_leading_pdgid_log.png',
+            show_output=False,
+            sort_descending=True,
+        )
+        plt.close(fig)
+
+        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+            column_name='pdgid',
+            ref_vals=real_all_pdgid,
+            comp_vals_dict={self.model_name: generated_all_pdgid},
+            model_legend_titles=model_legend_titles,
+            density=True,
+            use_log=False,
+            out_file=self.plotted_distributions_dir / 'distribution_all_pdgid.png',
+            show_output=False,
+            sort_descending=True,
+        )
+        plt.close(fig)
+
+        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+            column_name='pdgid',
+            ref_vals=real_all_pdgid,
+            comp_vals_dict={self.model_name: generated_all_pdgid},
+            model_legend_titles=model_legend_titles,
+            density=True,
+            use_log=True,
+            out_file=self.plotted_distributions_dir / 'distribution_all_pdgid_log.png',
+            show_output=False,
+            sort_descending=True,
+        )
+        plt.close(fig)
+
+        # fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+        #     column_name='energy_conservation',
+        #     ref_vals=real_energy_conservation,
+        #     comp_vals_dict={self.model_name: generated_energy_conservation},
+        #     model_legend_titles=model_legend_titles,
+        #     density=True,
+        #     use_log=True,
+        #     out_file=self.plotted_distributions_dir / 'distribution_energy_conservation_log.png',
+        #     show_output=False,
+        # )
+        # plt.close(fig)
+
+        # fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+        #     column_name='energy_conservation',
+        #     ref_vals=real_energy_conservation,
+        #     comp_vals_dict={self.model_name: generated_energy_conservation},
+        #     model_legend_titles=model_legend_titles,
+        #     density=True,
+        #     use_log=False,
+        #     out_file=self.plotted_distributions_dir / 'distribution_energy_conservation.png',
+        #     show_output=False,
+        # )
+        # plt.close(fig)
+
+        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+            column_name='num_particles',
+            ref_vals=real_num_particles,
+            comp_vals_dict={self.model_name: generated_num_particles},
+            model_legend_titles=model_legend_titles,
+            density=False,
+            use_log=False,
+            out_file=self.plotted_distributions_dir / 'distribution_num_particles.png',
+            show_output=False,
+        )
+        plt.close(fig)
+
+        for column_name in ['e', 'px', 'py', 'pz', 'pt', 'eta', 'theta', 'phi']:
+            real_leading_values = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, column_name, return_only_leading=True)
+            generated_leading_values = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, column_name, return_only_leading=True)
+            real_all_values = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, column_name)
+            generated_all_values = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, column_name)
+
+            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+                column_name=column_name,
+                ref_vals=real_leading_values,
+                comp_vals_dict={self.model_name: generated_leading_values},
+                model_legend_titles=model_legend_titles,
+                out_file=self.plotted_distributions_dir / f'distribution_leading_{column_name}.png',
+                show_output=False,
+            )
+            plt.close(fig)
+
+            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+                column_name=column_name,
+                ref_vals=real_leading_values,
+                comp_vals_dict={self.model_name: generated_leading_values},
+                model_legend_titles=model_legend_titles,
+                use_log=True,
+                out_file=self.plotted_distributions_dir / f'distribution_leading_log_{column_name}.png',
+                show_output=False,
+            )
+            plt.close(fig)
+
+            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+                column_name=column_name,
+                ref_vals=real_all_values,
+                comp_vals_dict={self.model_name: generated_all_values},
+                model_legend_titles=model_legend_titles,
+                out_file=self.plotted_distributions_dir / f'distribution_all_{column_name}.png',
+                show_output=False,
+            )
+            plt.close(fig)
+
+            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+                column_name=column_name,
+                ref_vals=real_all_values,
+                comp_vals_dict={self.model_name: generated_all_values},
+                model_legend_titles=model_legend_titles,
+                use_log=True,
+                out_file=self.plotted_distributions_dir / f'distribution_all_log_{column_name}.png',
+                show_output=False,
+            )
+            plt.close(fig)
 
     def get_real_jets(self):
         # -------------------------------------------------------------------------------
         # Preparing real Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # -------------------------------------------------------------------------------
-        
-        test_real_events = np.memmap(self.test_real_bin_filename, dtype=np.float64, mode='r')
-        test_real_events = test_real_events.reshape(-1, self.num_particles_per_event, 5)
-        angular_real_data = data_manager.convert_data_4vector_to_features(test_real_events, pad_token=0.0)
+
+        self.generate_real_test_data()
+        untokenized_data = data_manager.load_geant4_dataset(self.real_test_untokenized_filename, pad_token=0.0)
+        angular_real_data = data_manager.convert_data_4vector_to_features(untokenized_data, pad_token=0.0)
 
         accumulated_data = []
         for event in angular_real_data:
@@ -194,17 +485,20 @@ class Analyzer:
                 single_jet.append(features)
             accumulated_data.append(single_jet)
         return np.array(accumulated_data, np.float64)
-    
+
     def get_generated_jets(self):
         # -------------------------------------------------------------------------------
         # Preparing generated Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # -------------------------------------------------------------------------------
-        
+
+        if not self.untokenized_samples_filename.exists():
+            self.untokenize_generated_data()
+
         # Since untokenized samples file uses the same format as Geant4
         untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filename, pad_token=0.0)
         angular_untokenized_data = data_manager.convert_data_4vector_to_features(untokenized_data, pad_token=0.0)
-        
+
         accumulated_data = []
         for event in angular_untokenized_data:
             single_jet = []
@@ -214,51 +508,51 @@ class Analyzer:
                 single_jet.append(features)
             accumulated_data.append(single_jet)
         return np.array(accumulated_data, np.float64)
-    
+
     def calculate_metrics(self):
         real_jets = self.get_real_jets()
         generated_jets = self.get_generated_jets()
-        
+
         # Make sure real and generated jets have the same num events in them.
         num_events_in_jets = min(len(real_jets), len(generated_jets))
         real_jets = real_jets[:num_events_in_jets]
         generated_jets = generated_jets[:num_events_in_jets]
-        
+
         # -------------------------------------------------------------------------------
         # Coverage and MMD
         # -------------------------------------------------------------------------------
 
-        cov, mmd = anal.metrics.jetnet_eval_cov_mmd(real_jets, generated_jets)
+        cov, mmd = analv2.metrics.jetnet_eval_cov_mmd(real_jets, generated_jets)
 
         # -------------------------------------------------------------------------------
         # FPD and KPD
         # -------------------------------------------------------------------------------
 
-        suggested_real_features = anal.metrics.jetnet_get_suggested_kpd_fpd_features(real_jets)
-        suggested_generated_features = anal.metrics.jetnet_get_suggested_kpd_fpd_features(generated_jets)
+        suggested_real_features = analv2.metrics.jetnet_get_suggested_kpd_fpd_features(real_jets)
+        suggested_generated_features = analv2.metrics.jetnet_get_suggested_kpd_fpd_features(generated_jets)
 
         suggested_real_features = np.nan_to_num(suggested_real_features, nan=0.0)
         suggested_generated_features = np.nan_to_num(suggested_generated_features, nan=0.0)
 
-        kpd_median, kpd_error = anal.metrics.jetnet_eval_kpd(suggested_real_features, suggested_generated_features, num_threads=0)
-        fpd_value, fpd_error = anal.metrics.jetnet_eval_fpd(suggested_real_features, suggested_generated_features)
+        kpd_median, kpd_error = analv2.metrics.jetnet_eval_kpd(suggested_real_features, suggested_generated_features, num_threads=0)
+        fpd_value, fpd_error = analv2.metrics.jetnet_eval_fpd(suggested_real_features, suggested_generated_features)
 
         # -------------------------------------------------------------------------------
-        # Wasserstein Distances 
+        # Wasserstein Distances
         # -------------------------------------------------------------------------------
 
         # I don't know what this means so I am not using this one.
         # Wasserstein distances between Energy Flow Polynomials
-        # w1_scores_avg_efp = anal.metrics.jetnet_eval_w1efp(real_jets, generated_jets)
+        # w1_scores_avg_efp = analv2.metrics.jetnet_eval_w1efp(real_jets, generated_jets)
 
         # Wasserstein distance between masses of jets1 and jets2
-        w1_mass_score = anal.metrics.jetnet_eval_w1m(real_jets, generated_jets)
+        w1_mass_score = analv2.metrics.jetnet_eval_w1m(real_jets, generated_jets)
         # Wasserstein distances between particle features of jets1 and jets2
-        w1_scores_avg_features = anal.metrics.jetnet_eval_w1p(real_jets, generated_jets)
+        w1_scores_avg_features = analv2.metrics.jetnet_eval_w1p(real_jets, generated_jets)
 
         w1m_score = w1_mass_score[0]
         w1m_score_std = w1_mass_score[1]
-        
+
         w1p_avg_eta = w1_scores_avg_features[0][0]
         w1p_avg_phi = w1_scores_avg_features[0][1]
         w1p_avg_pt = w1_scores_avg_features[0][2]
@@ -287,23 +581,22 @@ class Analyzer:
             json.dump(metrics_results_dict, opt_file, indent=4)
 
 if __name__ == "__main__":
-    print(f'Generating distributions and metrics for dataset {conf.generic.preparation_name}.')
+    print(f"Generating distributions and metrics for config {getattr(conf.generic, 'preparation_config_file', 'unknown')}.")
     model_to_analyze = conf.generic.model_name
-        
+
     print(f'Analyzing model {model_to_analyze}')
-    
-    sampling_dir = pUtil.get_latest_sampling_dir(model_to_analyze)
+
+    sampling_dir = Analyzer.get_latest_sampling_dir(model_to_analyze)
     if not sampling_dir.exists():
         print(f'Analysis for model {model_to_analyze} cannot be performed, because no sampling data is available.')
         sys.exit()
-    
+
     # Run the analysis
     dataset_analyzer = Analyzer(model_to_analyze)
     # dataset_analyzer.filter_data()
-    # untokenizer.untokenize_data(dataset_analyzer.filtered_samples_filename, dataset_analyzer.untokenized_samples_filename)
+    # dataset_analyzer.untokenize_generated_data()
     # dataset_analyzer.generate_verbose_particle_information()
     dataset_analyzer.generate_distributions()
     # dataset_analyzer.calculate_metrics()
-    # wandb_doer.send_to_wandb(model_to_analyze)
-    
+
     print('Distributions and metrics generated successfully.')

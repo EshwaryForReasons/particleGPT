@@ -212,18 +212,6 @@ class Dictionary():
         self.PX_OFFSET = self.PT_OFFSET + len(self.pt_bins)
         self.PY_OFFSET = self.PX_OFFSET + len(self.px_bins)
         self.PZ_OFFSET = self.PY_OFFSET + len(self.py_bins)
-        
-        print("self.SPECIAL_TOKENS_OFFSET", self.SPECIAL_TOKENS_OFFSET)
-        print("self.PDGID_OFFSET", self.PDGID_OFFSET)
-        print("self.MATERIAL_OFFSET", self.MATERIAL_OFFSET)
-        print("self.ENERGY_OFFSET", self.ENERGY_OFFSET)
-        print("self.ETA_OFFSET", self.ETA_OFFSET)
-        print("self.THETA_OFFSET", self.THETA_OFFSET)
-        print("self.PHI_OFFSET", self.PHI_OFFSET)
-        print("self.PT_OFFSET", self.PT_OFFSET)
-        print("self.PX_OFFSET", self.PX_OFFSET)
-        print("self.PY_OFFSET", self.PY_OFFSET)
-        print("self.PZ_OFFSET", self.PZ_OFFSET)
 
         # Converts input particle ID to the relevant index
         self.pdgids = self.dictionary_data['pdgids']

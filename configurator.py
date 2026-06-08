@@ -20,6 +20,9 @@ class GenericConfiguration:
     use_particle_index_embd:    bool = False
     use_bin_value_embd:         bool = False
     bin_value_embd_init_scale:  float = 0.0
+    
+    # Important; must have
+    preparation_config_file:    str | None = None
 
 @dataclass
 class TrainingConfiguration:
@@ -35,7 +38,14 @@ class TrainingConfiguration:
     gradient_accumulation_steps: int = field(default=5 * 8)
     batch_size: int = 12
     block_size: int = -1
-    context_events: int = 1  # Used to compute block_size dynamically
+    # context_events is left for legacy purposes
+    context_events: int = -1  # Used to compute block_size dynamically
+    # used to compute block_size dynamically;
+    # number of sequences to concatenate together in a block. Only used if block_size is -1.
+    context_sequences: int = -1
+    # If True, then PADDING token will be used when constructing Y tensors for training.
+    # If False, then a real token from the next block will be used as the final target token.
+    use_self_contained_blocks: bool = False
 
     # model
     n_layer: int = 12
@@ -79,6 +89,7 @@ class TrainingConfiguration:
     dtype: str = field(init=False)
     compile: bool = True
     iterations_per_epoch: int = 0
+    seed: int = 1337
     
     meta_benchmarking: bool = False
 
@@ -99,6 +110,7 @@ class SamplingConfiguration:
     device:                 str = 'cuda'
     dtype:                  str = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
     compile:                bool = True
+    max_test_sequences:     int | None = None
 
 generic = None
 training = None

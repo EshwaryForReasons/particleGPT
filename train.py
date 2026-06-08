@@ -25,30 +25,31 @@ Multi-node DDP, 2 nodes:
 
 from __future__ import annotations
 
-import inspect
 import json
 import math
 import os
 import re
 import time
 import socket
+import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from enum import Enum
 
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
 import configurator as conf
-import model as model_module
+import particleGPT.model as model_module
 import pLogging
-from model import GPT, GPTConfig
+from particleGPT.model import GPT, GPTConfig
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -85,58 +86,362 @@ class PrecisionState:
             return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         return nullcontext()
 
+@dataclass
+class ModelInitResult:
+    """
+    base_model: unwrapped GPT instance
+    model_args: final args used to build the model
+    checkpoint: loaded checkpoint if resuming, else None
+    iter_num: next optimizer iteration to run
+    best_val_loss: best validation loss carried from checkpoint or inf
+    init_source: "scratch" or "resume"
+    num_failed_checkpoint_checks: number of consecutive failed checkpoint checks, from checkpoint or 0
+    """
+    base_model: GPT
+    model_args: Dict[str, Any]
+    checkpoint: Optional[Dict[str, Any]]
+    iter_num: int
+    best_val_loss: float
+    init_source: str
+    num_failed_checkpoint_checks: int
+
+# =====================
+# Datasets, Split config, Dataloader, Overlap detection
+# =====================
+
+class ESplitTypes(Enum):
+    NONE        = 0,
+    TRAIN       = 1,
+    VALIDATION  = 2,
+    TEST        = 3
+    
+class DataloaderSplitConfig():
+    """Represents one bin's config from the preparation config"""
+    split_type:                  ESplitTypes = ESplitTypes.NONE
+    num_sequences:               int | None = None
+    skip_sequences:              int | None = None
+    from_end:                    bool | None = None
+    tokenized_metadata_filepath: Path | None = None
+    
+    split_config_key_map = {
+        ESplitTypes.NONE: "",
+        ESplitTypes.TRAIN: "train_bin",
+        ESplitTypes.VALIDATION: "validation_bin",
+        ESplitTypes.TEST: "test_bin",
+    }
+    
+    def __init__(self, split_type: ESplitTypes, preparation_config_filepath: Path):
+        if not preparation_config_filepath.exists():
+            raise FileNotFoundError("preparation_config_file does not exist. Please make sure the provided file exists!")
+        
+        self.split_type = split_type
+        
+        try:
+            with open(preparation_config_filepath, "r") as f:
+                prep_conf_json = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Failure while trying to load json! Exception:\n{exc}") from exc
+        
+        # Create DataloaderSplitConfig for this split
+        split_str = self.split_config_key_map[self.split_type]
+        self.num_sequences = int(prep_conf_json[split_str]['num_sequences'])
+        self.skip_sequences = int(prep_conf_json[split_str]['skip_sequences'])
+        self.from_end = prep_conf_json[split_str]['from_end']
+        self.tokenized_metadata_filepath = Path(prep_conf_json['tokenized_metadata_file'])
+        
+        if self.num_sequences is None or self.num_sequences <= 0:
+            raise RuntimeError("preparation config: num sequences cannot be none or less than zero!")
+        if self.skip_sequences is None or self.skip_sequences < 0:
+            raise RuntimeError("preparation config: skip sequences cannot be none or less than zero!")
+        if not isinstance(self.from_end, bool):
+            raise RuntimeError("preparation config: from end must be a bool!")
+    
+    def verify(self) -> bool:
+        """Ensures no members are None. No members should ever be None"""
+        return (self.num_sequences is not None 
+            and self.skip_sequences is not None
+            and self.from_end is not None
+            and self.tokenized_metadata_filepath is not None)
+        
+class TokenizedMetadataConfig():
+    """
+    These represent properties of the entire tokenized dataset.
+    While all are loaded, only some "meta" quantities like sequence_length and dtype are useful.
+    """
+    dtype:                   np.dtype | None = None
+    sequence_length:         int | None = None
+    vocab_size:              int | None = None
+    total_sequences:         int | None = None
+    total_tokens:            int | None = None
+    num_full_sequences:      int | None = None
+    tokenized_data_filepath: Path | None = None 
+    
+    def __init__(self, tokenized_metadata_filepath: Path) -> None:
+        if not tokenized_metadata_filepath.exists():
+            raise FileNotFoundError("tokenized_metadata_filepath does not exist. Please make sure the provided file exists!")
+        
+        try:
+            with open(tokenized_metadata_filepath, "r") as f:
+                tokenized_mdata_json = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Failure while trying to load json! Exception:\n{exc}") from exc
+        
+        dtype_str = tokenized_mdata_json["dtype"]
+        self.dtype = np.dtype(dtype_str).type
+        self.vocab_size = int(tokenized_mdata_json["vocab_size"])
+        self.sequence_length = int(tokenized_mdata_json["sequence_length"])
+        self.total_sequences = int(tokenized_mdata_json["total_sequences"])
+        self.total_tokens = int(tokenized_mdata_json["total_tokens"])
+        self.num_full_sequences = int(tokenized_mdata_json["num_full_sequences"])
+        self.tokenized_data_filepath = Path(tokenized_mdata_json["tokenized_data_file"])
+        
+        if not np.issubdtype(np.dtype(self.dtype), np.integer):
+            raise TypeError(f"Tokenizer metadata specifies dtype={self.dtype}, which is not an integer dtype!")
+        if self.vocab_size > np.iinfo(self.dtype).max + 1:
+            raise RuntimeError(
+                f"Tokenizer metadata specifies vocab_size={self.vocab_size}, which exceeds the capacity of the dtype {self.dtype} "
+                f"(max value {np.iinfo(self.dtype).max}). Reduce the vocab size or use a larger dtype."
+            )
+        if self.sequence_length is None or self.sequence_length <= 0:
+            raise RuntimeError("tokenizer metadata: sequence length cannot be none or less than zero!")
+        if self.total_sequences is None or self.total_sequences < 0:
+            raise RuntimeError("tokenizer metadata: total sequences cannot be none or less than zero!")
+        if self.total_tokens is None or self.total_tokens < 0:
+            raise RuntimeError("tokenizer metadata: total tokens cannot be none or less than zero!")
+        if self.num_full_sequences is None or self.num_full_sequences < 0:
+            raise RuntimeError("tokenizer metadata: num full sequences cannot be none or less than zero!")
+        if not self.tokenized_data_filepath.exists():
+            raise FileNotFoundError("tokenized_data_filepath does not exist. Please make sure the provided file exists!")
+        
+    def verify(self) -> bool:
+        """Ensures no members are None. No members should ever be None"""
+        return (self.dtype is not None 
+            and self.sequence_length is not None
+            and self.vocab_size is not None
+            and self.total_sequences is not None
+            and self.total_tokens is not None
+            and self.num_full_sequences is not None
+            and self.tokenized_data_filepath is not None)
+    
 class TokenBlockDataset(Dataset):
     """
     Memmap-backed dataset of fixed-length token blocks.
+    
+    Provided a split name, this class will derive the rest from the `dataloader` section
+    in the model config file.
 
     Each item returns:
         x: input tokens, shape (block_size,)
         y: next-token targets, shape (block_size,)
 
-    The final target token is padding because there is no next token inside the
-    current fixed block. The model loss ignores this padding token.
+    If use_extra_target_token=True:
+        The dataset reads block_size + 1 raw tokens and returns:
+            x = chunk[:-1]
+            y = chunk[1:]
+
+        - In this mode, y[-1] is the real next token after the block.
+        - This mode is ideal for natural language training.
+
+    If use_extra_target_token=False:
+        The dataset reads exactly block_size raw tokens and returns:
+            x = chunk
+            y[:-1] = x[1:]
+            y[-1] = padding_token
+
+        - In this mode, the final target token is padding because there is no next
+        token inside the current fixed block. The model loss should ignore this
+        padding token.
+        - This mode is ideal for training on collision events because it ensures
+        each block is self-contained.
     """
-
-    def __init__(self, data_filepath: Path, block_size: int, padding_token: int = PADDING_TOKEN):
-        self.data_filepath = Path(data_filepath)
-        self.block_size = int(block_size)
-        self.padding_token = int(padding_token)
-        self._data: Optional[np.memmap] = None
-
-        if self.block_size <= 0:
-            raise ValueError(f"block_size must be positive, got {self.block_size}")
-        if not self.data_filepath.exists():
-            raise FileNotFoundError(f"Missing token file: {self.data_filepath}")
-
-        data = np.memmap(self.data_filepath, dtype=np.uint16, mode="r")
-        if len(data) % self.block_size != 0:
+    
+    padding_token = PADDING_TOKEN
+    use_extra_target_token = True
+    
+    def __init__(self, split_type: ESplitTypes):
+        if split_type != ESplitTypes.TRAIN and split_type != ESplitTypes.VALIDATION:
+            raise ValueError("Split type has to be train or validation!")
+        if conf.generic.preparation_config_file is None:
+            raise ValueError("preparation_config_file in configuration cannot be None!")
+        
+        use_self_contained_blocks = getattr(conf.training, "use_self_contained_blocks", None)
+        if use_self_contained_blocks is None:
+            raise RuntimeError("use_self_contained_blocks config cannot be None!")
+        if not isinstance(use_self_contained_blocks, bool):
+            raise TypeError("use_self_contained_blocks must be a bool!")
+        self.use_extra_target_token = not use_self_contained_blocks
+        
+        if use_self_contained_blocks and self.block_size % self.tmd_conf.sequence_length != 0:
             raise ValueError(
-                f"{self.data_filepath} contains {len(data):,} tokens, which is not divisible "
-                f"by block_size={self.block_size}. Regenerate the prepared data or choose a "
-                "compatible block_size."
+                f"block_size {self.block_size} must be a multiple of sequence_length {self.tmd_conf.sequence_length} "
+                "when use_self_contained_blocks is True to ensure blocks do not cross sequence boundaries."
             )
-        self.num_samples = len(data) // self.block_size
+        
+        self.split_type = split_type
+        
+        # Load preparation config file and extract relevant data from it
+        preparation_config_filepath = Path(conf.generic.preparation_config_file)
+        self.dls_conf = DataloaderSplitConfig(self.split_type, preparation_config_filepath)
+        if not self.dls_conf.verify():
+            raise RuntimeError("Failure when verifying dataloader split config. Ensure all required arguments exist.")
+        
+        # Load tokenized metadata and extract relevant data from it
+        tokenized_metadata_filepath = Path(self.dls_conf.tokenized_metadata_filepath)
+        self.tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
+        if not self.tmd_conf.verify():
+            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
+                
+        # Fancy way to calculate token count in dataset without using np.memmap and len().
+        # Small performance optimization
+        file_bytes = self.tmd_conf.tokenized_data_filepath.stat().st_size
+        dtype_bytes = np.dtype(self.tmd_conf.dtype).itemsize
+        if file_bytes % dtype_bytes != 0:
+            raise ValueError(
+                f"Size of tokenized data file ({file_bytes} bytes) is not divisible by the size of the dtype {self.tmd_conf.dtype} "
+                f"({dtype_bytes} bytes). The file may be corrupted or the metadata may be wrong."
+            )
+        _data_total_tokens = file_bytes // dtype_bytes
+        
+        # Verify data is well-formed and our metadata is reliable
+        if _data_total_tokens != self.tmd_conf.total_tokens:
+            raise ValueError(
+                f"Tokenized data contains {_data_total_tokens:,} tokens, but expected {self.tmd_conf.total_tokens:,} "
+                "based on the tokenized metadata. Regenerate the prepared data or fix the metadata."
+            )
+        if _data_total_tokens % self.tmd_conf.sequence_length != 0:
+            raise ValueError(
+                f"Tokenized data contains {_data_total_tokens:,} tokens, which is not divisible by the sequence length "
+                f"{self.tmd_conf.sequence_length}. Regenerate the prepared data or fix the metadata."
+            )
+        _data_total_sequences = _data_total_tokens // self.tmd_conf.sequence_length
+        if _data_total_sequences != self.tmd_conf.num_full_sequences:
+            raise ValueError(
+                f"Tokenized data contains {_data_total_sequences:,} full sequences, but expected {self.tmd_conf.num_full_sequences:,} "
+                "based on the tokenized metadata. Regenerate the prepared data or fix the metadata."
+            )
+        
+        self.block_size = int(conf.training.block_size)
+        if self.block_size <= 0:
+            raise ValueError(f"block_size must be a positive integer, got {self.block_size}.")
+            
+        raw_split_tokens = self.dls_conf.num_sequences * self.tmd_conf.sequence_length
+        tokens_needed_per_sample = self.block_size + int(self.use_extra_target_token)
+        # Ensure this preparation provides this split at least enough tokens for one sample given the configured block size
+        if raw_split_tokens < tokens_needed_per_sample:
+            raise ValueError(
+                f"Split has {raw_split_tokens} tokens, but block_size={self.block_size} "
+                f"with use_extra_target_token={self.use_extra_target_token} requires at least "
+                f"{tokens_needed_per_sample} tokens."
+            )
+            
+        if self.use_extra_target_token:
+            # Need block_size + 1 raw tokens per sample: x = chunk[:-1], y = chunk[1:]
+            self.split_num_samples = (raw_split_tokens - 1) // self.block_size
+            self.num_split_tokens = self.split_num_samples * self.block_size + 1
+        else:
+            # Need block_size raw tokens per sample: x = chunk, y[:-1] = x[1:], y[-1] = PADDING
+            self.split_num_samples = raw_split_tokens // self.block_size
+            self.num_split_tokens = self.split_num_samples * self.block_size
+            
+        self.split_tokens_dropped = raw_split_tokens - self.num_split_tokens
+        if self.split_tokens_dropped != 0:
+            warnings.warn(
+                f"The raw split has {raw_split_tokens} tokens, but only {self.num_split_tokens} "
+                f"tokens are usable with block_size={self.block_size} and "
+                f"use_extra_target_token={self.use_extra_target_token}. "
+                f"Dropping {self.split_tokens_dropped} token(s) from the end of the split.",
+                RuntimeWarning,
+            )
+        
+        # Calculate raw (before block_size adjustment) start and end token indices and verify the dataset can provide it.
+        # This is for verification for the config.
+        # Example:
+        #     total_tokens = 100
+        #     sequence_length = 10
+        #     skip_sequences = 8      # start at token 80
+        #     num_sequences = 3       # raw request is tokens 80:110, invalid
+        #     block_size = 19
+        # Raw split asks for 30 tokens, but usable split becomes 20 tokens. This makes the final range
+        # 80:100, which is valid, but the config is misleading because it implies 30 tokens when only 20 are usable.
+        # The following check catches this style of issue.
+        if self.dls_conf.from_end:
+            raw_end = (self.tmd_conf.num_full_sequences - self.dls_conf.skip_sequences) * self.tmd_conf.sequence_length
+            raw_start = raw_end - raw_split_tokens
+        else:
+            raw_start = self.dls_conf.skip_sequences * self.tmd_conf.sequence_length
+            raw_end = raw_start + raw_split_tokens
+
+        if raw_start < 0 or raw_end > self.tmd_conf.total_tokens or raw_start >= raw_end:
+            raise ValueError(
+                f"Invalid raw split range: raw_start={raw_start}, raw_end={raw_end}, "
+                f"total_tokens={self.tmd_conf.total_tokens}."
+            )
+            
+        self.split_start_token_idx = raw_start
+        self.split_end_token_idx = raw_start + self.num_split_tokens
+        
+        if (self.split_start_token_idx < 0
+            or self.split_end_token_idx > self.tmd_conf.total_tokens
+            or self.split_start_token_idx >= self.split_end_token_idx
+            or self.split_end_token_idx - self.split_start_token_idx != self.num_split_tokens
+        ):
+            raise ValueError(
+                f"Invalid usable token range: split_start_token_idx={self.split_start_token_idx}, "
+                f"split_end_token_idx={self.split_end_token_idx}, "
+                f"num_split_tokens={self.num_split_tokens}, "
+                f"total_tokens={self.tmd_conf.total_tokens}."
+            )
+        
+        # Set to None so _get_data can function properly, i.e. so lazy loading works
+        self._data = None
 
     def _get_data(self) -> np.memmap:
         """Open the memmap lazily so each DataLoader worker owns its handle."""
         if self._data is None:
-            data = np.memmap(self.data_filepath, dtype=np.uint16, mode="r")
-            self._data = data.reshape(-1, self.block_size)
+            data = np.memmap(
+                self.tmd_conf.tokenized_data_filepath, dtype=self.tmd_conf.dtype, mode="r"
+            )
+            self._data = data[self.split_start_token_idx : self.split_end_token_idx]
         return self._data
 
     def __len__(self) -> int:
-        return self.num_samples
+        return self.split_num_samples
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        row = self._get_data()[index]
+        """
+        index: refers to the n-th sample
+        """
+        # These if-blocks add support for normal python style indexing
+        # i.e. dataset[-1] becomes dataset[num_samples - 1], etc.
+        if index < 0:
+            index += self.split_num_samples
+        if index < 0 or index >= self.split_num_samples:
+            raise IndexError(index)
+        
+        local_start = index * self.block_size
+        if self.use_extra_target_token:
+            local_end = local_start + self.block_size + 1
+            chunk = self._get_data()[local_start:local_end]
+            if len(chunk) != self.block_size + 1:
+                raise RuntimeError(f"Expected {self.block_size + 1} tokens, got {len(chunk)}.")
+            
+            # Embedding inputs must be int64/long.
+            # copy=True avoids PyTorch warnings about non-writable numpy memmap buffers.
+            chunk = chunk.astype(np.int64, copy=True)
+            x = torch.from_numpy(chunk[:-1])
+            y = torch.from_numpy(chunk[1:])
+        else:
+            local_end = local_start + self.block_size
+            chunk = self._get_data()[local_start:local_end]
+            if len(chunk) != self.block_size:
+                raise RuntimeError(f"Expected {self.block_size} tokens, got {len(chunk)}.")
 
-        # Embedding inputs must be int64/long. copy=True avoids PyTorch warnings
-        # about non-writable numpy memmap buffers.
-        x = torch.from_numpy(row.astype(np.int64, copy=True))
-
-        y = torch.empty_like(x)
-        y[:-1] = x[1:]
-        y[-1] = self.padding_token
+            chunk = chunk.astype(np.int64, copy=True)
+            x = torch.from_numpy(chunk)
+            y = torch.empty_like(x)
+            y[:-1] = x[1:]
+            y[-1] = self.padding_token
+        
         return x, y
 
 class CUDAPrefetcher:
@@ -188,6 +493,51 @@ class CUDAPrefetcher:
         self._preload()
         return x, y
 
+class EpochSeededRandomSampler(Sampler[int]):
+    """
+    Needed to ensure single-GPU sampling is deterministic.
+    For DDP, this is handled by DistributedSampler.
+    """
+    def __init__(self, dataset: Dataset, seed: int = 1337):
+        self.dataset = dataset
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        indices = torch.randperm(len(self.dataset), generator=generator).tolist()
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+                   
+def assert_no_overlap(a: TokenBlockDataset, b: TokenBlockDataset) -> None:
+    a_path = Path(a.tmd_conf.tokenized_data_filepath).resolve()
+    b_path = Path(b.tmd_conf.tokenized_data_filepath).resolve()
+    
+    # If the datasets are not the same, then probably no overlap. We do not check
+    # for overlap across different files because that overlap would not be a sequence
+    # index overlap, but a sequence content overlap. That is a different issue and
+    # the files are expected to be verified for sequence content overlap before usage.
+    if a_path != b_path:
+        return
+
+    lo = max(a.split_start_token_idx, b.split_start_token_idx)
+    hi = min(a.split_end_token_idx, b.split_end_token_idx)
+
+    if lo < hi:
+        raise ValueError(
+            "Dataset split overlap detected: "
+            f"a=[{a.split_start_token_idx}, {a.split_end_token_idx}), "
+            f"b=[{b.split_start_token_idx}, {b.split_end_token_idx}), "
+            f"overlap=[{lo}, {hi})"
+        )
+
+
 def log_info(logger_idx: int, message: str, payload: Optional[Mapping[str, Any]] = None) -> None:
     """Thin wrapper so logging intent is obvious at call sites."""
     if payload is None:
@@ -224,10 +574,19 @@ def init_distributed() -> DDPState:
     torch.cuda.set_device(device)
 
     requested_grad_accum = int(conf.training.gradient_accumulation_steps)
+    if requested_grad_accum <= 0:
+        raise ValueError(f"gradient_accumulation_steps must be a positive integer, got {requested_grad_accum}.")
     if requested_grad_accum % world_size != 0:
         raise ValueError(
             "gradient_accumulation_steps must be divisible by WORLD_SIZE. "
             f"Got gradient_accumulation_steps={requested_grad_accum}, WORLD_SIZE={world_size}."
+        )
+    
+    per_rank_grad_accum = requested_grad_accum // world_size
+    if per_rank_grad_accum <= 0:
+        raise ValueError(
+            f"Per-rank gradient accumulation became {per_rank_grad_accum}; "
+            f"got global gradient_accumulation_steps={requested_grad_accum}, world_size={world_size}."
         )
     conf.training.gradient_accumulation_steps = requested_grad_accum // world_size
 
@@ -240,15 +599,6 @@ def init_distributed() -> DDPState:
         seed_offset=rank,
         device=device,
     )
-
-def destroy_distributed(ddp_state: DDPState) -> None:
-    """Cleanly tear down the process group."""
-    if ddp_state.enabled and dist.is_initialized():
-        dist.destroy_process_group()
-
-def barrier(ddp_state: DDPState) -> None:
-    if ddp_state.enabled:
-        dist.barrier()
 
 def broadcast_bool(value: bool, ddp_state: DDPState, src: int = 0) -> bool:
     """Broadcast a boolean decision from rank 0 to every rank."""
@@ -272,57 +622,6 @@ def configure_precision(device: str) -> PrecisionState:
     dtype = dtype_map[conf.training.dtype]
     scaler = torch.amp.GradScaler("cuda", enabled=(device_type == "cuda" and dtype == torch.float16))
     return PrecisionState(device_type=device_type, dtype=dtype, scaler=scaler)
-
-def setup_reproducibility(seed_offset: int) -> None:
-    """Set deterministic-ish seeds and allow TF32 for speed on Ampere+ GPUs."""
-    torch.manual_seed(1337 + seed_offset)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1337 + seed_offset)
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-
-def load_json(path: Path) -> Dict[str, Any]:
-    with open(path, "r") as f:
-        return json.load(f)
-
-def resolve_paths(logger_idx: int) -> Tuple[Path, Path, Path]:
-    """Create/check output and preparation paths."""
-    model_output_dir = SCRIPT_DIR / "trained_models" / conf.generic.model_name
-    model_output_dir.mkdir(parents=True, exist_ok=True)
-
-    prep_dir = SCRIPT_DIR / "preparations" / conf.generic.preparation_name
-    if not prep_dir.exists():
-        log_info(logger_idx, "No preparation directory found; check conf.generic.preparation_name.")
-        raise FileNotFoundError(f"Missing preparation directory: {prep_dir}")
-
-    prep_info_filepath = prep_dir / "preparation_info.json"
-    if not prep_info_filepath.exists():
-        log_info(logger_idx, "No preparation_info.json found in preparation directory.")
-        raise FileNotFoundError(f"Missing preparation info file: {prep_info_filepath}")
-
-    return model_output_dir, prep_dir, prep_info_filepath
-
-def apply_derived_config(prep_info: Mapping[str, Any]) -> Tuple[int, int]:
-    """Derive block_size/vocab_size from prepared data and config."""
-    prep_vocab_size = int(prep_info["vocab_size"])
-    prep_max_sequence_length = int(prep_info["max_sequence_length"])
-
-    if prep_vocab_size > np.iinfo(np.uint16).max + 1:
-        raise ValueError(
-            "Prepared data are read as uint16, but vocab_size exceeds uint16 capacity. "
-            f"Got vocab_size={prep_vocab_size}. Use uint32 data or reduce the vocabulary."
-        )
-
-    if conf.training.block_size == -1 and conf.training.context_events != -1:
-        conf.training.block_size = int(conf.training.context_events) * prep_max_sequence_length
-
-    if conf.training.block_size <= 0:
-        raise ValueError(
-            "conf.training.block_size must be positive, or set block_size=-1 with "
-            "context_events > 0 so it can be derived from the preparation."
-        )
-
-    return prep_vocab_size, prep_max_sequence_length
 
 def namespace_to_plain_dict(namespace: Any) -> Dict[str, Any]:
     """Serialize simple public config attributes for checkpoint metadata."""
@@ -357,20 +656,6 @@ def find_latest_indexed_checkpoint(directory: Path, pattern: re.Pattern[str]) ->
 
     return best_idx, best_path
 
-def get_latest_running_ckpt_filepath(model_output_dir: Path) -> Tuple[int, Optional[Path]]:
-    return find_latest_indexed_checkpoint(model_output_dir, RUNNING_CKPT_RE)
-
-def get_latest_epoch_ckpt_filepath(model_output_dir: Path) -> Tuple[int, Optional[Path]]:
-    return find_latest_indexed_checkpoint(model_output_dir, EPOCH_CKPT_RE)
-
-def torch_load_checkpoint(path: Path, device: str) -> Dict[str, Any]:
-    """Load a training checkpoint with compatibility across PyTorch versions."""
-    kwargs: Dict[str, Any] = {"map_location": device}
-    if "weights_only" in inspect.signature(torch.load).parameters:
-        # Optimizer checkpoints contain more than raw tensor weights.
-        kwargs["weights_only"] = False
-    return torch.load(path, **kwargs)
-
 def checkpoint_resume_iter(checkpoint: Mapping[str, Any]) -> int:
     """
     Return the next optimizer iteration to run.
@@ -385,13 +670,13 @@ def checkpoint_resume_iter(checkpoint: Mapping[str, Any]) -> int:
         return iter_num + 1
     return iter_num
 
-def choose_resume_checkpoint(model_output_dir: Path, device: str) -> Tuple[Optional[Path], int]:
+def choose_resume_checkpoint(model_output_dir: Path) -> Tuple[Optional[Path], int]:
     """Pick the newest resumable checkpoint among running and epoch checkpoints."""
     if conf.training.init_from == "scratch":
         return None, 0
 
-    _, running_path = get_latest_running_ckpt_filepath(model_output_dir)
-    _, epoch_path = get_latest_epoch_ckpt_filepath(model_output_dir)
+    _, running_path = find_latest_indexed_checkpoint(model_output_dir, RUNNING_CKPT_RE)
+    _, epoch_path = find_latest_indexed_checkpoint(model_output_dir, EPOCH_CKPT_RE)
 
     candidates = [path for path in (running_path, epoch_path) if path is not None]
     if not candidates:
@@ -400,8 +685,14 @@ def choose_resume_checkpoint(model_output_dir: Path, device: str) -> Tuple[Optio
     best_path: Optional[Path] = None
     best_iter = -1
     for path in candidates:
-        checkpoint = torch_load_checkpoint(path, device)
+        # Open with CPU to avoid GPU transfers.
+        # @TODO: consider using a custom metadata file alongside each checkpoint to avoid loading 
+        #   the full checkpoint just to read the iteration number.
+        # @TODO: for very large models, perhaps using FakeTensors will be ideal.
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         resume_iter = checkpoint_resume_iter(checkpoint)
+        del checkpoint
+
         if resume_iter > best_iter:
             best_iter = resume_iter
             best_path = path
@@ -431,6 +722,7 @@ def unwrap_model(train_model: torch.nn.Module) -> torch.nn.Module:
 
 def build_model_args(prep_vocab_size: int) -> Dict[str, Any]:
     """Build GPTConfig kwargs from the training config."""
+    
     model_args: Dict[str, Any] = {
         "n_layer": conf.training.n_layer,
         "n_head": conf.training.n_head,
@@ -464,10 +756,29 @@ def build_model_args(prep_vocab_size: int) -> Dict[str, Any]:
         "use_bin_value_embeddings",
         "bin_embedding_init_scale",
     )
+    
+    # Maybe override model args
     for field in optional_config_fields:
-        if hasattr(conf.training, field):
-            model_args[field] = getattr(conf.training, field)
+        if not hasattr(conf.training, field):
+            continue
 
+        training_value = getattr(conf.training, field)
+        # Treat None as "not specified in training config"
+        if training_value is None:
+            continue
+        
+        existing_value = model_args.get(field)
+        # Do not allow accidental architecture drift.
+        # @TODO: maybe add a flag that overlooks this check and allows for architecture to change
+        #   across runs.
+        if existing_value is not None and training_value != existing_value:
+            raise ValueError(
+                f"Conflicting model arg {field!r}: generic/config value={existing_value!r}, "
+                f"training value={training_value!r}."
+            )
+
+        model_args[field] = training_value
+                            
     return model_args
 
 def architecture_keys() -> Tuple[str, ...]:
@@ -488,63 +799,80 @@ def architecture_keys() -> Tuple[str, ...]:
         "num_features_per_particle",
         "max_particles_per_event",
         "use_bin_value_embeddings",
+        "data_mode",
+        "embedding_norm_init_scale",
+        "bin_embedding_init_scale",
     )
 
-def initialize_or_resume_model(
-    model_output_dir: Path,
-    model_args: Dict[str, Any],
-    logger_idx: int,
-    device: str,
-) -> Tuple[GPT, Dict[str, Any], Optional[Dict[str, Any]], int, float, str]:
+def initialize_or_resume_model(model_output_dir: Path, model_args: Dict[str, Any], logger_idx: int, device: str) -> ModelInitResult:
     """
     Create a new GPT or resume one from the newest running/epoch checkpoint.
-
-    Returns:
-        base_model: unwrapped GPT instance
-        model_args: final args used to build the model
-        checkpoint: loaded checkpoint if resuming, else None
-        iter_num: next optimizer iteration to run
-        best_val_loss: best validation loss carried from checkpoint or inf
-        init_source: "scratch" or "resume"
+    Loads the model on CPU in case of resume to avoid GPU memory spikes.
     """
-    resume_path, resume_iter = choose_resume_checkpoint(model_output_dir, device)
-
+    resume_path, resume_iter = choose_resume_checkpoint(model_output_dir)
     if resume_path is None:
         log_info(logger_idx, "Initializing a new model from scratch")
         log_info(logger_idx, "Training progress", {"info": "Initializing a new model from scratch"})
-        return GPT(GPTConfig(**model_args)), model_args, None, 0, float("inf"), "scratch"
+        init_result = ModelInitResult(
+            base_model=GPT(GPTConfig(**model_args)),
+            model_args=model_args,
+            checkpoint=None,
+            iter_num=0,
+            best_val_loss=float("inf"),
+            init_source="scratch",
+            num_failed_checkpoint_checks=0,
+        )
+        return init_result
 
     log_info(logger_idx, f"Resuming training from {resume_path}")
     log_info(logger_idx, "Training progress", {"info": f"Resuming training from {resume_path}"})
 
-    checkpoint = torch_load_checkpoint(resume_path, device)
+    # Load on CPU first to avoid memory spike. This is before model and optimizer are fully constructed.
+    checkpoint = torch.load(resume_path, **{"map_location": "cpu", "weights_only": False})
     checkpoint_model_args = dict(checkpoint["model_args"])
 
     # Keep architecture fixed to the checkpoint. Non-architectural training choices
     # such as dropout may still come from the current config.
     for key in architecture_keys():
-        if key in checkpoint_model_args:
-            model_args[key] = checkpoint_model_args[key]
+        if key not in checkpoint_model_args:
+            continue
+
+        current_value = model_args.get(key)
+        checkpoint_value = checkpoint_model_args[key]
+        if current_value != checkpoint_value:
+            log_info(
+                logger_idx,
+                "Overriding current architecture config with checkpoint value",
+                {"key": key, "current": current_value, "checkpoint": checkpoint_value},
+            )
+
+        model_args[key] = checkpoint_value
 
     base_model = GPT(GPTConfig(**model_args))
     base_model.load_state_dict(clean_state_dict_keys(checkpoint["model"]))
 
     best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
-    return base_model, model_args, checkpoint, resume_iter, best_val_loss, "resume"
+    num_failed_checkpoint_checks = int(checkpoint.get("num_failed_checkpoint_checks", 0))
+    init_result = ModelInitResult(
+        base_model=base_model,
+        model_args=model_args,
+        checkpoint=checkpoint,
+        iter_num=resume_iter,
+        best_val_loss=best_val_loss,
+        init_source="resume",
+        num_failed_checkpoint_checks=num_failed_checkpoint_checks,
+    )
+    return init_result
 
-def maybe_crop_block_size(base_model: GPT, model_args: Dict[str, Any]) -> None:
-    """Crop RoPE/cache buffers if the current config asks for a shorter context."""
-    if conf.training.block_size < base_model.config.block_size:
-        base_model.crop_block_size(conf.training.block_size)
-        model_args["block_size"] = conf.training.block_size
-
-def build_dataloader(
-    dataset: Dataset,
-    ddp_state: DDPState,
-    shuffle: bool,
-    num_workers: int,
-) -> DataLoader:
-    """Create a DataLoader with correct sampler/shuffle behavior for DDP or single GPU."""
+def build_dataloader(dataset: Dataset, ddp_state: DDPState, shuffle: bool, num_workers: int) -> DataLoader:
+    """
+    Create a DataLoader with correct sampler/shuffle behavior for DDP or single GPU.
+    
+    drop_last is added to allow eval datasets to not drop samples. This is useful when validation datasets
+        are small and we want to use every sample for evaluation, even if it means the last batch is smaller
+        than the training batch size.
+    """
+    
     sampler = None
     if ddp_state.enabled:
         sampler = DistributedSampler(
@@ -554,6 +882,9 @@ def build_dataloader(
             shuffle=shuffle,
             drop_last=True,
         )
+    elif shuffle:
+        training_seed = int(getattr(conf.training, "seed", 1337))
+        sampler = EpochSeededRandomSampler(dataset, seed=training_seed)
 
     loader_kwargs: Dict[str, Any] = {
         "batch_size": conf.training.batch_size,
@@ -562,7 +893,7 @@ def build_dataloader(
         "num_workers": num_workers,
         "persistent_workers": (num_workers > 0),
         "sampler": sampler,
-        "shuffle": (shuffle and sampler is None),
+        "shuffle": False if sampler is not None else shuffle,
     }
     if num_workers > 0:
         loader_kwargs["prefetch_factor"] = int(getattr(conf.training, "prefetch_factor", 4))
@@ -572,7 +903,8 @@ def build_dataloader(
 def set_sampler_epoch(loader: DataLoader, epoch: int) -> None:
     """Set DistributedSampler epoch when present; no-op otherwise."""
     sampler = getattr(loader, "sampler", None)
-    if isinstance(sampler, DistributedSampler):
+    # if isinstance(sampler, DistributedSampler):
+    if hasattr(sampler, "set_epoch"):
         sampler.set_epoch(epoch)
 
 def get_epoch_from_iter(iter_num: int) -> Tuple[int, int]:
@@ -757,25 +1089,6 @@ def atomic_torch_save(obj: Mapping[str, Any], path: Path) -> None:
     torch.save(obj, tmp_path)
     os.replace(tmp_path, path)
 
-def build_checkpoint(
-    train_model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    model_args: Mapping[str, Any],
-    iter_num: int,
-    best_val_loss: float,
-) -> Dict[str, Any]:
-    """Create a clean, resumable checkpoint payload."""
-    return {
-        "checkpoint_version": CHECKPOINT_VERSION,
-        # iter_num is the next optimizer iteration to run after resume.
-        "iter_num": int(iter_num),
-        "best_val_loss": float(best_val_loss),
-        "model": clean_state_dict_keys(unwrap_model(train_model).state_dict()),
-        "optimizer": optimizer.state_dict(),
-        "model_args": dict(model_args),
-        "config": snapshot_run_config(),
-    }
-
 def save_checkpoints_if_needed(
     train_model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -813,7 +1126,17 @@ def save_checkpoints_if_needed(
         num_failed_checkpoint_checks += 1
         should_stop = num_failed_checkpoint_checks >= conf.training.max_num_failed_checkpoint_checks
 
-    checkpoint = build_checkpoint(train_model, optimizer, model_args, completed_iter, best_val_loss)
+    checkpoint =  {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "model": clean_state_dict_keys(unwrap_model(train_model).state_dict()),
+        "model_args": dict(model_args),
+        # iter_num is the next optimizer iteration to run after resume.
+        "iter_num": int(completed_iter),
+        "best_val_loss": float(best_val_loss),
+        "num_failed_checkpoint_checks": num_failed_checkpoint_checks,
+        "optimizer": optimizer.state_dict(),
+        "config": snapshot_run_config(),
+    }
 
     if improved:
         best_path = model_output_dir / "ckpt.pt"
@@ -821,7 +1144,7 @@ def save_checkpoints_if_needed(
         atomic_torch_save(checkpoint, best_path)
 
     if eval_due:
-        latest_idx, _ = get_latest_running_ckpt_filepath(model_output_dir)
+        latest_idx, _ = find_latest_indexed_checkpoint(model_output_dir, RUNNING_CKPT_RE)
         running_path = model_output_dir / f"ckpt_running_{latest_idx + 1}.pt"
         log_info(logger_idx, f"Training progress: saving current checkpoint @ val_loss {val_loss}")
         atomic_torch_save(checkpoint, running_path)
@@ -929,8 +1252,10 @@ def train_loop(
     logger_idx: int,
     iter_num: int,
     best_val_loss: float,
+    num_failed_checkpoint_checks: int
 ) -> None:
     """Main training loop."""
+    
     max_micro_batches_per_epoch = validate_epoch_shape(loaders["train_step"])
     log_info(logger_idx, f"Iterations per epoch is {conf.training.iterations_per_epoch}")
     log_info(logger_idx, "iterations_per_epoch", {"iterations_per_epoch": conf.training.iterations_per_epoch})
@@ -945,7 +1270,6 @@ def train_loop(
     t0 = time.time()
     last_log_iter = iter_num
     local_iter_num = 0
-    num_failed_checkpoint_checks = 0
     running_mfu = -1.0
 
     meta_benchmarking = bool(conf.training.meta_benchmarking)
@@ -980,11 +1304,9 @@ def train_loop(
             if micro_step_idx >= max_micro_batches_per_epoch:
                 # Drop incomplete gradient-accumulation leftovers at the end of the epoch.
                 break
-
             if micro_batches_to_skip > 0:
                 micro_batches_to_skip -= 1
                 continue
-
             if iter_num >= max_iters:
                 stop_training = True
                 break
@@ -1106,7 +1428,9 @@ def train_loop(
 
         micro_batches_to_skip = 0
 
-    barrier(ddp_state)
+    if ddp_state.enabled:
+        dist.barrier()
+        
     if ddp_state.master_process:
         log_info(logger_idx, "Training finished.")
 
@@ -1163,6 +1487,10 @@ def log_training_configuration(
         },
     )
     
+# =====================
+# Auto DDP
+# =====================
+    
 def find_free_port() -> int:
     """Find an available localhost port for single-node internal DDP."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1180,16 +1508,12 @@ def should_launch_internal_ddp() -> bool:
     """
     if int(os.environ.get("RANK", -1)) != -1:
         return False
-
     if os.environ.get("PARTICLEGPT_INTERNAL_DDP", "0") == "1":
         return False
-
     if not torch.cuda.is_available():
         return False
-
     if torch.cuda.device_count() <= 1:
         return False
-
     return bool(getattr(conf.training, "auto_ddp", False))
 
 def internal_ddp_worker(local_rank: int, world_size: int, master_addr: str, master_port: int) -> None:
@@ -1227,6 +1551,7 @@ def launch_internal_ddp() -> None:
         join=True,
     )
 
+
 def main() -> None:
     ddp_state = init_distributed()
     logger_idx = -1
@@ -1236,22 +1561,52 @@ def main() -> None:
         if ddp_state.master_process:
             model_output_dir.mkdir(parents=True, exist_ok=True)
             logger_idx = pLogging.create_training_logger(conf.generic.model_name, 1)
+        
+        # Wait while the directory is created
+        if ddp_state.enabled:
+            dist.barrier()
 
         # Let the model module inherit the training logger. Non-master ranks use
         # -1, which preserves the old convention of silent worker ranks.
         model_module.set_logger(logger_idx)
         log_info(logger_idx, "Training started.")
-
-        setup_reproducibility(ddp_state.seed_offset)
+        
+        # Setup reproducibility--set deterministic-ish seeds and allow TF32 for speed on Ampere+ GPUs."""
+        base_seed = int(getattr(conf.training, "seed", 1337))
+        torch.manual_seed(base_seed + ddp_state.seed_offset)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(base_seed + ddp_state.seed_offset)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        
         precision = configure_precision(ddp_state.device)
 
-        model_output_dir, prep_dir, prep_info_filepath = resolve_paths(logger_idx)
-        prep_info = load_json(prep_info_filepath)
-        prep_vocab_size, prep_max_sequence_length = apply_derived_config(prep_info)
-
-        train_dataset = TokenBlockDataset(prep_dir / "train.bin", conf.training.block_size)
-        val_dataset = TokenBlockDataset(prep_dir / "val.bin", conf.training.block_size)
-
+        if conf.generic.preparation_config_file is None:
+            raise ValueError("preparation_config_file in configuration cannot be None!")
+        
+        # Load preparation config file and extract relevant data from it
+        preparation_config_filepath = Path(conf.generic.preparation_config_file)
+        dls_conf = DataloaderSplitConfig(ESplitTypes.TRAIN, preparation_config_filepath)
+        if not dls_conf.verify():
+            raise RuntimeError("Failure when verifying dataloader split config. Ensure all required arguments exist.")
+        
+        # Load tokenized metadata and extract relevant data from it
+        tokenized_metadata_filepath = Path(dls_conf.tokenized_metadata_filepath)
+        tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
+        if not tmd_conf.verify():
+            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
+        
+        if conf.training.block_size == -1 and conf.training.context_sequences != -1:
+            conf.training.block_size = conf.training.context_sequences * tmd_conf.sequence_length
+        if conf.training.block_size <= 0:
+            raise ValueError(
+                f"Invalid block_size {conf.training.block_size}. Must be positive or -1 to infer from context_sequences."
+            )
+        
+        train_dataset = TokenBlockDataset(ESplitTypes.TRAIN)
+        val_dataset = TokenBlockDataset(ESplitTypes.VALIDATION)
+        assert_no_overlap(train_dataset, val_dataset)
+        
         num_workers = int(getattr(conf.training, "num_workers", 4))
         train_step_loader = build_dataloader(train_dataset, ddp_state, shuffle=True, num_workers=num_workers)
         train_eval_loader = build_dataloader(train_dataset, ddp_state, shuffle=True, num_workers=num_workers)
@@ -1259,43 +1614,48 @@ def main() -> None:
 
         # Set this before logging/model init so the config snapshot is useful.
         validate_epoch_shape(train_step_loader)
-        log_training_configuration(logger_idx, ddp_state, precision, prep_vocab_size, prep_max_sequence_length)
-
-        model_args = build_model_args(prep_vocab_size)
-        base_model, model_args, checkpoint, iter_num, best_val_loss, init_source = initialize_or_resume_model(
-            model_output_dir=model_output_dir,
-            model_args=model_args,
-            logger_idx=logger_idx,
-            device=ddp_state.device,
+        log_training_configuration(
+            logger_idx, ddp_state, precision, 
+            train_dataset.tmd_conf.vocab_size,
+            train_dataset.tmd_conf.sequence_length
         )
 
-        maybe_crop_block_size(base_model, model_args)
-        base_model.to(ddp_state.device)
-
-        optimizer = configure_optimizer(base_model, precision)
-        if init_source == "resume" and checkpoint is not None:
-            optimizer.load_state_dict(checkpoint["optimizer"])
+        model_args = build_model_args(train_dataset.tmd_conf.vocab_size)
+        init_result = initialize_or_resume_model(model_output_dir=model_output_dir, model_args=model_args, logger_idx=logger_idx, device=ddp_state.device)
+        
+        # maybe crop block size--Crop RoPE/cache buffers if the current config asks for a shorter context.
+        if conf.training.block_size < init_result.base_model.config.block_size:
+            init_result.base_model.crop_block_size(conf.training.block_size)
+            init_result.model_args["block_size"] = conf.training.block_size
+        
+        init_result.base_model.to(ddp_state.device)
+        optimizer = configure_optimizer(init_result.base_model, precision)
+        if init_result.init_source == "resume" and init_result.checkpoint is not None:
+            optimizer.load_state_dict(init_result.checkpoint["optimizer"])
             move_optimizer_state_to_device(optimizer, ddp_state.device)
-        checkpoint = None
+        init_result.checkpoint = None
 
-        train_model = maybe_compile_and_wrap_ddp(base_model, ddp_state, logger_idx)
+        train_model = maybe_compile_and_wrap_ddp(init_result.base_model, ddp_state, logger_idx)
 
         train_loop(
             train_model=train_model,
-            base_model=base_model,
+            base_model=init_result.base_model,
             optimizer=optimizer,
             loaders={"train_step": train_step_loader, "train_eval": train_eval_loader, "val": val_loader},
             model_output_dir=model_output_dir,
-            model_args=model_args,
+            model_args=init_result.model_args,
             precision=precision,
             ddp_state=ddp_state,
             logger_idx=logger_idx,
-            iter_num=iter_num,
-            best_val_loss=best_val_loss,
+            iter_num=init_result.iter_num,
+            best_val_loss=init_result.best_val_loss,
+            num_failed_checkpoint_checks=init_result.num_failed_checkpoint_checks
         )
 
     finally:
-        destroy_distributed(ddp_state)
+        # Cleanly tear down the process group
+        if ddp_state.enabled and dist.is_initialized():
+            dist.destroy_process_group()
 
 if __name__ == "__main__":
     if should_launch_internal_ddp():

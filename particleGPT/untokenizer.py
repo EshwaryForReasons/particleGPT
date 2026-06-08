@@ -1,0 +1,660 @@
+"""
+particleGPT untokenizer entrypoint.
+
+This script untokenizes generated token samples using the current particleGPT
+pipeline:
+  - one flat tokenized binary dataset
+  - one tokenized metadata JSON file
+  - one preparation JSON file that selects train/validation/test ranges
+  - generated sample directories created by sample.py
+
+Default input:
+    PROJECT_DIR/generated_samples/<model_name>/sampling_<sample_idx>/samples.csv
+
+Default output:
+    PROJECT_DIR/generated_samples/<model_name>/sampling_<sample_idx>/untokenized_samples.csv
+
+Default invalid-token debug output:
+    PROJECT_DIR/generated_samples/<model_name>/sampling_<sample_idx>/invalid_token_events.json
+
+The generated samples file is expected to contain one generated sample per row.
+Each row must be whitespace-separated token ids. Comma-separated samples are not
+supported because sample.py writes whitespace-separated rows. Generated rows with
+invalid tokens are dropped from the untokenized CSV and recorded in the debug JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+import configurator as conf
+import paths as paths
+from dictionary import Dictionary
+from train import DataloaderSplitConfig, ESplitTypes, TokenizedMetadataConfig
+
+PROJECT_DIR = paths.PROJECT_DIR
+DEFAULT_INPUT_CSV_NAME = "samples.csv"
+DEFAULT_OUTPUT_CSV_NAME = "untokenized_samples.csv"
+DEFAULT_METADATA_NAME = "untokenizing_metadata.json"
+DEFAULT_INVALID_TOKENS_NAME = "invalid_token_events.json"
+
+class BaseUntokenizer():
+    """
+    Base class for converting generated token ids back into raw-style particles.
+
+    The output format matches the raw particle layout used by tokenizer.py:
+        pdgid energy px py pz;pdgid energy px py pz;...
+
+    Energy is reconstructed as a massless approximation when the tokenization
+    schema does not include an explicit energy token. This is unavoidable for
+    schemas like whole-particle eta/pt/phi encoding because the original energy
+    was not retained in the token stream.
+    """
+    
+    def __init__(self, dictionary: Dictionary, input_samples_filepath: Path, output_samples_filepath: Path, output_metadata_filepath: Path, output_invalid_tokens_filepath: Path, tokenized_metadata: dict[str, Any]):
+        self.dictionary = dictionary
+        self.input_samples_filepath = input_samples_filepath
+        self.output_samples_filepath = output_samples_filepath
+        self.output_metadata_filepath = output_metadata_filepath
+        self.output_invalid_tokens_filepath = output_invalid_tokens_filepath
+        self.tokenized_metadata = tokenized_metadata
+        self.tokenization_format = str(tokenized_metadata.get("format", "base_tokenizer"))
+        self.tokenization_schema = list(tokenized_metadata.get("tokenization_schema", getattr(dictionary, "tokenization_schema", [])))
+        self.default_pdgid = int(get_untokenizing_config("default_pdgid", 0))
+        self.stop_at_event_end = parse_bool(get_untokenizing_config("stop_at_event_end", True))
+        self.stop_at_padding = parse_bool(get_untokenizing_config("stop_at_padding", True))
+        self.float_precision = int(get_local_untokenizing_config("float_precision", 5))
+        self.total_samples_read = 0
+        self.total_samples_written = 0
+        self.total_empty_samples = 0
+        self.total_invalid_tokens = 0
+        self.total_invalid_samples = 0
+        
+        if self.float_precision < 0:
+            raise ValueError(f"float_precision must be non-negative, got {self.float_precision}.")
+        if len(self.tokenization_schema) == 0 and self.tokenization_format != "whole_particle":
+            raise ValueError(
+                "Could not determine tokenization_schema from tokenized metadata or dictionary. "
+                "Make sure the tokenized metadata was written by the current tokenizer."
+            )
+        
+        self.index_to_pdgid = {}
+        pdgids_to_index = getattr(dictionary, "pdgids_to_index", None)
+        if pdgids_to_index is not None:
+            self.index_to_pdgid = {int(index): int(pdgid) for pdgid, index in pdgids_to_index.items()}
+
+    def untokenize_file(self) -> None:
+        """
+        Stream the generated samples file and write untokenized raw-style rows.
+
+        Invalid generated rows are dropped from the untokenized CSV. A separate
+        JSON file records the sample row, zero-based event index, first token,
+        and reason that made the row invalid so generation failures can be
+        debugged later.
+        """
+        self.output_samples_filepath.parent.mkdir(parents=True, exist_ok=True)
+        self.output_invalid_tokens_filepath.parent.mkdir(parents=True, exist_ok=True)
+        tmp_output_filepath = self.output_samples_filepath.with_suffix(self.output_samples_filepath.suffix + ".tmp")
+        tmp_invalid_tokens_filepath = self.output_invalid_tokens_filepath.with_suffix(self.output_invalid_tokens_filepath.suffix + ".tmp")
+        invalid_records = []
+        
+        with self.input_samples_filepath.open("r", encoding="utf-8") as in_file, \
+             tmp_output_filepath.open("w", encoding="utf-8", newline="") as out_file, \
+             tmp_invalid_tokens_filepath.open("w", encoding="utf-8") as invalid_file:
+            for event_idx, line in enumerate(in_file):
+                line = line.strip()
+                if not line:
+                    continue
+                tokens = self.parse_token_row(line, event_idx + 1)
+                particles, invalid_token, invalid_reason = self.decode_token_row(tokens)
+                self.total_samples_read += 1
+                
+                if invalid_token is not None:
+                    self.total_invalid_tokens += 1
+                    self.total_invalid_samples += 1
+                    invalid_records.append({
+                        "event_index": event_idx,
+                        "invalid_token": int(invalid_token),
+                        "reason": invalid_reason,
+                        "event_row": line,
+                    })
+                    continue
+                
+                out_file.write(self.format_particles(particles) + "\n")
+                self.total_samples_written += 1
+                if len(particles) == 0:
+                    self.total_empty_samples += 1
+            json.dump(invalid_records, invalid_file, indent=4)
+            invalid_file.write("\n")
+        
+        tmp_output_filepath.replace(self.output_samples_filepath)
+        tmp_invalid_tokens_filepath.replace(self.output_invalid_tokens_filepath)
+        self.write_metadata()
+
+    def parse_token_row(self, row: str, line_idx: int) -> list[int]:
+        """
+        Parse one whitespace-separated row from sample.py.
+
+        Comma-separated rows are intentionally rejected so stale outputs are not
+        silently interpreted incorrectly.
+        """
+        if "," in row:
+            raise ValueError(
+                f"Found comma-separated tokens on line {line_idx}. "
+                "Current sample.py writes whitespace-separated tokens only."
+            )
+        try:
+            return [int(token) for token in row.split()]
+        except ValueError as exc:
+            raise RuntimeError(f"Failed to parse token ids on line {line_idx}: {row[:500]}") from exc
+
+    def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
+        raise NotImplementedError("Subclasses must implement this method.")
+
+    def format_particles(self, particles: list[dict[str, float | int]]) -> str:
+        """
+        Format decoded particles as a semicolon-separated raw-style event row.
+        """
+        formatted_particles = []
+        for particle in particles:
+            pdgid = int(particle.get("pdgid", self.default_pdgid))
+            energy = self.format_float(float(particle.get("energy", 0.0)))
+            px = self.format_float(float(particle.get("px", 0.0)))
+            py = self.format_float(float(particle.get("py", 0.0)))
+            pz = self.format_float(float(particle.get("pz", 0.0)))
+            formatted_particles.append(f"{pdgid} {energy} {px} {py} {pz}")
+        return ";".join(formatted_particles)
+
+    def format_float(self, value: float) -> str:
+        """Format floats with a fixed number of digits after the decimal point."""
+        return f"{value:.{self.float_precision}f}"
+
+    def token_is_padding(self, token: int) -> bool:
+        """Return True if token is any padding token used by the dictionary."""
+        padding_tokens = {0}
+        padding_token = getattr(self.dictionary, "padding_token", None)
+        if padding_token is not None:
+            padding_tokens.add(int(padding_token))
+        padding_sequence = getattr(self.dictionary, "get_padding_sequence", None)
+        if callable(padding_sequence):
+            padding_tokens.update(int(x) for x in padding_sequence())
+        return int(token) in padding_tokens
+
+    def project_relative_path(self, filepath: Path) -> str:
+        """Return filepath relative to PROJECT_DIR for metadata portability."""
+        return os.path.relpath(filepath.resolve(), PROJECT_DIR.resolve())
+
+    def write_metadata(self) -> None:
+        """Write a small sidecar JSON file describing the untokenized output."""
+        metadata = {
+            "model_name": conf.generic.model_name,
+            "input_samples_filepath": self.project_relative_path(self.input_samples_filepath),
+            "output_samples_filepath": self.project_relative_path(self.output_samples_filepath),
+            "tokenization_format": self.tokenization_format,
+            "tokenization_schema": self.tokenization_schema,
+            "default_pdgid": self.default_pdgid,
+            "stop_at_event_end": self.stop_at_event_end,
+            "stop_at_padding": self.stop_at_padding,
+            "float_precision": self.float_precision,
+            "total_samples_read": self.total_samples_read,
+            "total_samples_written": self.total_samples_written,
+            "total_empty_samples": self.total_empty_samples,
+            "total_invalid_tokens": self.total_invalid_tokens,
+            "total_invalid_samples": self.total_invalid_samples,
+        }
+        with self.output_metadata_filepath.open("w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=4)
+
+class ParticleFeatureUntokenizer(BaseUntokenizer):
+    """
+    Untokenizer for feature-token particle data.
+
+    This handles token streams produced by EventPerSequenceParticleFeatureTokenizer
+    and PackedEventStreamParticleFeatureTokenizer. It uses the dictionary schema
+    to group per-particle tokens and then reconstructs raw-style particles.
+    """
+    
+    def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
+        """
+        Decode one generated token row into raw-style particles.
+
+        The decoder consumes tokens according to dictionary.tokenization_schema.
+        If any token is invalid for the schema position where it appears, the
+        whole row is rejected and the first invalid token is returned.
+        """
+        particles = []
+        feature_buffer = {}
+        schema_idx = 0
+        seen_event_start = False
+        schema_to_offset_and_bins = {
+            "pt": ("PT_OFFSET", "pt_bins"),
+            "px": ("PX_OFFSET", "px_bins"),
+            "py": ("PY_OFFSET", "py_bins"),
+            "pz": ("PZ_OFFSET", "pz_bins"),
+            "energy": ("ENERGY_OFFSET", "e_bins"),
+            "eta": ("ETA_OFFSET", "eta_bins"),
+            "theta": ("THETA_OFFSET", "theta_bins"),
+            "phi": ("PHI_OFFSET", "phi_bins"),
+        }
+        
+        for token in tokens:
+            token = int(token)
+            if self.is_event_start_token(token):
+                if seen_event_start or particles or feature_buffer or schema_idx != 0:
+                    return [], token, "encountered EVENT_START after event decoding had already started"
+                seen_event_start = True
+                feature_buffer = {}
+                schema_idx = 0
+                continue
+            if self.is_event_end_token(token):
+                if feature_buffer or schema_idx != 0:
+                    return [], token, (
+                        "encountered EVENT_END before completing the current particle; "
+                        f"expected {self.tokenization_schema[schema_idx]!r} at schema position {schema_idx}"
+                    )
+                if self.stop_at_event_end:
+                    break
+                feature_buffer = {}
+                schema_idx = 0
+                continue
+            if self.stop_at_padding and self.token_is_padding(token):
+                if feature_buffer or schema_idx != 0:
+                    return [], token, (
+                        "encountered padding before completing the current particle; "
+                        f"expected {self.tokenization_schema[schema_idx]!r} at schema position {schema_idx}"
+                    )
+                break
+            
+            schema_name = self.tokenization_schema[schema_idx]
+            next_schema_idx = (schema_idx + 1) % len(self.tokenization_schema)
+            
+            if schema_name == "particle_start":
+                if not self.is_particle_start_token(token):
+                    expected = int(self.dictionary.particle_start_token)
+                    return [], token, f"expected particle_start token {expected}, got token {token}"
+                feature_buffer = {}
+                schema_idx = next_schema_idx
+                continue
+            if schema_name == "particle_end":
+                if not self.is_particle_end_token(token):
+                    expected = int(self.dictionary.particle_end_token)
+                    return [], token, f"expected particle_end token {expected}, got token {token}"
+                particles.append(self.finalize_particle(feature_buffer))
+                feature_buffer = {}
+                schema_idx = next_schema_idx
+                continue
+            
+            decoded_value, invalid_reason = self.decode_feature_token(schema_name, token, schema_to_offset_and_bins)
+            if invalid_reason is not None:
+                return [], token, invalid_reason
+            feature_buffer[schema_name] = decoded_value
+            schema_idx = next_schema_idx
+            
+            if schema_idx == 0:
+                particles.append(self.finalize_particle(feature_buffer))
+                feature_buffer = {}
+        
+        return particles, None, None
+
+    def is_event_start_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "event_start_token") and token == int(self.dictionary.event_start_token)
+
+    def is_event_end_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "event_end_token") and token == int(self.dictionary.event_end_token)
+
+    def is_particle_start_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "particle_start_token") and token == int(self.dictionary.particle_start_token)
+
+    def is_particle_end_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "particle_end_token") and token == int(self.dictionary.particle_end_token)
+
+    def decode_feature_token(self, schema_name: str, token: int, schema_to_offset_and_bins: dict[str, tuple[str, str]]) -> tuple[float | int | None, str | None]:
+        """
+        Decode one feature token using the offset and bins for its schema field.
+        """
+        if schema_name == "pdgid":
+            offset = int(getattr(self.dictionary, "PDGID_OFFSET"))
+            particle_index = int(token) - offset
+            if particle_index < 0:
+                return None, f"expected pdgid token >= {offset}, got token {token}"
+            if self.index_to_pdgid and particle_index not in self.index_to_pdgid:
+                max_index = max(self.index_to_pdgid)
+                return None, (
+                    f"expected pdgid token in [{offset}, {offset + max_index}], "
+                    f"got token {token}"
+                )
+            return self.index_to_pdgid.get(particle_index, self.default_pdgid), None
+        
+        if schema_name not in schema_to_offset_and_bins:
+            raise RuntimeError(f"Untokenizer: Unknown tokenization schema: {schema_name}")
+        
+        offset_attr, bins_attr = schema_to_offset_and_bins[schema_name]
+        offset = int(getattr(self.dictionary, offset_attr))
+        bins = np.asarray(getattr(self.dictionary, bins_attr), dtype=np.float64)
+        bin_idx = int(token) - offset
+        valid_start = offset
+        valid_end_exclusive = offset + len(bins)
+        if bin_idx < 0 or bin_idx >= len(bins):
+            return None, (
+                f"expected {schema_name} token in [{valid_start}, {valid_end_exclusive}), "
+                f"got token {token}"
+            )
+        return bin_value_from_index(bin_idx, bins), None
+
+    def finalize_particle(self, feature_buffer: dict[str, float | int]) -> dict[str, float | int]:
+        """
+        Convert decoded feature values into raw-style pdgid, energy, px, py, pz.
+        """
+        pdgid = int(feature_buffer.get("pdgid", self.default_pdgid))
+        px = feature_buffer.get("px", None)
+        py = feature_buffer.get("py", None)
+        pz = feature_buffer.get("pz", None)
+        energy = feature_buffer.get("energy", None)
+        
+        if px is None or py is None or pz is None:
+            px, py, pz = momentum_from_features(feature_buffer)
+        if energy is None:
+            energy = math.sqrt(float(px) ** 2 + float(py) ** 2 + float(pz) ** 2)
+        
+        return {
+            "pdgid": pdgid,
+            "energy": float(energy),
+            "px": float(px),
+            "py": float(py),
+            "pz": float(pz),
+        }
+
+class WholeParticleUntokenizer(BaseUntokenizer):
+    """
+    Untokenizer for EventPerSequenceWholeParticleTokenizer.
+
+    The tokenizer uses mixed-radix particle ids:
+        token = ETA_OFFSET + eta_bin + (n_eta_bins * pt_bin) + (n_eta_bins * n_pt_bins * phi_bin)
+
+    Because PDGID and energy are not encoded by this tokenizer, this untokenizer
+    writes default_pdgid and reconstructs energy using a massless approximation.
+    """
+    
+    def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
+        particles = []
+        base_offset = int(getattr(self.dictionary, "ETA_OFFSET"))
+        n_eta_bins = len(self.dictionary.eta_bins)
+        n_pt_bins = len(self.dictionary.pt_bins)
+        n_phi_bins = len(self.dictionary.phi_bins)
+        vocab_end = base_offset + (n_eta_bins * n_pt_bins * n_phi_bins)
+        seen_event_start = False
+        
+        for token in tokens:
+            token = int(token)
+            if self.is_event_start_token(token):
+                if seen_event_start or particles:
+                    return [], token, "encountered EVENT_START after event decoding had already started"
+                seen_event_start = True
+                continue
+            if self.is_event_end_token(token):
+                if self.stop_at_event_end:
+                    break
+                continue
+            if self.stop_at_padding and self.token_is_padding(token):
+                break
+            if token < base_offset or token >= vocab_end:
+                return [], token, f"expected whole-particle token in [{base_offset}, {vocab_end}), got token {token}"
+            
+            local_token = token - base_offset
+            eta_bin = local_token % n_eta_bins
+            pt_bin = (local_token // n_eta_bins) % n_pt_bins
+            phi_bin = local_token // (n_eta_bins * n_pt_bins)
+            
+            feature_buffer = {
+                "eta": bin_value_from_index(eta_bin, np.asarray(self.dictionary.eta_bins, dtype=np.float64)),
+                "pt": bin_value_from_index(pt_bin, np.asarray(self.dictionary.pt_bins, dtype=np.float64)),
+                "phi": bin_value_from_index(phi_bin, np.asarray(self.dictionary.phi_bins, dtype=np.float64)),
+            }
+            px, py, pz = momentum_from_features(feature_buffer)
+            energy = math.sqrt(float(px) ** 2 + float(py) ** 2 + float(pz) ** 2)
+            particles.append({
+                "pdgid": self.default_pdgid,
+                "energy": float(energy),
+                "px": float(px),
+                "py": float(py),
+                "pz": float(pz),
+            })
+        
+        return particles, None, None
+
+    def is_event_start_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "event_start_token") and token == int(self.dictionary.event_start_token)
+
+    def is_event_end_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "event_end_token") and token == int(self.dictionary.event_end_token)
+
+def get_untokenizing_config(name: str, default: Any) -> Any:
+    """
+    Read an untokenizing option while tolerating common local config layouts.
+
+    The preferred namespace is conf.untokenizing. conf.untokenizer is accepted as
+    a fallback because some older scripts used noun-style namespace names. The
+    sampling namespaces are checked last only for settings that intentionally
+    mirror sample.py, such as sample_idx.
+    """
+    for namespace_name in ("untokenizing", "untokenizer", "sampling", "sampling_config"):
+        namespace = getattr(conf, namespace_name, None)
+        if namespace is not None and hasattr(namespace, name):
+            return getattr(namespace, name)
+    return default
+
+def get_local_untokenizing_config(name: str, default: Any) -> Any:
+    """Read only untokenizer-specific options, never sampling fallbacks."""
+    for namespace_name in ("untokenizing", "untokenizer"):
+        namespace = getattr(conf, namespace_name, None)
+        if namespace is not None and hasattr(namespace, name):
+            return getattr(namespace, name)
+    return default
+
+def parse_bool(value: Any) -> bool:
+    """Parse a permissive bool from config strings, ints, or real bools."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"Cannot parse boolean value from {value!r}.")
+
+def bin_value_from_index(bin_idx: int, bins: np.ndarray) -> float:
+    """
+    Convert a tokenizer bin index back to a representative continuous value.
+
+    tokenizer.py uses np.searchsorted(..., side='right') plus explicit underflow
+    and overflow clipping. Interior bins are represented by the midpoint of the
+    adjacent bin boundaries. Edge bins use the edge value itself because the true
+    underflow/overflow value is not recoverable from the token id alone.
+    """
+    if len(bins) == 0:
+        raise ValueError("Cannot decode from an empty bin array.")
+    if bin_idx <= 0:
+        return float(bins[0])
+    if bin_idx >= len(bins) - 1:
+        return float(bins[-1])
+    return float(0.5 * (bins[bin_idx - 1] + bins[bin_idx]))
+
+def momentum_from_features(feature_buffer: dict[str, float | int]) -> tuple[float, float, float]:
+    """
+    Reconstruct px, py, pz from the available kinematic feature tokens.
+
+    Preferred reconstruction path:
+      1) pt, eta, phi
+      2) pt, theta, phi
+      3) px, py, pz if already available
+    """
+    if all(key in feature_buffer for key in ("px", "py", "pz")):
+        return float(feature_buffer["px"]), float(feature_buffer["py"]), float(feature_buffer["pz"])
+    
+    pt = float(feature_buffer.get("pt", 0.0))
+    phi = float(feature_buffer.get("phi", 0.0))
+    px = pt * math.cos(phi)
+    py = pt * math.sin(phi)
+    
+    if "eta" in feature_buffer:
+        pz = pt * math.sinh(float(feature_buffer["eta"]))
+    elif "theta" in feature_buffer:
+        theta = float(feature_buffer["theta"])
+        pz = 0.0 if abs(math.tan(theta)) < 1e-12 else pt / math.tan(theta)
+    else:
+        pz = float(feature_buffer.get("pz", 0.0))
+    
+    return px, py, pz
+
+def resolve_project_path(path_value: str | Path) -> Path:
+    """Resolve absolute paths directly and relative paths from PROJECT_DIR."""
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_DIR / path
+
+def resolve_sampling_idx(generated_samples_dir: Path) -> int:
+    """
+    Resolve the sampling_N directory to untokenize.
+
+    If untokenizing.sample_idx or sampling_idx is set, that value is used.
+    Otherwise, the highest existing sampling_N directory is used because the
+    usual workflow is to untokenize the newest sampling run.
+    """
+    configured_idx = get_untokenizing_config("sample_idx", get_untokenizing_config("sampling_idx", None))
+    if configured_idx is not None:
+        return int(configured_idx)
+    
+    max_idx = -1
+    if generated_samples_dir.exists():
+        for path in generated_samples_dir.iterdir():
+            if not path.is_dir():
+                continue
+            match = re.fullmatch(r"sampling_(\d+)", path.name)
+            if match:
+                max_idx = max(max_idx, int(match.group(1)))
+    if max_idx < 0:
+        raise FileNotFoundError(f"No sampling_N directories found in {generated_samples_dir}.")
+    return max_idx
+
+def resolve_dictionary_filepath(tokenized_metadata: dict[str, Any], tokenized_metadata_filepath: Path) -> Path:
+    """
+    Resolve the dictionary filepath from config or tokenized metadata.
+
+    New tokenized metadata may store the dictionary path relative to PROJECT_DIR.
+    This resolver also keeps a few fallbacks so older local metadata/config files
+    continue to work.
+    """
+    configured_path = get_untokenizing_config("dictionary_file", get_untokenizing_config("dictionary_filepath", None))
+    if configured_path is None:
+        configured_path = getattr(conf.generic, "dictionary_file", getattr(conf.generic, "dictionary_filepath", None))
+    if configured_path is not None:
+        path = resolve_project_path(configured_path)
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"Configured dictionary file does not exist: {path}")
+    
+    for key in ("dictionary_file", "dictionary_filepath", "dictionary_config_file", "dictionary_path"):
+        if key not in tokenized_metadata:
+            continue
+        path = resolve_project_path(tokenized_metadata[key])
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"Tokenized metadata points to a dictionary file that does not exist: {path}")
+    
+    inferred_paths = [
+        tokenized_metadata_filepath.parent / "dictionary.json",
+        tokenized_metadata_filepath.parent / "dictionary_config.json",
+    ]
+    for path in inferred_paths:
+        if path.exists():
+            return path
+    
+    raise FileNotFoundError(
+        "Could not resolve dictionary filepath. Add dictionary_file or dictionary_filepath "
+        "to conf.untokenizing or to the tokenized metadata JSON."
+    )
+
+def main() -> None:
+    """Untokenize generated samples from the selected sampling_N directory."""
+    if conf.generic.preparation_config_file is None:
+        raise ValueError("preparation_config_file in configuration cannot be None!")
+    
+    preparation_config_filepath = resolve_project_path(conf.generic.preparation_config_file)
+    dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
+    if not dls_conf.verify():
+        raise RuntimeError("Failure when verifying test split config. Ensure all required arguments exist.")
+    
+    tokenized_metadata_filepath = resolve_project_path(dls_conf.tokenized_metadata_filepath)
+    try:
+        with tokenized_metadata_filepath.open("r", encoding="utf-8") as f:
+            tokenized_metadata = json.load(f)
+    except Exception as exc:
+        raise RuntimeError(f"Failure while trying to load json from {tokenized_metadata_filepath}! Exception:\n{exc}") from exc
+    
+    try:
+        tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
+        if not tmd_conf.verify():
+            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
+    except KeyError:
+        # Older tokenizer.py versions wrote tokenized_data_filepath instead of
+        # tokenized_data_file. Untokenizing only needs the metadata/dictionary,
+        # so keep compatibility here without weakening train.py's stricter path.
+        if "tokenized_data_filepath" not in tokenized_metadata:
+            raise
+    
+    dictionary_filepath = resolve_dictionary_filepath(tokenized_metadata, tokenized_metadata_filepath)
+    dictionary = Dictionary(dictionary_filepath)
+    
+    generated_samples_dir = PROJECT_DIR / "generated_samples" / conf.generic.model_name
+    sample_idx = resolve_sampling_idx(generated_samples_dir)
+    output_dir = generated_samples_dir / f"sampling_{sample_idx}"
+    
+    input_samples_file = get_local_untokenizing_config("input_samples_file", None)
+    if input_samples_file is None:
+        input_csv_name = get_local_untokenizing_config("input_csv_name", get_untokenizing_config("output_csv_name", DEFAULT_INPUT_CSV_NAME))
+        input_samples_filepath = output_dir / str(input_csv_name)
+    else:
+        input_samples_filepath = resolve_project_path(input_samples_file)
+    if not input_samples_filepath.exists():
+        raise FileNotFoundError(f"Input generated samples file does not exist: {input_samples_filepath}")
+    
+    output_samples_file = get_local_untokenizing_config("output_samples_file", None)
+    if output_samples_file is None:
+        output_csv_name = get_local_untokenizing_config("output_csv_name", DEFAULT_OUTPUT_CSV_NAME)
+        output_samples_filepath = output_dir / str(output_csv_name)
+    else:
+        output_samples_filepath = resolve_project_path(output_samples_file)
+    
+    output_metadata_filepath = output_dir / str(get_local_untokenizing_config("metadata_name", DEFAULT_METADATA_NAME))
+    output_invalid_tokens_filepath = output_dir / str(get_local_untokenizing_config("invalid_tokens_name", DEFAULT_INVALID_TOKENS_NAME))
+    
+    tokenization_format = str(tokenized_metadata.get("format", "base_tokenizer"))
+    tokenizer_class = str(tokenized_metadata.get("tokenizer_class", ""))
+    if tokenization_format == "whole_particle" or tokenizer_class == "EventPerSequenceWholeParticleTokenizer":
+        untokenizer = WholeParticleUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
+    else:
+        untokenizer = ParticleFeatureUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
+    untokenizer.untokenize_file()
+    
+    print(f"Untokenized samples from: {input_samples_filepath}")
+    print(f"Untokenized samples written to: {output_samples_filepath}")
+    print(f"Untokenizing metadata written to: {output_metadata_filepath}")
+    print(f"Invalid token debug records written to: {output_invalid_tokens_filepath}")
+    print(f"Samples read: {untokenizer.total_samples_read:,}")
+    print(f"Samples written: {untokenizer.total_samples_written:,}")
+    print(f"Samples dropped for invalid tokens: {untokenizer.total_invalid_samples:,}")
+    print(f"Empty samples: {untokenizer.total_empty_samples:,}")
+
+if __name__ == "__main__":
+    main()

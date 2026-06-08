@@ -32,6 +32,29 @@ import jetnet.evaluation
 import pUtil
 from dictionary import Dictionary
 import data_manager
+from particleGPT import untokenizer
+from train import DataloaderSplitConfig, ESplitTypes
+import configurator as conf
+
+def get_dictionary() -> Dictionary:
+    """
+    Load the dictionary for the current configured tokenized dataset.
+
+    The dictionary path is resolved from tokenized metadata, not from the old
+    preparation directory.
+    """
+    preparation_config_filepath = untokenizer.resolve_project_path(conf.generic.preparation_config_file)
+    dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
+    tokenized_metadata_filepath = untokenizer.resolve_project_path(dls_conf.tokenized_metadata_filepath)
+
+    with tokenized_metadata_filepath.open("r", encoding="utf-8") as f:
+        tokenized_metadata = json.load(f)
+
+    dictionary_filepath = untokenizer.resolve_dictionary_filepath(
+        tokenized_metadata,
+        tokenized_metadata_filepath,
+    )
+    return Dictionary(dictionary_filepath)
 
 class dataset:
     
@@ -837,8 +860,9 @@ class plotting_v2:
         """
         Retrieves bin widths and ranges for each feature and the real and sampled leading particles dataframes.
         """
-        dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
-        dictionary = Dictionary(dictionary_filename)
+        # dictionary_filename = pUtil.get_model_preparation_dir(model_name) / 'dictionary.json'
+        # dictionary = Dictionary(dictionary_filename)
+        dictionary = get_dictionary()
         
         def get_bin_count(type_str):
             step_size = dictionary.token_step_size(type_str)
