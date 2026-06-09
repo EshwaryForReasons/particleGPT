@@ -233,21 +233,6 @@ class plotting_v2:
     fontsize_ticks = 16
     sns_palette = 'colorblind'
     
-    # color_palette = [
-    #     "petroff:blue",
-    #     "petroff:orange",
-    #     "petroff:red",
-    #     "petroff:gray",
-    #     "petroff:purple",
-    #     "black",
-    #     "petroff:brown",
-    #     "petroff:orange2",
-    #     "petroff:tan",
-    #     "petroff:gray2",
-    #     "petroff:lightBlue"
-    #     "petroff:terquiose"
-    # ]
-    
     color_palette = [
         "#1f77b4",  # blue
         "#ff7f0e",  # orange

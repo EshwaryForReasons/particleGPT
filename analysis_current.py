@@ -3,13 +3,14 @@ import json
 import os
 import numpy as np
 from pathlib import Path
-import time
+import argparse
+import warnings
 
 import configurator as conf
 from dictionary import Dictionary
 import data_manager
 import matplotlib.pyplot as plt
-import analysis_v2 as analv2
+import analysis.analysis as analv2
 import particleGPT.untokenizer as untokenizer
 from train import DataloaderSplitConfig
 from train import ESplitTypes
@@ -214,15 +215,6 @@ class Analyzer:
                     out_file.write(f'{int(pdgid)} {e:.5f} {px:.5f} {py:.5f} {pz:.5f} {pt:.5f} {eta:.5f} {theta:.5f} {phi:.5f};')
                 out_file.write('\n')
 
-    def filter_data(self):
-        """
-        Compatibility wrapper for the old analysis entrypoint.
-
-        Filtering and invalid-token reporting now belong to untokenizer.py. This
-        method keeps older analysis calls working while using the current pipeline.
-        """
-        self.untokenize_generated_data()
-
     def generate_real_test_data(self):
         """
         Materialize and untokenize the real test sequences matching the samples.
@@ -285,6 +277,7 @@ class Analyzer:
                 eta = -np.log(np.tan(theta / 2)) if theta != 0 else np.inf
 
                 verbose_data[idx_e, idx_p] = [pdgid, e, px, py, pz, pt, eta, theta, phi]
+        
         return verbose_data
 
     def extract_energy_conservation_for_analysis(self, in_dataset):
@@ -467,10 +460,10 @@ class Analyzer:
             plt.close(fig)
 
     def get_real_jets(self):
-        # -------------------------------------------------------------------------------
+        # =====================
         # Preparing real Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
-        # -------------------------------------------------------------------------------
+        # =====================
 
         self.generate_real_test_data()
         untokenized_data = data_manager.load_geant4_dataset(self.real_test_untokenized_filename, pad_token=0.0)
@@ -487,10 +480,10 @@ class Analyzer:
         return np.array(accumulated_data, np.float64)
 
     def get_generated_jets(self):
-        # -------------------------------------------------------------------------------
+        # =====================
         # Preparing generated Jet data
         # Features for jet in JetNet is (eta, phi, pT), in that order
-        # -------------------------------------------------------------------------------
+        # =====================
 
         if not self.untokenized_samples_filename.exists():
             self.untokenize_generated_data()
@@ -518,15 +511,15 @@ class Analyzer:
         real_jets = real_jets[:num_events_in_jets]
         generated_jets = generated_jets[:num_events_in_jets]
 
-        # -------------------------------------------------------------------------------
+        # =====================
         # Coverage and MMD
-        # -------------------------------------------------------------------------------
+        # =====================
 
         cov, mmd = analv2.metrics.jetnet_eval_cov_mmd(real_jets, generated_jets)
 
-        # -------------------------------------------------------------------------------
+        # =====================
         # FPD and KPD
-        # -------------------------------------------------------------------------------
+        # =====================
 
         suggested_real_features = analv2.metrics.jetnet_get_suggested_kpd_fpd_features(real_jets)
         suggested_generated_features = analv2.metrics.jetnet_get_suggested_kpd_fpd_features(generated_jets)
@@ -537,9 +530,9 @@ class Analyzer:
         kpd_median, kpd_error = analv2.metrics.jetnet_eval_kpd(suggested_real_features, suggested_generated_features, num_threads=0)
         fpd_value, fpd_error = analv2.metrics.jetnet_eval_fpd(suggested_real_features, suggested_generated_features)
 
-        # -------------------------------------------------------------------------------
+        # =====================
         # Wasserstein Distances
-        # -------------------------------------------------------------------------------
+        # =====================
 
         # I don't know what this means so I am not using this one.
         # Wasserstein distances between Energy Flow Polynomials
@@ -583,6 +576,26 @@ class Analyzer:
 if __name__ == "__main__":
     print(f"Generating distributions and metrics for config {getattr(conf.generic, 'preparation_config_file', 'unknown')}.")
     model_to_analyze = conf.generic.model_name
+    
+    parser = argparse.ArgumentParser(
+        description="Handles the analysis of generated particle data. Assumes the model has been sampled already."
+    )
+    parser.add_argument("--no-metrics", type="store_true", help="If provided, skip metric calculations.")
+    parser.add_argument("--no-distributions", type="store_true", help="If provided, skip distribution generation.")
+    parser.add_argument("--no-untokenize", type="store_true", help="If provided, skip untokenization of generated data. Assumes the data is already untokenized.")
+    args = parser.parse_args()
+    
+    if args.no_metrics:
+        print("Skipping metric calculations.")
+    if args.no_distributions:
+        print("Skipping distribution generation.")
+    if args.no_untokenize:
+        warnings.warn(
+            "flag --no-untokenize is set. Will skip untokenize distribution."
+            "This is fail horribly if the data is not already untokenized!",
+            RuntimeWarning
+        )
+        print("Skipping untokenization of generated data.")
 
     print(f'Analyzing model {model_to_analyze}')
 
@@ -593,10 +606,12 @@ if __name__ == "__main__":
 
     # Run the analysis
     dataset_analyzer = Analyzer(model_to_analyze)
-    # dataset_analyzer.filter_data()
-    # dataset_analyzer.untokenize_generated_data()
-    # dataset_analyzer.generate_verbose_particle_information()
-    dataset_analyzer.generate_distributions()
-    # dataset_analyzer.calculate_metrics()
+    if not args.no_untokenize:
+        dataset_analyzer.untokenize_generated_data()
+    dataset_analyzer.generate_verbose_particle_information()
+    if not args.no_distributions:
+        dataset_analyzer.generate_distributions()
+    if not args.no_metrics:
+        dataset_analyzer.calculate_metrics()
 
-    print('Distributions and metrics generated successfully.')
+    print('Analysis finished successfully.')

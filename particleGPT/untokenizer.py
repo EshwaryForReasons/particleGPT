@@ -58,7 +58,15 @@ class BaseUntokenizer():
     was not retained in the token stream.
     """
     
-    def __init__(self, dictionary: Dictionary, input_samples_filepath: Path, output_samples_filepath: Path, output_metadata_filepath: Path, output_invalid_tokens_filepath: Path, tokenized_metadata: dict[str, Any]):
+    def __init__(
+        self,
+        dictionary: Dictionary,
+        input_samples_filepath: Path,
+        output_samples_filepath: Path,
+        output_metadata_filepath: Path,
+        output_invalid_tokens_filepath: Path,
+        tokenized_metadata: dict[str, Any]
+    ):
         self.dictionary = dictionary
         self.input_samples_filepath = input_samples_filepath
         self.output_samples_filepath = output_samples_filepath
@@ -112,6 +120,7 @@ class BaseUntokenizer():
                 line = line.strip()
                 if not line:
                     continue
+                
                 tokens = self.parse_token_row(line, event_idx + 1)
                 particles, invalid_token, invalid_reason = self.decode_token_row(tokens)
                 self.total_samples_read += 1
@@ -131,6 +140,7 @@ class BaseUntokenizer():
                 self.total_samples_written += 1
                 if len(particles) == 0:
                     self.total_empty_samples += 1
+            
             json.dump(invalid_records, invalid_file, indent=4)
             invalid_file.write("\n")
         
