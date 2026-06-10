@@ -157,7 +157,7 @@ Every script loads its settings from a single JSON file passed as the first CLI 
 }
 ```
 
-See [`configurator.py`](configurator.md) for every available field and its default value.
+See [`configurator.py`](docs/configurator.md) for every available field and its default value.
 
 ---
 
@@ -261,15 +261,15 @@ srun -N4 --ntasks-per-node=1 -c32 --gpus-per-task=4 --gpu-bind=none --cpu-bind=n
 
 | File | Doc |
 |---|---|
-| `train.py` | [train.md](train.md) |
-| `sample.py` | [sample.md](sample.md) |
-| `configurator.py` | [configurator.md](configurator.md) |
-| `dictionary.py` | [dictionary.md](dictionary.md) |
-| `particleGPT/model.py` | [model.md](model.md) |
-| `particleGPT/tokenizer.py` | [tokenizer.md](tokenizer.md) |
-| `particleGPT/untokenizer.py` | [untokenizer.md](untokenizer.md) |
-| `particleGPT/dataset.py` | [dataset.md](dataset.md) |
-| `analysis/analyzer.py` | [analyzer.md](analyzer.md) |
-| `analysis/metrics.py` | [metrics.md](metrics.md) |
-| `analysis/plotting.py` | [plotting.md](plotting.md) |
-| `analysis/tables.py` | [tables.md](tables.md) |
+| `train.py` | [train.md](docs/train.md) |
+| `sample.py` | [sample.md](docs/sample.md) |
+| `configurator.py` | [configurator.md](docs/configurator.md) |
+| `dictionary.py` | [dictionary.md](docs/dictionary.md) |
+| `particleGPT/model.py` | [model.md](docs/model.md) |
+| `particleGPT/tokenizer.py` | [tokenizer.md](docs/tokenizer.md) |
+| `particleGPT/untokenizer.py` | [untokenizer.md](docs/untokenizer.md) |
+| `particleGPT/dataset.py` | [dataset.md](docs/dataset.md) |
+| `analysis/analyzer.py` | [analyzer.md](docs/analyzer.md) |
+| `analysis/metrics.py` | [metrics.md](docs/metrics.md) |
+| `analysis/plotting.py` | [plotting.md](docs/plotting.md) |
+| `analysis/tables.py` | [tables.md](docs/tables.md) |
