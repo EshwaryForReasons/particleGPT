@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from dictionary import Dictionary
 import configurator as conf
 
-script_dir = paths.PROJECT_DIR
-
 NUM_FEATURES_PER_PARTICLE_RAW = 5
 N_WORKERS = os.cpu_count() # 256--old hardcoded value
 IO_BUFFER = 16 * 1024 * 1024  # 16 MB
@@ -795,11 +793,11 @@ if __name__ == "__main__":
     dictionary = Dictionary(dictionary_filepath)
     
     relevant_paths = Paths(
-        input_data_filepath     = script_dir / 'data' / 'raw' / dictionary.dataset_name,
-        tokenized_data_filepath = script_dir / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.bin',
-        temp_data_dir           = script_dir / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp'
+        input_data_filepath     = paths.PROJECT_DIR / 'data' / 'raw' / dictionary.dataset_name,
+        tokenized_data_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.bin',
+        temp_data_dir           = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp'
     )
-    humanized_dictionary_filepath = script_dir / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.txt'
+    humanized_dictionary_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.txt'
     
     # dictionary.update_dictionary_particle_list(relevant_paths.input_data_filepath, dictionary_filepath)
     dictionary.output_humanized_dictionary(humanized_dictionary_filepath)

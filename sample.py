@@ -21,7 +21,7 @@ Sampling behavior
   sampling.device="cuda:0", or PARTICLEGPT_SAMPLE_NUM_GPUS=1.
 - Each worker writes one temporary CSV shard. Rank-order concatenation produces
   one final CSV:
-      PROJECT_DIR/generated_samples/<model_name>/sampling_<sample_idx>/samples.csv
+      paths.PROJECT_DIR/generated_samples/<model_name>/sampling_<sample_idx>/samples.csv
 
 The final CSV contains one generated event per row. Each row is a comma-separated
 list of token ids and includes the starter tokens at the beginning of the row.
@@ -41,98 +41,15 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
+import paths
 import configurator as conf
+from particleGPT import paths
 from particleGPT.model import GPT, GPTConfig
-from train import (
-    DataloaderSplitConfig,
-    EPOCH_CKPT_RE,
-    ESplitTypes,
-    RUNNING_CKPT_RE,
-    TokenizedMetadataConfig,
-    clean_state_dict_keys,
-    find_latest_indexed_checkpoint,
-)
+from train import clean_state_dict_keys
+from preparation import ESplitTypes, DataloaderSplitConfig, TokenizedMetadataConfig
 
-PROJECT_DIR = Path(__file__).resolve().parent
 FINAL_CSV_NAME = "samples.csv"
 SHARD_SUFFIX = ".csv.part"
-
-
-def get_sampling_config(name: str, default: Any) -> Any:
-    """
-    Read a sampling option while tolerating both config layouts used in this project.
-
-    Newer configs should use conf.sampling. The conf.sampling_config fallback is
-    only here to avoid breaking older local config files.
-    """
-    for namespace_name in ("sampling", "sampling_config"):
-        namespace = getattr(conf, namespace_name, None)
-        if namespace is not None and hasattr(namespace, name):
-            return getattr(namespace, name)
-    return default
-
-def get_training_config(name: str, default: Any) -> Any:
-    """Read a training option with a safe default for settings shared by sampling."""
-    namespace = getattr(conf, "training", None)
-    if namespace is not None and hasattr(namespace, name):
-        return getattr(namespace, name)
-    return default
-
-def parse_optional_int(value: Any) -> Optional[int]:
-    """Parse an optional integer config value."""
-    if value is None:
-        return None
-    if isinstance(value, str) and value.strip() == "":
-        return None
-    return int(value)
-
-def parse_bool(value: Any) -> bool:
-    """Parse a permissive bool from config strings, ints, or real bools."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off"}:
-            return False
-    raise ValueError(f"Cannot parse boolean value from {value!r}.")
-
-def resolve_checkpoint_path(model_output_dir: Path) -> Path:
-    """
-    Resolve the checkpoint to sample from.
-
-    Defaults to ckpt.pt, which is the best validation checkpoint written by
-    train.py. Set sampling.checkpoint_path for an exact path, or set
-    sampling.checkpoint_name to a file inside the model output directory.
-    """
-    checkpoint_path = get_sampling_config("checkpoint_path", None)
-    if checkpoint_path is not None:
-        path = Path(checkpoint_path)
-        if not path.is_absolute():
-            path = model_output_dir / path
-        if not path.exists():
-            raise FileNotFoundError(f"Checkpoint does not exist: {path}")
-        return path.resolve()
-
-    checkpoint_name = get_sampling_config("checkpoint_name", "ckpt.pt")
-    if checkpoint_name == "latest_running":
-        _, path = find_latest_indexed_checkpoint(model_output_dir, RUNNING_CKPT_RE)
-        if path is None:
-            raise FileNotFoundError(f"No ckpt_running_N.pt checkpoint found in {model_output_dir}")
-        return path.resolve()
-    if checkpoint_name == "latest_epoch":
-        _, path = find_latest_indexed_checkpoint(model_output_dir, EPOCH_CKPT_RE)
-        if path is None:
-            raise FileNotFoundError(f"No ckpt_epoch_N.pt checkpoint found in {model_output_dir}")
-        return path.resolve()
-
-    path = model_output_dir / str(checkpoint_name)
-    if not path.exists():
-        raise FileNotFoundError(f"Checkpoint does not exist: {path}")
-    return path.resolve()
 
 def resolve_device_names(total_starters: int) -> tuple[str, ...]:
     """
@@ -141,7 +58,7 @@ def resolve_device_names(total_starters: int) -> tuple[str, ...]:
     All visible CUDA GPUs are used by default. Single-GPU mode can be requested
     through config or PARTICLEGPT_SAMPLE_NUM_GPUS=1.
     """
-    requested_device = str(get_sampling_config("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    requested_device = str(conf.sampling.device)
     if requested_device == "cpu":
         return ("cpu",)
     if requested_device.startswith("cuda") and not torch.cuda.is_available():
@@ -152,29 +69,18 @@ def resolve_device_names(total_starters: int) -> tuple[str, ...]:
         return ("cpu",)
 
     cuda_count = torch.cuda.device_count()
-    gpu_ids_config = get_sampling_config("gpu_ids", None)
-    if gpu_ids_config is None:
-        gpu_ids = list(range(cuda_count))
-    elif isinstance(gpu_ids_config, str):
-        gpu_ids = [int(x) for x in re.split(r"[\s,]+", gpu_ids_config.strip()) if x != ""]
-    else:
-        gpu_ids = [int(x) for x in gpu_ids_config]
-
-    bad_ids = [idx for idx in gpu_ids if idx < 0 or idx >= cuda_count]
-    if bad_ids:
-        raise ValueError(f"Requested invalid local CUDA device ids {bad_ids}; visible CUDA count is {cuda_count}.")
-
+    gpu_ids = list(range(cuda_count))
+    
     env_num_gpus = os.environ.get("PARTICLEGPT_SAMPLE_NUM_GPUS", None)
-    requested_num_gpus = parse_optional_int(env_num_gpus)
-    if requested_num_gpus is None:
-        requested_num_gpus = parse_optional_int(get_sampling_config("num_gpus", None))
-
-    use_all_gpus = parse_bool(get_sampling_config("use_all_gpus", True))
-    single_gpu = parse_bool(get_sampling_config("single_gpu", False))
-    if single_gpu:
+    if env_num_gpus is None:
+        requested_num_gpus = None
+    if isinstance(env_num_gpus, str) and env_num_gpus.strip() == "":
+        requested_num_gpus = None
+    requested_num_gpus = int(env_num_gpus)
+    if conf.sampling.force_single_gpu:
         requested_num_gpus = 1
     elif requested_num_gpus is None:
-        requested_num_gpus = len(gpu_ids) if use_all_gpus else 1
+        requested_num_gpus = len(gpu_ids)
 
     requested_num_gpus = max(1, min(int(requested_num_gpus), len(gpu_ids), total_starters))
     return tuple(f"cuda:{idx}" for idx in gpu_ids[:requested_num_gpus])
@@ -183,10 +89,10 @@ def resolve_sample_idx(generated_samples_dir: Path) -> int:
     """
     Resolve the numeric sample index used in sampling_<sample_idx>.
 
-    If sampling.sample_idx or sampling.sampling_idx is set, that value is used.
+    If sampling.sampling_idx_override is set, that value is used.
     Otherwise, the next numeric index after existing sampling_N directories is used.
     """
-    configured_idx = get_sampling_config("sample_idx", get_sampling_config("sampling_idx", None))
+    configured_idx = conf.sampling.sampling_idx_override
     if configured_idx is not None:
         return int(configured_idx)
 
@@ -198,6 +104,7 @@ def resolve_sample_idx(generated_samples_dir: Path) -> int:
             match = re.fullmatch(r"sampling_(\d+)", path.name)
             if match:
                 max_idx = max(max_idx, int(match.group(1)))
+    
     return max_idx + 1
 
 def dtype_from_config(dtype_name: str) -> torch.dtype:
@@ -207,8 +114,10 @@ def dtype_from_config(dtype_name: str) -> torch.dtype:
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
     }
+    
     if dtype_name not in dtype_map:
         raise ValueError(f"Unknown dtype {dtype_name!r}; expected one of {sorted(dtype_map)}")
+    
     return dtype_map[dtype_name]
 
 def autocast_context(device_type: str, dtype: torch.dtype):
@@ -245,8 +154,10 @@ def generate_batch(model: torch.nn.Module, idx: torch.Tensor, max_new_tokens: in
             "sampling.require_batch_generate=True, but the model does not expose "
             "generate_batch, batch_generate, or generate_batched."
         )
+    
     if not hasattr(model, "generate"):
         raise AttributeError("Model does not expose generate(...), so sampling cannot continue.")
+
     return model.generate(idx, max_new_tokens, temperature=temperature, top_k=top_k)
 
 def load_model_for_sampling(checkpoint_path: str, device: str, compile_model: bool) -> torch.nn.Module:
@@ -344,8 +255,9 @@ def main() -> None:
     if conf.generic.preparation_config_file is None:
         raise ValueError("preparation_config_file in configuration cannot be None!")
 
-    model_output_dir = PROJECT_DIR / "trained_models" / conf.generic.model_name
-    checkpoint_path = resolve_checkpoint_path(model_output_dir)
+    model_output_dir = paths.PROJECT_DIR / "trained_models" / conf.generic.model_name
+    checkpoint_path = model_output_dir / "ckpt.pt"
+    
     preparation_config_file = Path(conf.generic.preparation_config_file)
     dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_file)
     if not dls_conf.verify():
@@ -381,7 +293,8 @@ def main() -> None:
             f"Invalid test split range: raw_start={raw_start}, raw_end={raw_end}, total_tokens={tmd_conf.total_tokens}."
         )
 
-    starter_tokens = int(get_sampling_config("starter_tokens", 5))
+    # @TODO: this should be configured somehow. Maybe the tokenizer class can be used to calculate this?
+    starter_tokens = 5
     if starter_tokens <= 0:
         raise ValueError(f"starter_tokens must be positive, got {starter_tokens}.")
     if starter_tokens > tmd_conf.sequence_length:
@@ -400,36 +313,33 @@ def main() -> None:
             f"starter_tokens={starter_tokens}, but checkpoint block_size={model_args['block_size']}."
         )
 
-    configured_max_new_tokens = get_sampling_config("max_new_tokens", None)
+    configured_max_new_tokens = conf.sampling.max_new_tokens
     if configured_max_new_tokens is None:
         max_new_tokens = int(tmd_conf.sequence_length) - starter_tokens
-    else:
-        max_new_tokens = int(configured_max_new_tokens)
     if max_new_tokens <= 0:
         raise ValueError(f"max_new_tokens must be positive, got {max_new_tokens}.")
 
-    max_test_sequences = get_sampling_config("max_test_sequences", get_sampling_config("max_starters", None))
+    max_test_sequences = conf.sampling.max_test_sequences
     if max_test_sequences is None:
         total_starters = int(dls_conf.num_sequences)
         max_test_sequences_metadata = None
     else:
-        max_test_sequences = int(max_test_sequences)
         if max_test_sequences <= 0:
             raise ValueError(f"max_test_sequences must be positive when configured, got {max_test_sequences}.")
         total_starters = min(int(dls_conf.num_sequences), max_test_sequences)
         max_test_sequences_metadata = max_test_sequences
 
     device_names = resolve_device_names(total_starters)
-    batch_size = int(get_sampling_config("batch_size", get_training_config("batch_size", 32)))
+    batch_size = conf.sampling.batch_size
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}.")
 
-    top_k_value = get_sampling_config("top_k", 200)
+    top_k_value = conf.sampling.top_k
     top_k = None if top_k_value is None or int(top_k_value) <= 0 else int(top_k_value)
-    generated_samples_dir = PROJECT_DIR / "generated_samples" / conf.generic.model_name
+    generated_samples_dir = paths.PROJECT_DIR / "generated_samples" / conf.generic.model_name
     sample_idx = resolve_sample_idx(generated_samples_dir)
     output_dir = generated_samples_dir / f"sampling_{sample_idx}"
-    output_csv_name = str(get_sampling_config("output_csv_name", FINAL_CSV_NAME))
+    output_csv_name = FINAL_CSV_NAME
 
     sample_t0 = time.time()
 
@@ -439,23 +349,24 @@ def main() -> None:
     for path in output_dir.glob("*.tmp"):
         path.unlink()
 
+    require_batch_generate = False # @TODO: make configurable
     job = {
-        "checkpoint_path": str(checkpoint_path),
-        "output_dir": str(output_dir),
+        "checkpoint_path": paths.project_relative_path(checkpoint_path),
+        "output_dir": paths.project_relative_path(output_dir),
         "device_names": tuple(device_names),
         "batch_size": batch_size,
         "starter_tokens": starter_tokens,
         "max_new_tokens": max_new_tokens,
-        "temperature": float(get_sampling_config("temperature", 0.8)),
+        "temperature": float(conf.sampling.temperature),
         "top_k": top_k,
-        "dtype_name": str(get_sampling_config("dtype", get_training_config("dtype", "float32"))),
-        "seed": int(get_sampling_config("seed", get_training_config("seed", 1337))),
-        "compile": parse_bool(get_sampling_config("compile", False)),
+        "dtype_name": conf.sampling.dtype,
+        "seed": conf.sampling.seed,
+        "compile": conf.sampling.compile,
         "total_starters": total_starters,
-        "keep_shards": parse_bool(get_sampling_config("keep_shards", False)),
-        "log_interval": int(get_sampling_config("log_interval", 1000)),
+        "keep_shards": False,
+        "log_interval": 1000, # @TODO: maybe make configurable?
         "output_csv_name": output_csv_name,
-        "require_batch_generate": parse_bool(get_sampling_config("require_batch_generate", False)),
+        "require_batch_generate": require_batch_generate,
         "tokenized_data_filepath": str(tmd_conf.tokenized_data_filepath),
         "tokenized_dtype": np.dtype(tmd_conf.dtype).name,
         "sequence_length": int(tmd_conf.sequence_length),
@@ -492,7 +403,7 @@ def main() -> None:
                     out_handle.write(chunk)
     os.replace(tmp_final_path, final_path)
 
-    if not parse_bool(get_sampling_config("keep_shards", False)):
+    if not conf.sampling.keep_shards:
         for rank in range(world_size):
             part_path = shard_path(output_dir, rank)
             if part_path.exists():
@@ -514,7 +425,7 @@ def main() -> None:
     metadata["num_devices_used"] = len(device_names)
 
     for path_key in ("output_dir", "final_csv_path", "sampling_metadata_path"):
-        metadata[path_key] = os.path.relpath(metadata[path_key], PROJECT_DIR)
+        metadata[path_key] = os.path.relpath(metadata[path_key], paths.PROJECT_DIR)
 
     with (output_dir / "sampling_metadata.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=4)

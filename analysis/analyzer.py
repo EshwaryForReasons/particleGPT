@@ -1,3 +1,4 @@
+
 import sys
 import json
 import os
@@ -7,16 +8,19 @@ import argparse
 import warnings
 
 import configurator as conf
-from dictionary import Dictionary
+import paths
 import data_manager
 import matplotlib.pyplot as plt
-import analysis.analysis as analv2
+import dataset
+import metrics
+import tables
+import plotting
+import pUtil
 import particleGPT.untokenizer as untokenizer
 from train import DataloaderSplitConfig
 from train import ESplitTypes
 from train import TokenizedMetadataConfig
-
-script_dir = untokenizer.PROJECT_DIR
+from dictionary import Dictionary
 
 class Analyzer:
     
@@ -31,7 +35,7 @@ class Analyzer:
         untokenizer.resolve_sampling_idx handles explicit sample_idx config values
         and otherwise chooses the newest sampling_<idx> directory.
         """
-        generated_samples_dir = script_dir / 'generated_samples' / model_name
+        generated_samples_dir = paths.PROJECT_DIR / 'generated_samples' / model_name
         try:
             sampling_idx = untokenizer.resolve_sampling_idx(generated_samples_dir)
         except FileNotFoundError:
@@ -44,15 +48,13 @@ class Analyzer:
 
         if conf.generic.preparation_config_file is None:
             raise ValueError("preparation_config_file in configuration cannot be None!")
-
-        # This is a split-selection config file now. It is not an old preparation
-        # directory, but the config key name is kept for compatibility with train.py.
-        self.preparation_config_filename = untokenizer.resolve_project_path(conf.generic.preparation_config_file)
+        
+        self.preparation_config_filename = paths.PROJECT_DIR / conf.generic.preparation_config_file
         self.dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, self.preparation_config_filename)
         if not self.dls_conf.verify():
             raise RuntimeError("Failure when verifying dataloader split config. Ensure all required arguments exist.")
 
-        self.tokenized_metadata_filename = untokenizer.resolve_project_path(self.dls_conf.tokenized_metadata_filepath)
+        self.tokenized_metadata_filename = paths.PROJECT_DIR / self.dls_conf.tokenized_metadata_filepath
         try:
             with open(self.tokenized_metadata_filename, 'r') as f:
                 self.tokenized_metadata = json.load(f)
@@ -64,7 +66,7 @@ class Analyzer:
         # the same way as scripts launched from PROJECT_DIR.
         current_dir = Path.cwd()
         try:
-            os.chdir(script_dir)
+            os.chdir(paths.PROJECT_DIR)
             self.tmd_conf = TokenizedMetadataConfig(self.tokenized_metadata_filename)
         finally:
             os.chdir(current_dir)
@@ -72,11 +74,10 @@ class Analyzer:
         if not self.tmd_conf.verify():
             raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
         if not self.tmd_conf.tokenized_data_filepath.is_absolute():
-            self.tmd_conf.tokenized_data_filepath = untokenizer.resolve_project_path(self.tmd_conf.tokenized_data_filepath)
+            self.tmd_conf.tokenized_data_filepath = paths.PROJECT_DIR / self.tmd_conf.tokenized_data_filepath
 
         # The tokenized metadata stores the dictionary path relative to PROJECT_DIR.
         # Reuse the untokenizer's resolver so analysis and untokenization agree.
-        self.dictionary_filename = untokenizer.resolve_dictionary_filepath(self.tokenized_metadata, self.tokenized_metadata_filename)
         self.real_test_tokens_filename                  = self.latest_sampling_dir / 'real_test_tokens.csv'
         self.real_test_untokenized_filename             = self.latest_sampling_dir / 'real_test_untokenized_samples.csv'
         self.real_test_untokenizing_metadata_filename   = self.latest_sampling_dir / 'real_test_untokenizing_metadata.json'
@@ -93,20 +94,20 @@ class Analyzer:
         self.plotted_distributions_dir                  = self.latest_sampling_dir / 'plotted_distributions'
 
         if self.sampling_metadata_filename.exists():
-            with open(self.sampling_metadata_filename, 'r') as f:
-                self.sampling_metadata = json.load(f)
+            try:
+                with open(self.sampling_metadata_filename, 'r') as f:
+                    self.sampling_metadata = json.load(f)
+            except Exception as exc:
+                raise RuntimeError(f"Failure while trying to load json from {self.sampling_metadata_filename}! Exception:\n{exc}") from exc
+
             final_csv_path = self.sampling_metadata.get('final_csv_path', None)
             if final_csv_path is not None:
-                final_csv_path = Path(final_csv_path)
-                if not final_csv_path.is_absolute():
-                    final_csv_path = untokenizer.resolve_project_path(final_csv_path)
+                final_csv_path = paths.PROJECT_DIR / Path(final_csv_path)
                 if final_csv_path.exists():
                     self.generated_samples_filename = final_csv_path
         else:
             self.sampling_metadata = {}
 
-        if not self.dictionary_filename.exists():
-            raise FileNotFoundError(f'dictionary_filename does not exist: {self.dictionary_filename}')
         if not self.generated_samples_filename.exists():
             raise FileNotFoundError(f'generated_samples_filename does not exist: {self.generated_samples_filename}')
 
@@ -138,7 +139,7 @@ class Analyzer:
 
         self.test_split_start_token_idx = raw_start
         self.test_split_end_token_idx = raw_end
-        self.dictionary = Dictionary(self.dictionary_filename)
+        self.dictionary = pUtil.get_dictionary(conf.generic.preparation_config_filepath)
 
     def build_untokenizer(self, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath):
         """
@@ -258,7 +259,7 @@ class Analyzer:
         Input rows are expected to contain:
             pdgid, e, px, py, pz
 
-        Output rows contain the columns expected by analysis_v2.plotting_v2:
+        Output rows contain the columns expected by analysis_v2.plotting:
             pdgid, e, px, py, pz, pt, eta, theta, phi
         """
         NUM_FEATURES_PER_PARTICLE_VERBOSE = 9
@@ -296,7 +297,7 @@ class Analyzer:
         """
         Generate distribution plots with the current analysis_v2.py API.
 
-        analysis_v2.py exposes dataset-processing utilities and plotting_v2
+        analysis_v2.py exposes dataset-processing utilities and plotting
         methods directly. It no longer provides the old plotting() object with a
         load_data_by_model_names(...) step, so this method loads the real and
         generated files explicitly before plotting.
@@ -314,16 +315,16 @@ class Analyzer:
         generated_verbose_data = self.convert_to_verbose_particles(generated_data)
         model_legend_titles = ['Geant4', self.model_name]
 
-        real_leading_pdgid = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid', return_only_leading=True)
-        generated_leading_pdgid = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, 'pdgid', return_only_leading=True)
-        real_all_pdgid = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid')
-        generated_all_pdgid = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, 'pdgid')
+        real_leading_pdgid = dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid', return_only_leading=True)
+        generated_leading_pdgid = dataset.extract_single_column_for_analysis(generated_verbose_data, 'pdgid', return_only_leading=True)
+        real_all_pdgid = dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid')
+        generated_all_pdgid = dataset.extract_single_column_for_analysis(generated_verbose_data, 'pdgid')
         real_energy_conservation = self.extract_energy_conservation_for_analysis(real_verbose_data)
         generated_energy_conservation = self.extract_energy_conservation_for_analysis(generated_verbose_data)
-        real_num_particles = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, 'num_particles')
-        generated_num_particles = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, 'num_particles')
+        real_num_particles = dataset.extract_single_column_for_analysis(real_verbose_data, 'num_particles')
+        generated_num_particles = dataset.extract_single_column_for_analysis(generated_verbose_data, 'num_particles')
 
-        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+        fig, _ = plotting.plot_dist_and_ratio_discrete_overlaid(
             column_name='pdgid',
             ref_vals=real_leading_pdgid,
             comp_vals_dict={self.model_name: generated_leading_pdgid},
@@ -336,7 +337,7 @@ class Analyzer:
         )
         plt.close(fig)
 
-        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+        fig, _ = plotting.plot_dist_and_ratio_discrete_overlaid(
             column_name='pdgid',
             ref_vals=real_leading_pdgid,
             comp_vals_dict={self.model_name: generated_leading_pdgid},
@@ -349,7 +350,7 @@ class Analyzer:
         )
         plt.close(fig)
 
-        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+        fig, _ = plotting.plot_dist_and_ratio_discrete_overlaid(
             column_name='pdgid',
             ref_vals=real_all_pdgid,
             comp_vals_dict={self.model_name: generated_all_pdgid},
@@ -362,7 +363,7 @@ class Analyzer:
         )
         plt.close(fig)
 
-        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+        fig, _ = plotting.plot_dist_and_ratio_discrete_overlaid(
             column_name='pdgid',
             ref_vals=real_all_pdgid,
             comp_vals_dict={self.model_name: generated_all_pdgid},
@@ -375,7 +376,7 @@ class Analyzer:
         )
         plt.close(fig)
 
-        # fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+        # fig, _ = analv2.plotting.plot_dist_and_ratio_cont(
         #     column_name='energy_conservation',
         #     ref_vals=real_energy_conservation,
         #     comp_vals_dict={self.model_name: generated_energy_conservation},
@@ -387,7 +388,7 @@ class Analyzer:
         # )
         # plt.close(fig)
 
-        # fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+        # fig, _ = analv2.plotting.plot_dist_and_ratio_cont(
         #     column_name='energy_conservation',
         #     ref_vals=real_energy_conservation,
         #     comp_vals_dict={self.model_name: generated_energy_conservation},
@@ -399,7 +400,7 @@ class Analyzer:
         # )
         # plt.close(fig)
 
-        fig, _ = analv2.plotting_v2.plot_dist_and_ratio_discrete_overlaid(
+        fig, _ = plotting.plot_dist_and_ratio_discrete_overlaid(
             column_name='num_particles',
             ref_vals=real_num_particles,
             comp_vals_dict={self.model_name: generated_num_particles},
@@ -412,12 +413,12 @@ class Analyzer:
         plt.close(fig)
 
         for column_name in ['e', 'px', 'py', 'pz', 'pt', 'eta', 'theta', 'phi']:
-            real_leading_values = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, column_name, return_only_leading=True)
-            generated_leading_values = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, column_name, return_only_leading=True)
-            real_all_values = analv2.dataset.extract_single_column_for_analysis(real_verbose_data, column_name)
-            generated_all_values = analv2.dataset.extract_single_column_for_analysis(generated_verbose_data, column_name)
+            real_leading_values = dataset.extract_single_column_for_analysis(real_verbose_data, column_name, return_only_leading=True)
+            generated_leading_values = dataset.extract_single_column_for_analysis(generated_verbose_data, column_name, return_only_leading=True)
+            real_all_values = dataset.extract_single_column_for_analysis(real_verbose_data, column_name)
+            generated_all_values = dataset.extract_single_column_for_analysis(generated_verbose_data, column_name)
 
-            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+            fig, _ = plotting.plot_dist_and_ratio_cont(
                 column_name=column_name,
                 ref_vals=real_leading_values,
                 comp_vals_dict={self.model_name: generated_leading_values},
@@ -427,7 +428,7 @@ class Analyzer:
             )
             plt.close(fig)
 
-            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+            fig, _ = plotting.plot_dist_and_ratio_cont(
                 column_name=column_name,
                 ref_vals=real_leading_values,
                 comp_vals_dict={self.model_name: generated_leading_values},
@@ -438,7 +439,7 @@ class Analyzer:
             )
             plt.close(fig)
 
-            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+            fig, _ = plotting.plot_dist_and_ratio_cont(
                 column_name=column_name,
                 ref_vals=real_all_values,
                 comp_vals_dict={self.model_name: generated_all_values},
@@ -448,7 +449,7 @@ class Analyzer:
             )
             plt.close(fig)
 
-            fig, _ = analv2.plotting_v2.plot_dist_and_ratio_cont(
+            fig, _ = plotting.plot_dist_and_ratio_cont(
                 column_name=column_name,
                 ref_vals=real_all_values,
                 comp_vals_dict={self.model_name: generated_all_values},
@@ -515,20 +516,20 @@ class Analyzer:
         # Coverage and MMD
         # =====================
 
-        cov, mmd = analv2.metrics.jetnet_eval_cov_mmd(real_jets, generated_jets)
+        cov, mmd = metrics.jetnet_eval_cov_mmd(real_jets, generated_jets)
 
         # =====================
         # FPD and KPD
         # =====================
 
-        suggested_real_features = analv2.metrics.jetnet_get_suggested_kpd_fpd_features(real_jets)
-        suggested_generated_features = analv2.metrics.jetnet_get_suggested_kpd_fpd_features(generated_jets)
+        suggested_real_features = metrics.jetnet_get_suggested_kpd_fpd_features(real_jets)
+        suggested_generated_features = metrics.jetnet_get_suggested_kpd_fpd_features(generated_jets)
 
         suggested_real_features = np.nan_to_num(suggested_real_features, nan=0.0)
         suggested_generated_features = np.nan_to_num(suggested_generated_features, nan=0.0)
 
-        kpd_median, kpd_error = analv2.metrics.jetnet_eval_kpd(suggested_real_features, suggested_generated_features, num_threads=0)
-        fpd_value, fpd_error = analv2.metrics.jetnet_eval_fpd(suggested_real_features, suggested_generated_features)
+        kpd_median, kpd_error = metrics.jetnet_eval_kpd(suggested_real_features, suggested_generated_features, num_threads=0)
+        fpd_value, fpd_error = metrics.jetnet_eval_fpd(suggested_real_features, suggested_generated_features)
 
         # =====================
         # Wasserstein Distances
@@ -539,9 +540,9 @@ class Analyzer:
         # w1_scores_avg_efp = analv2.metrics.jetnet_eval_w1efp(real_jets, generated_jets)
 
         # Wasserstein distance between masses of jets1 and jets2
-        w1_mass_score = analv2.metrics.jetnet_eval_w1m(real_jets, generated_jets)
+        w1_mass_score = metrics.jetnet_eval_w1m(real_jets, generated_jets)
         # Wasserstein distances between particle features of jets1 and jets2
-        w1_scores_avg_features = analv2.metrics.jetnet_eval_w1p(real_jets, generated_jets)
+        w1_scores_avg_features = metrics.jetnet_eval_w1p(real_jets, generated_jets)
 
         w1m_score = w1_mass_score[0]
         w1m_score_std = w1_mass_score[1]

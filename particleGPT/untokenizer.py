@@ -34,8 +34,9 @@ from typing import Any
 
 import numpy as np
 
-import configurator as conf
+import pUtil
 import paths as paths
+import configurator as conf
 from dictionary import Dictionary
 from train import DataloaderSplitConfig, ESplitTypes, TokenizedMetadataConfig
 
@@ -75,10 +76,10 @@ class BaseUntokenizer():
         self.tokenized_metadata = tokenized_metadata
         self.tokenization_format = str(tokenized_metadata.get("format", "base_tokenizer"))
         self.tokenization_schema = list(tokenized_metadata.get("tokenization_schema", getattr(dictionary, "tokenization_schema", [])))
-        self.default_pdgid = int(get_untokenizing_config("default_pdgid", 0))
-        self.stop_at_event_end = parse_bool(get_untokenizing_config("stop_at_event_end", True))
-        self.stop_at_padding = parse_bool(get_untokenizing_config("stop_at_padding", True))
-        self.float_precision = int(get_local_untokenizing_config("float_precision", 5))
+        self.default_pdgid = 0
+        self.stop_at_event_end = conf.sampling.stop_at_event_end
+        self.stop_at_padding = conf.sampling.stop_at_padding
+        self.float_precision = conf.sampling.float_precision
         self.total_samples_read = 0
         self.total_samples_written = 0
         self.total_empty_samples = 0
@@ -197,16 +198,12 @@ class BaseUntokenizer():
             padding_tokens.update(int(x) for x in padding_sequence())
         return int(token) in padding_tokens
 
-    def project_relative_path(self, filepath: Path) -> str:
-        """Return filepath relative to PROJECT_DIR for metadata portability."""
-        return os.path.relpath(filepath.resolve(), PROJECT_DIR.resolve())
-
     def write_metadata(self) -> None:
         """Write a small sidecar JSON file describing the untokenized output."""
         metadata = {
             "model_name": conf.generic.model_name,
-            "input_samples_filepath": self.project_relative_path(self.input_samples_filepath),
-            "output_samples_filepath": self.project_relative_path(self.output_samples_filepath),
+            "input_samples_filepath": paths.project_relative_path(self.input_samples_filepath),
+            "output_samples_filepath": paths.project_relative_path(self.output_samples_filepath),
             "tokenization_format": self.tokenization_format,
             "tokenization_schema": self.tokenization_schema,
             "default_pdgid": self.default_pdgid,
@@ -445,43 +442,6 @@ class WholeParticleUntokenizer(BaseUntokenizer):
     def is_event_end_token(self, token: int) -> bool:
         return hasattr(self.dictionary, "event_end_token") and token == int(self.dictionary.event_end_token)
 
-def get_untokenizing_config(name: str, default: Any) -> Any:
-    """
-    Read an untokenizing option while tolerating common local config layouts.
-
-    The preferred namespace is conf.untokenizing. conf.untokenizer is accepted as
-    a fallback because some older scripts used noun-style namespace names. The
-    sampling namespaces are checked last only for settings that intentionally
-    mirror sample.py, such as sample_idx.
-    """
-    for namespace_name in ("untokenizing", "untokenizer", "sampling", "sampling_config"):
-        namespace = getattr(conf, namespace_name, None)
-        if namespace is not None and hasattr(namespace, name):
-            return getattr(namespace, name)
-    return default
-
-def get_local_untokenizing_config(name: str, default: Any) -> Any:
-    """Read only untokenizer-specific options, never sampling fallbacks."""
-    for namespace_name in ("untokenizing", "untokenizer"):
-        namespace = getattr(conf, namespace_name, None)
-        if namespace is not None and hasattr(namespace, name):
-            return getattr(namespace, name)
-    return default
-
-def parse_bool(value: Any) -> bool:
-    """Parse a permissive bool from config strings, ints, or real bools."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off"}:
-            return False
-    raise ValueError(f"Cannot parse boolean value from {value!r}.")
-
 def bin_value_from_index(bin_idx: int, bins: np.ndarray) -> float:
     """
     Convert a tokenizer bin index back to a representative continuous value.
@@ -526,13 +486,6 @@ def momentum_from_features(feature_buffer: dict[str, float | int]) -> tuple[floa
     
     return px, py, pz
 
-def resolve_project_path(path_value: str | Path) -> Path:
-    """Resolve absolute paths directly and relative paths from PROJECT_DIR."""
-    path = Path(path_value)
-    if path.is_absolute():
-        return path
-    return PROJECT_DIR / path
-
 def resolve_sampling_idx(generated_samples_dir: Path) -> int:
     """
     Resolve the sampling_N directory to untokenize.
@@ -541,9 +494,8 @@ def resolve_sampling_idx(generated_samples_dir: Path) -> int:
     Otherwise, the highest existing sampling_N directory is used because the
     usual workflow is to untokenize the newest sampling run.
     """
-    configured_idx = get_untokenizing_config("sample_idx", get_untokenizing_config("sampling_idx", None))
-    if configured_idx is not None:
-        return int(configured_idx)
+    if conf.sampling.sampling_idx_override is not None:
+        return int(conf.sampling.sampling_idx_override)
     
     max_idx = -1
     if generated_samples_dir.exists():
@@ -553,101 +505,46 @@ def resolve_sampling_idx(generated_samples_dir: Path) -> int:
             match = re.fullmatch(r"sampling_(\d+)", path.name)
             if match:
                 max_idx = max(max_idx, int(match.group(1)))
+    
     if max_idx < 0:
         raise FileNotFoundError(f"No sampling_N directories found in {generated_samples_dir}.")
+    
     return max_idx
-
-def resolve_dictionary_filepath(tokenized_metadata: dict[str, Any], tokenized_metadata_filepath: Path) -> Path:
-    """
-    Resolve the dictionary filepath from config or tokenized metadata.
-
-    New tokenized metadata may store the dictionary path relative to PROJECT_DIR.
-    This resolver also keeps a few fallbacks so older local metadata/config files
-    continue to work.
-    """
-    configured_path = get_untokenizing_config("dictionary_file", get_untokenizing_config("dictionary_filepath", None))
-    if configured_path is None:
-        configured_path = getattr(conf.generic, "dictionary_file", getattr(conf.generic, "dictionary_filepath", None))
-    if configured_path is not None:
-        path = resolve_project_path(configured_path)
-        if path.exists():
-            return path
-        raise FileNotFoundError(f"Configured dictionary file does not exist: {path}")
-    
-    for key in ("dictionary_file", "dictionary_filepath", "dictionary_config_file", "dictionary_path"):
-        if key not in tokenized_metadata:
-            continue
-        path = resolve_project_path(tokenized_metadata[key])
-        if path.exists():
-            return path
-        raise FileNotFoundError(f"Tokenized metadata points to a dictionary file that does not exist: {path}")
-    
-    inferred_paths = [
-        tokenized_metadata_filepath.parent / "dictionary.json",
-        tokenized_metadata_filepath.parent / "dictionary_config.json",
-    ]
-    for path in inferred_paths:
-        if path.exists():
-            return path
-    
-    raise FileNotFoundError(
-        "Could not resolve dictionary filepath. Add dictionary_file or dictionary_filepath "
-        "to conf.untokenizing or to the tokenized metadata JSON."
-    )
 
 def main() -> None:
     """Untokenize generated samples from the selected sampling_N directory."""
     if conf.generic.preparation_config_file is None:
         raise ValueError("preparation_config_file in configuration cannot be None!")
     
-    preparation_config_filepath = resolve_project_path(conf.generic.preparation_config_file)
+    preparation_config_filepath = paths.PROJECT_DIR / conf.generic.preparation_config_file
     dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
     if not dls_conf.verify():
         raise RuntimeError("Failure when verifying test split config. Ensure all required arguments exist.")
     
-    tokenized_metadata_filepath = resolve_project_path(dls_conf.tokenized_metadata_filepath)
+    tokenized_metadata_filepath = paths.PROJECT_DIR / dls_conf.tokenized_metadata_filepath
     try:
         with tokenized_metadata_filepath.open("r", encoding="utf-8") as f:
             tokenized_metadata = json.load(f)
     except Exception as exc:
         raise RuntimeError(f"Failure while trying to load json from {tokenized_metadata_filepath}! Exception:\n{exc}") from exc
     
-    try:
-        tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
-        if not tmd_conf.verify():
-            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
-    except KeyError:
-        # Older tokenizer.py versions wrote tokenized_data_filepath instead of
-        # tokenized_data_file. Untokenizing only needs the metadata/dictionary,
-        # so keep compatibility here without weakening train.py's stricter path.
-        if "tokenized_data_filepath" not in tokenized_metadata:
-            raise
+    tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
+    if not tmd_conf.verify():
+        raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
     
-    dictionary_filepath = resolve_dictionary_filepath(tokenized_metadata, tokenized_metadata_filepath)
-    dictionary = Dictionary(dictionary_filepath)
+    dictionary = pUtil.get_dictionary(conf.generic.preparation_config_filepath)
     
     generated_samples_dir = PROJECT_DIR / "generated_samples" / conf.generic.model_name
     sample_idx = resolve_sampling_idx(generated_samples_dir)
     output_dir = generated_samples_dir / f"sampling_{sample_idx}"
     
-    input_samples_file = get_local_untokenizing_config("input_samples_file", None)
-    if input_samples_file is None:
-        input_csv_name = get_local_untokenizing_config("input_csv_name", get_untokenizing_config("output_csv_name", DEFAULT_INPUT_CSV_NAME))
-        input_samples_filepath = output_dir / str(input_csv_name)
-    else:
-        input_samples_filepath = resolve_project_path(input_samples_file)
+    input_samples_filepath = output_dir / DEFAULT_INPUT_CSV_NAME
     if not input_samples_filepath.exists():
         raise FileNotFoundError(f"Input generated samples file does not exist: {input_samples_filepath}")
     
-    output_samples_file = get_local_untokenizing_config("output_samples_file", None)
-    if output_samples_file is None:
-        output_csv_name = get_local_untokenizing_config("output_csv_name", DEFAULT_OUTPUT_CSV_NAME)
-        output_samples_filepath = output_dir / str(output_csv_name)
-    else:
-        output_samples_filepath = resolve_project_path(output_samples_file)
-    
-    output_metadata_filepath = output_dir / str(get_local_untokenizing_config("metadata_name", DEFAULT_METADATA_NAME))
-    output_invalid_tokens_filepath = output_dir / str(get_local_untokenizing_config("invalid_tokens_name", DEFAULT_INVALID_TOKENS_NAME))
+    output_samples_filepath = output_dir / DEFAULT_OUTPUT_CSV_NAME
+    output_metadata_filepath = output_dir / DEFAULT_METADATA_NAME
+    output_invalid_tokens_filepath = output_dir / DEFAULT_INVALID_TOKENS_NAME
     
     tokenization_format = str(tokenized_metadata.get("format", "base_tokenizer"))
     tokenizer_class = str(tokenized_metadata.get("tokenizer_class", ""))

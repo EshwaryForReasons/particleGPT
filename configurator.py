@@ -103,7 +103,7 @@ class TrainingConfiguration:
 class SamplingConfiguration:
     samples_storage_dir:    str = ''
     batch_size:             int = 128
-    max_new_tokens:         int = 500
+    max_new_tokens:         int | None = 500 # If none will be auto calculated as sequence_length - starting_tokens
     temperature:            float = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
     top_k:                  int = 200
     seed:                   int = 1337
@@ -111,6 +111,14 @@ class SamplingConfiguration:
     dtype:                  str = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
     compile:                bool = True
     max_test_sequences:     int | None = None
+    keep_shards:            bool = False
+    sampling_idx_override:  int | None = None
+    force_single_gpu:       bool = False
+    
+    # Used for untokenization
+    stop_at_event_end:      bool = True
+    stop_at_padding:        bool = True
+    float_precision:        float = 5
 
 generic = None
 training = None

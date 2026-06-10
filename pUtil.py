@@ -2,6 +2,10 @@
 import json
 import csv
 from pathlib import Path
+import paths
+import configurator as conf
+from preparation import ESplitTypes, DataloaderSplitConfig
+from dictionary import Dictionary
 
 script_dir = Path(__file__).resolve().parent
 
@@ -11,6 +15,38 @@ TRAINED_MODELS_DIR_NAME = 'trained_models'
 DATASETS_DIR_NAME = 'data'
 PREPARATIONS_DIR_NAME = 'preparations'
 TEMP_DIR_NAME = 'temp'
+
+
+def get_dictionary(preparation_config_filepath: Path) -> Dictionary:
+    """
+    Load the dictionary for the current configured tokenized dataset.
+
+    The dictionary path is resolved from tokenized metadata, not from the old
+    preparation directory.
+    """
+    preparation_config_filepath = paths.PROJECT_DIR / preparation_config_filepath
+    dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
+    tokenized_metadata_filepath = paths.PROJECT_DIR / dls_conf.tokenized_metadata_filepath
+    if tokenized_metadata_filepath.exists():
+        raise FileNotFoundError(f"Tokenized metadata file does not exist: {tokenized_metadata_filepath}")
+    
+    try:
+        with tokenized_metadata_filepath.open("r", encoding="utf-8") as f:
+            tokenized_metadata = json.load(f)
+    except Exception as e:
+        raise RuntimeError(f"Error reading tokenized metadata file: {e}")
+
+    dictionary_file = tokenized_metadata.get("dictionary_file", None)
+    if dictionary_file is None:
+        raise ValueError("No dictionary file found in tokenized metadata.")
+    
+    dictionary_filepath = paths.PROJECT_DIR / Path(dictionary_file)
+    if not dictionary_filepath.exists():
+        raise FileNotFoundError(f"Dictionary file does not exist: {dictionary_filepath}")
+    
+    dictionary = Dictionary(dictionary_filepath)
+    return dictionary
+
 
 def get_sampling_dir(model_name):
     return script_dir / GENERATED_SAMPLES_DIR_NAME / model_name
@@ -29,8 +65,6 @@ def get_temp_dir(model_name=None):
     if model_name is None:
         return script_dir / TEMP_DIR_NAME
     raise ValueError("model_name must be None to get the global temp directory")
-
-
 
 
 
