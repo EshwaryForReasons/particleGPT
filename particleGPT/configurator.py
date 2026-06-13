@@ -1,8 +1,9 @@
+
 import json
 import sys
-import os
 import torch
-
+import paths
+from pathlib import Path
 from dataclasses import dataclass, field
 
 @dataclass
@@ -26,16 +27,23 @@ class GenericConfiguration:
 
 @dataclass
 class TrainingConfiguration:
-    # I/O
-    eval_interval: int = 2000 # Set negative to disable (e.g, if eval_every_epoch is True or if we just do not want any)
-    log_interval: int = 10
+    # 'scratch', 'resume'
+    # 'scratch' will force a restart, 'resume' will ensure no accidental restart
+    init_from: str = ''
+    
+    # evaluation
+    eval_interval: int = 2000 # Set to -1 to disable (e.g, if eval_every_epoch is True or if we just do not want any)
     eval_iters: int = 200
     eval_only: bool = False
-    init_from: str = ''  # 'scratch', 'resume', or 'gpt2*'
     eval_every_epoch: bool = True
+    log_interval: int = 10
+    max_iters: int = 600000
+    max_epochs: int = int(10e9)
+    max_num_failed_checkpoint_checks: int = 4
+    min_val_loss_improvement_criteria: float = 0.002 # Minimum relative improvement in validation loss to reset the failed checkpoint counter
 
     # data
-    gradient_accumulation_steps: int = field(default=5 * 8)
+    gradient_accumulation_steps: int = 32
     batch_size: int = 12
     block_size: int = -1
     # context_events is left for legacy purposes
@@ -57,28 +65,24 @@ class TrainingConfiguration:
     loss_function: str = 'cross_entropy'
 
     # adamw optimizer
-    learning_rate: float = 6e-4
-    max_iters: int = 600000
-    max_epochs: int = int(10e9)
-    max_num_failed_checkpoint_checks: int = 4
     weight_decay: float = 1e-1
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
     cycle_steps_mult: float = 1
     base_lr_decay_mult: float = 1
-    lr_scheduler: str = "cosine_annealing_with_warmup" # cosine_annealing_with_warmup, cosine_annealing_with_warm_restarts
-    
     loss_sigma = 1.0
 
-    # learning rate decay
+    # learning rate
+    lr_scheduler: str = "cosine_annealing_with_warmup" # cosine_annealing_with_warmup, cosine_annealing_with_warm_restarts
     warmup_iters: int = 2000
     lr_decay_iters: int = 600000
+    learning_rate: float = 6e-4
     min_lr: float = 6e-5
 
-    # DDP settings
     backend: str = 'nccl'
     
+    # DDP settings
     auto_ddp = True
     auto_ddp_world_size = 4
     auto_ddp_master_addr = "127.0.0.1"
@@ -88,10 +92,13 @@ class TrainingConfiguration:
     device: str = 'cuda'
     dtype: str = field(init=False)
     compile: bool = True
-    iterations_per_epoch: int = 0
     seed: int = 1337
     
     meta_benchmarking: bool = False
+    
+    # @TODO: put this somewhere else, this is not a config variable, it should be derived from the dataset and training configuration.
+    # It makes sense to put this in TokenBlockDataset
+    iterations_per_epoch: int = 0
 
     def __post_init__(self):
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
@@ -133,7 +140,7 @@ def perform_configuration(config_file_path):
     with open(config_file_path, 'r') as f:
         config = json.load(f)
 
-    generic.config_file_path = config_file_path
+    generic.config_file_path = paths.PROJECT_DIR / config_file_path
 
     for key, value in config.items():
         if key in ['training_config', 'sampling_config']:
@@ -160,9 +167,9 @@ def perform_configuration(config_file_path):
     # If no model_name is set, then use the config file name.
     # This saves a lot of pain with accidentally overwriting files.
     if (generic.model_name == ''):
-        config_file_name = os.path.basename(config_file_path)
-        config_file_name_stripped = os.path.splitext(config_file_name)
-        generic.model_name = config_file_name_stripped[0]
+        config_file_name = Path(config_file_path).name
+        config_file_name_stripped = Path(config_file_name).stem
+        generic.model_name = config_file_name_stripped
     
     return generic, training, sampling
 
@@ -176,7 +183,10 @@ else:
     if sys.argv[1] not in arg_one_exceptions:
         config_file_path = sys.argv[1]
         generic, training, sampling = perform_configuration(config_file_path)
+        
+        # Handle legacy context_events alias
+        if training.context_sequences == -1 and training.context_events != -1:
+            training.context_sequences = training.context_events
     
     if '--benchmark' in sys.argv:
         training.meta_benchmarking = True
-    

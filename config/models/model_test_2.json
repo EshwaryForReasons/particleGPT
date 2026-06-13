@@ -7,7 +7,7 @@
         "eval_iters": 200,
         "log_interval": 10,
         "gradient_accumulation_steps": 320,
-        "batch_size": 640,
+        "batch_size": 32,
         "context_sequences": 1,
         "n_layer": 4,
         "n_head": 2,
@@ -20,7 +20,8 @@
         "beta2": 0.98,
         "warmup_iters": 27,
         "max_num_failed_checkpoint_checks": 16,
-        "eval_every_epoch": true
+        "eval_every_epoch": true,
+        "use_self_contained_blocks": true
     },
     "sampling_config": {
         "temperature": 0.8,

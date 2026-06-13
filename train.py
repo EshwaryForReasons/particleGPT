@@ -38,21 +38,20 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 from enum import Enum
 
-import numpy as np
+import paths
 import torch
+import numpy as np
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
-import configurator as conf
+import particleGPT.configurator as conf
 import particleGPT.model as model_module
 import pLogging
 from particleGPT.model import GPT, GPTConfig
-from preparation import ESplitTypes, DataloaderSplitConfig, TokenizedMetadataConfig
-
-SCRIPT_DIR = Path(__file__).resolve().parent
+from particleGPT.preparation import ESplitTypes, DataloaderSplitConfig, TokenizedMetadataConfig
 
 PADDING_TOKEN = 0
 CHECKPOINT_VERSION = 2
@@ -151,18 +150,16 @@ class TokenBlockDataset(Dataset):
         if conf.generic.preparation_config_file is None:
             raise ValueError("preparation_config_file in configuration cannot be None!")
         
+        self.block_size = int(conf.training.block_size)
+        if self.block_size <= 0:
+            raise ValueError(f"block_size must be a positive integer, got {self.block_size}.")
+        
         use_self_contained_blocks = getattr(conf.training, "use_self_contained_blocks", None)
         if use_self_contained_blocks is None:
             raise RuntimeError("use_self_contained_blocks config cannot be None!")
         if not isinstance(use_self_contained_blocks, bool):
             raise TypeError("use_self_contained_blocks must be a bool!")
         self.use_extra_target_token = not use_self_contained_blocks
-        
-        if use_self_contained_blocks and self.block_size % self.tmd_conf.sequence_length != 0:
-            raise ValueError(
-                f"block_size {self.block_size} must be a multiple of sequence_length {self.tmd_conf.sequence_length} "
-                "when use_self_contained_blocks is True to ensure blocks do not cross sequence boundaries."
-            )
         
         self.split_type = split_type
         
@@ -177,6 +174,12 @@ class TokenBlockDataset(Dataset):
         self.tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
         if not self.tmd_conf.verify():
             raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
+        
+        if use_self_contained_blocks and self.block_size % self.tmd_conf.sequence_length != 0:
+            raise ValueError(
+                f"block_size {self.block_size} must be a multiple of sequence_length {self.tmd_conf.sequence_length} "
+                "when use_self_contained_blocks is True to ensure blocks do not cross sequence boundaries."
+            )
                 
         # Fancy way to calculate token count in dataset without using np.memmap and len().
         # Small performance optimization
@@ -206,10 +209,6 @@ class TokenBlockDataset(Dataset):
                 f"Tokenized data contains {_data_total_sequences:,} full sequences, but expected {self.tmd_conf.num_full_sequences:,} "
                 "based on the tokenized metadata. Regenerate the prepared data or fix the metadata."
             )
-        
-        self.block_size = int(conf.training.block_size)
-        if self.block_size <= 0:
-            raise ValueError(f"block_size must be a positive integer, got {self.block_size}.")
             
         raw_split_tokens = self.dls_conf.num_sequences * self.tmd_conf.sequence_length
         tokens_needed_per_sample = self.block_size + int(self.use_extra_target_token)
@@ -232,13 +231,12 @@ class TokenBlockDataset(Dataset):
             
         self.split_tokens_dropped = raw_split_tokens - self.num_split_tokens
         if self.split_tokens_dropped != 0:
-            warnings.warn(
-                f"The raw split has {raw_split_tokens} tokens, but only {self.num_split_tokens} "
+            warning_txt = (f"The raw split has {raw_split_tokens} tokens, but only {self.num_split_tokens} "
                 f"tokens are usable with block_size={self.block_size} and "
                 f"use_extra_target_token={self.use_extra_target_token}. "
-                f"Dropping {self.split_tokens_dropped} token(s) from the end of the split.",
-                RuntimeWarning,
-            )
+                f"Dropping {self.split_tokens_dropped} token(s) from the end of the split.")
+            warnings.warn(warning_txt, RuntimeWarning)
+            log_info(0, warning_txt)
         
         # Calculate raw (before block_size adjustment) start and end token indices and verify the dataset can provide it.
         # This is for verification for the config.
@@ -980,7 +978,7 @@ def save_checkpoints_if_needed(
         {"step": completed_iter, "train_loss": train_loss, "val_loss": val_loss},
     )
 
-    improved = val_loss < best_val_loss
+    improved = val_loss < (best_val_loss - conf.training.min_val_loss_improvement_criteria)
     if improved:
         best_val_loss = val_loss
         num_failed_checkpoint_checks = 0
@@ -1358,11 +1356,11 @@ def log_training_configuration(
             "backend": conf.training.backend,
         },
     )
-    
+
 # =====================
 # Auto DDP
 # =====================
-    
+
 def find_free_port() -> int:
     """Find an available localhost port for single-node internal DDP."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1424,7 +1422,7 @@ def main() -> None:
     logger_idx = -1
 
     try:
-        model_output_dir = SCRIPT_DIR / "trained_models" / conf.generic.model_name
+        model_output_dir = paths.PROJECT_DIR / "trained_models" / conf.generic.model_name
         if ddp_state.master_process:
             model_output_dir.mkdir(parents=True, exist_ok=True)
             logger_idx = pLogging.create_training_logger(conf.generic.model_name, 1)

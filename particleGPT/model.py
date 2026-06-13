@@ -30,13 +30,13 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-import configurator as conf
+import particleGPT.configurator as conf
 import pLogging
 import paths
 
 # Won't always have a dictionary if training on generic data
 try:
-    from dictionary import Dictionary, ETokenTypes
+    from particleGPT.dictionary import Dictionary, ETokenTypes
 except Exception as exc:  # Allows generic/non-particle training without dictionary.py.
     Dictionary = None
     ETokenTypes = None

@@ -42,11 +42,10 @@ import torch
 import torch.multiprocessing as mp
 
 import paths
-import configurator as conf
-from particleGPT import paths
+import particleGPT.configurator as conf
 from particleGPT.model import GPT, GPTConfig
 from train import clean_state_dict_keys
-from preparation import ESplitTypes, DataloaderSplitConfig, TokenizedMetadataConfig
+from particleGPT.preparation import ESplitTypes, DataloaderSplitConfig, TokenizedMetadataConfig
 
 FINAL_CSV_NAME = "samples.csv"
 SHARD_SUFFIX = ".csv.part"
@@ -74,9 +73,11 @@ def resolve_device_names(total_starters: int) -> tuple[str, ...]:
     env_num_gpus = os.environ.get("PARTICLEGPT_SAMPLE_NUM_GPUS", None)
     if env_num_gpus is None:
         requested_num_gpus = None
-    if isinstance(env_num_gpus, str) and env_num_gpus.strip() == "":
+    elif isinstance(env_num_gpus, str) and env_num_gpus.strip() == "":
         requested_num_gpus = None
-    requested_num_gpus = int(env_num_gpus)
+    else:
+        requested_num_gpus = int(env_num_gpus)
+    
     if conf.sampling.force_single_gpu:
         requested_num_gpus = 1
     elif requested_num_gpus is None:
@@ -313,8 +314,8 @@ def main() -> None:
             f"starter_tokens={starter_tokens}, but checkpoint block_size={model_args['block_size']}."
         )
 
-    configured_max_new_tokens = conf.sampling.max_new_tokens
-    if configured_max_new_tokens is None:
+    max_new_tokens = conf.sampling.max_new_tokens
+    if max_new_tokens is None:
         max_new_tokens = int(tmd_conf.sequence_length) - starter_tokens
     if max_new_tokens <= 0:
         raise ValueError(f"max_new_tokens must be positive, got {max_new_tokens}.")

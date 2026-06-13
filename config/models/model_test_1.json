@@ -27,6 +27,7 @@
         "top_k": 200,
         "seed": 1337,
         "device": "cuda",
-        "compile": true
+        "compile": true,
+        "max_test_sequences": 10000
     }
 }

@@ -9,9 +9,8 @@ from enum import Enum
 from scipy.stats import norm
 from scipy.interpolate import interp1d
 
+import paths
 import data_manager as dm
-
-script_dir = Path(__file__).resolve().parent
 
 class ETokenTypes(Enum):
     PADDING = 0
@@ -157,7 +156,7 @@ class Dictionary():
         
         self.dataset_name = self.dictionary_data.get('dataset', None)
         assert self.dataset_name is not None, "dataset_name must be defined in the dictionary."
-        self.dataset_filepath = script_dir / 'data' / 'raw' / self.dictionary_data['dataset']
+        self.dataset_filepath = paths.PROJECT_DIR / 'data' / 'raw' / self.dictionary_data['dataset']
         assert self.dataset_filepath.exists(), f"Dataset file {self.dataset_filepath} does not exist."
         # self.preparation_name   = self.dictionary_data.get('preparation_name', None)
         # assert self.preparation_name is not None, "preparation_name must be defined in the dictionary."

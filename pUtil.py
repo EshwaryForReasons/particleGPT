@@ -3,9 +3,9 @@ import json
 import csv
 from pathlib import Path
 import paths
-import configurator as conf
-from preparation import ESplitTypes, DataloaderSplitConfig
-from dictionary import Dictionary
+import particleGPT.configurator as conf
+from particleGPT.preparation import ESplitTypes, DataloaderSplitConfig
+from particleGPT.dictionary import Dictionary
 
 script_dir = Path(__file__).resolve().parent
 
@@ -27,7 +27,7 @@ def get_dictionary(preparation_config_filepath: Path) -> Dictionary:
     preparation_config_filepath = paths.PROJECT_DIR / preparation_config_filepath
     dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
     tokenized_metadata_filepath = paths.PROJECT_DIR / dls_conf.tokenized_metadata_filepath
-    if tokenized_metadata_filepath.exists():
+    if not tokenized_metadata_filepath.exists():
         raise FileNotFoundError(f"Tokenized metadata file does not exist: {tokenized_metadata_filepath}")
     
     try:

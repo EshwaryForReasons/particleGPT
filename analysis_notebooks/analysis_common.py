@@ -13,7 +13,7 @@ from collections import Counter
 parent_dir = Path().resolve().parent
 sys.path.insert(0, str(parent_dir))
 
-from dictionary import Dictionary
+from particleGPT.dictionary import Dictionary
 import pUtil
 
 def get_model_metadata_columns():

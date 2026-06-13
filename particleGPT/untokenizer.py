@@ -36,8 +36,8 @@ import numpy as np
 
 import pUtil
 import paths as paths
-import configurator as conf
-from dictionary import Dictionary
+import particleGPT.configurator as conf
+from particleGPT.dictionary import Dictionary
 from train import DataloaderSplitConfig, ESplitTypes, TokenizedMetadataConfig
 
 PROJECT_DIR = paths.PROJECT_DIR

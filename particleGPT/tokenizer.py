@@ -12,8 +12,8 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from dictionary import Dictionary
-import configurator as conf
+from particleGPT.dictionary import Dictionary
+import particleGPT.configurator as conf
 
 NUM_FEATURES_PER_PARTICLE_RAW = 5
 N_WORKERS = os.cpu_count() # 256--old hardcoded value

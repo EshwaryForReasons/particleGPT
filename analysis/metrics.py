@@ -20,10 +20,10 @@ import jetnet
 import jetnet.evaluation
 # particleGPT
 import pUtil
-from dictionary import Dictionary
+from particleGPT.dictionary import Dictionary
 import data_manager
 from particleGPT import untokenizer
-import configurator as conf
+import particleGPT.configurator as conf
 import paths
 
 script_dir = paths.PROJECT_DIR

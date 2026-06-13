@@ -22,8 +22,8 @@ import boost_histogram as bh
 import pUtil
 import paths
 import data_manager
-import configurator as conf
-from dictionary import Dictionary
+import particleGPT.configurator as conf
+from particleGPT.dictionary import Dictionary
 
 class plotting_v2:
     
@@ -646,7 +646,7 @@ class plotting_v2:
         """
         Retrieves bin widths and ranges for each feature and the real and sampled leading particles dataframes.
         """
-        dictionary = pUtil.get_dictionary(conf.generic.preparation_config_filepath)
+        dictionary = pUtil.get_dictionary(conf.generic.preparation_config_file)
         
         def get_bin_count(type_str):
             step_size = dictionary.token_step_size(type_str)

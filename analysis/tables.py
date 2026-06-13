@@ -15,7 +15,7 @@ from numba.typed import Dict
 from scipy.signal import savgol_filter
 
 import pUtil
-from dictionary import Dictionary
+from particleGPT.dictionary import Dictionary
 import paths
 
 class tables:

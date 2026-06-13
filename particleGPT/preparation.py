@@ -6,7 +6,7 @@ from pathlib import Path
 from enum import Enum
 
 import numpy as np
-import configurator as conf
+import particleGPT.configurator as conf
 
 class ESplitTypes(Enum):
     NONE        = 0,

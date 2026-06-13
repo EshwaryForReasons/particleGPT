@@ -1,3 +1,13 @@
+"""
+Use from main project directory as:
+
+python -m analysis.analyzer config/model_config_file.json
+
+additional optional arguments:
+    --no-metrics: If provided, skip metric calculations.
+    --no-distributions: If provided, skip distribution generation.
+    --no-untokenize: If provided, skip untokenization of generated data.
+"""
 
 import sys
 import json
@@ -7,20 +17,20 @@ from pathlib import Path
 import argparse
 import warnings
 
-import configurator as conf
+import particleGPT.configurator as conf
 import paths
 import data_manager
 import matplotlib.pyplot as plt
-import dataset
-import metrics
-import tables
-import plotting
+from analysis.dataset import dataset
+from analysis.metrics import metrics
+from analysis.tables import tables
+from analysis.plotting import plotting_v2 as plotting
 import pUtil
 import particleGPT.untokenizer as untokenizer
 from train import DataloaderSplitConfig
 from train import ESplitTypes
 from train import TokenizedMetadataConfig
-from dictionary import Dictionary
+from particleGPT.dictionary import Dictionary
 
 class Analyzer:
     
@@ -139,7 +149,7 @@ class Analyzer:
 
         self.test_split_start_token_idx = raw_start
         self.test_split_end_token_idx = raw_end
-        self.dictionary = pUtil.get_dictionary(conf.generic.preparation_config_filepath)
+        self.dictionary = pUtil.get_dictionary(conf.generic.preparation_config_file)
 
     def build_untokenizer(self, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath):
         """
@@ -581,9 +591,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Handles the analysis of generated particle data. Assumes the model has been sampled already."
     )
-    parser.add_argument("--no-metrics", type="store_true", help="If provided, skip metric calculations.")
-    parser.add_argument("--no-distributions", type="store_true", help="If provided, skip distribution generation.")
-    parser.add_argument("--no-untokenize", type="store_true", help="If provided, skip untokenization of generated data. Assumes the data is already untokenized.")
+    parser.add_argument("config_file", type=Path)
+    parser.add_argument("--no-metrics", action="store_true", help="If provided, skip metric calculations.")
+    parser.add_argument("--no-distributions", action="store_true", help="If provided, skip distribution generation.")
+    parser.add_argument("--no-untokenize", action="store_true", help="If provided, skip untokenization of generated data. Assumes the data is already untokenized.")
     args = parser.parse_args()
     
     if args.no_metrics:

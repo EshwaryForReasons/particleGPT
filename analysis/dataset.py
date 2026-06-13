@@ -18,9 +18,10 @@ from particle import Particle
 import vector
 # particleGPT
 import pUtil
-from dictionary import Dictionary
+from particleGPT.dictionary import Dictionary
 import data_manager
 import paths
+from analysis.plotting import plotting_v2
 
 class dataset:
     
