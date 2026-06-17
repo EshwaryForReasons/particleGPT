@@ -223,10 +223,22 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
     """
     Untokenizer for feature-token particle data.
 
-    This handles token streams produced by EventPerSequenceParticleFeatureTokenizer
-    and PackedEventStreamParticleFeatureTokenizer. It uses the dictionary schema
-    to group per-particle tokens and then reconstructs raw-style particles.
+    This handles token streams produced by EventPerSequenceParticleFeatureTokenizer.
+    It uses the dictionary schema to group per-particle tokens and then
+    reconstructs raw-style particles.
     """
+    
+    def _is_event_start_token(self, token: int) -> bool:
+        return token == int(self.dictionary.event_start_token)
+
+    def _is_event_end_token(self, token: int) -> bool:
+        return token == int(self.dictionary.event_end_token)
+    
+    def is_event_start_token(self, token: int) -> bool:
+        return self._is_event_start_token(token)
+
+    def is_event_end_token(self, token: int) -> bool:
+        return self._is_event_end_token(token)
     
     def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
         """
@@ -253,14 +265,14 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
         
         for token in tokens:
             token = int(token)
-            if self.is_event_start_token(token):
+            if self._is_event_start_token(token):
                 if seen_event_start or particles or feature_buffer or schema_idx != 0:
                     return [], token, "encountered EVENT_START after event decoding had already started"
                 seen_event_start = True
                 feature_buffer = {}
                 schema_idx = 0
                 continue
-            if self.is_event_end_token(token):
+            if self._is_event_end_token(token):
                 if feature_buffer or schema_idx != 0:
                     return [], token, (
                         "encountered EVENT_END before completing the current particle; "
@@ -309,12 +321,6 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
                 feature_buffer = {}
         
         return particles, None, None
-
-    def is_event_start_token(self, token: int) -> bool:
-        return hasattr(self.dictionary, "event_start_token") and token == int(self.dictionary.event_start_token)
-
-    def is_event_end_token(self, token: int) -> bool:
-        return hasattr(self.dictionary, "event_end_token") and token == int(self.dictionary.event_end_token)
 
     def is_particle_start_token(self, token: int) -> bool:
         return hasattr(self.dictionary, "particle_start_token") and token == int(self.dictionary.particle_start_token)
@@ -377,6 +383,387 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
             "py": float(py),
             "pz": float(pz),
         }
+
+class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
+    """
+    Untokenizer for packed particle-feature token streams.
+
+    Packed samples can contain more than one generated event per row because the
+    tokenizer concatenates events into fixed-length training sequences. Events
+    may also cross row boundaries, so this class treats the input file as one
+    continuous token stream and decodes complete EVENT_START...EVENT_END spans.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.total_source_rows_read = 0
+        self.total_complete_events_found = 0
+        self.total_partial_events = 0
+        self.total_events_spanning_rows = 0
+    
+    def untokenize_file(self) -> None:
+        """
+        Stream packed generated samples and write one untokenized row per event.
+
+        Invalid events are dropped independently. A malformed event in a packed
+        stream does not poison other complete events from that same stream.
+        """
+        self.output_samples_filepath.parent.mkdir(parents=True, exist_ok=True)
+        self.output_invalid_tokens_filepath.parent.mkdir(parents=True, exist_ok=True)
+        tmp_output_filepath = self.output_samples_filepath.with_suffix(self.output_samples_filepath.suffix + ".tmp")
+        tmp_invalid_tokens_filepath = self.output_invalid_tokens_filepath.with_suffix(self.output_invalid_tokens_filepath.suffix + ".tmp")
+        invalid_records = []
+        current_event = None
+        current_event_start_row_idx = None
+        current_event_start_token_idx = None
+        last_source_row_idx = None
+        
+        with self.input_samples_filepath.open("r", encoding="utf-8") as in_file, \
+             tmp_output_filepath.open("w", encoding="utf-8", newline="") as out_file, \
+             tmp_invalid_tokens_filepath.open("w", encoding="utf-8") as invalid_file:
+            for source_row_idx, line in enumerate(in_file):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                source_tokens = self.parse_token_row(line, source_row_idx + 1)
+                self.total_source_rows_read += 1
+                last_source_row_idx = source_row_idx
+                
+                for token_idx, token in enumerate(source_tokens):
+                    token = int(token)
+                    if self.stop_at_padding and self.token_is_padding(token):
+                        if current_event is not None:
+                            self.record_partial_event(
+                                invalid_records,
+                                current_event,
+                                current_event_start_row_idx,
+                                current_event_start_token_idx,
+                                source_row_idx,
+                                token_idx,
+                                "encountered padding before EVENT_END",
+                                invalid_token=token,
+                            )
+                            current_event = None
+                            current_event_start_row_idx = None
+                            current_event_start_token_idx = None
+                        break
+                    
+                    if self._is_event_start_token(token):
+                        if current_event is not None:
+                            self.record_partial_event(
+                                invalid_records,
+                                current_event,
+                                current_event_start_row_idx,
+                                current_event_start_token_idx,
+                                source_row_idx,
+                                token_idx,
+                                "encountered EVENT_START before previous EVENT_END",
+                                invalid_token=token,
+                            )
+                        current_event = [token]
+                        current_event_start_row_idx = source_row_idx
+                        current_event_start_token_idx = token_idx
+                        continue
+                    
+                    if current_event is None:
+                        continue
+                    
+                    current_event.append(token)
+                    if self._is_event_end_token(token):
+                        self.write_complete_event(
+                            out_file,
+                            invalid_records,
+                            current_event,
+                            current_event_start_row_idx,
+                            current_event_start_token_idx,
+                            source_row_idx,
+                            token_idx,
+                        )
+                        current_event = None
+                        current_event_start_row_idx = None
+                        current_event_start_token_idx = None
+            
+            if current_event is not None:
+                self.record_partial_event(
+                    invalid_records,
+                    current_event,
+                    current_event_start_row_idx,
+                    current_event_start_token_idx,
+                    last_source_row_idx,
+                    None,
+                    "reached end of file before EVENT_END",
+                )
+            
+            json.dump(invalid_records, invalid_file, indent=4)
+            invalid_file.write("\n")
+        
+        tmp_output_filepath.replace(self.output_samples_filepath)
+        tmp_invalid_tokens_filepath.replace(self.output_invalid_tokens_filepath)
+        self.write_metadata()
+    
+    def write_complete_event(
+        self,
+        out_file,
+        invalid_records: list[dict[str, Any]],
+        event_tokens: list[int],
+        source_row_start_index: int,
+        source_token_start_index: int,
+        source_row_end_index: int,
+        source_token_end_index: int,
+    ) -> None:
+        """Decode and write one complete event span."""
+        event_index = self.total_samples_read
+        self.total_samples_read += 1
+        self.total_complete_events_found += 1
+        if source_row_start_index != source_row_end_index:
+            self.total_events_spanning_rows += 1
+        
+        particles, invalid_token, invalid_reason = self.decode_token_row(event_tokens)
+        if invalid_token is not None:
+            self.total_invalid_tokens += 1
+            self.total_invalid_samples += 1
+            invalid_records.append({
+                "event_index": event_index,
+                "source_row_start_index": source_row_start_index,
+                "source_token_start_index": source_token_start_index,
+                "source_row_end_index": source_row_end_index,
+                "source_token_end_index": source_token_end_index,
+                "invalid_token": int(invalid_token),
+                "reason": invalid_reason,
+                "event_row": " ".join(str(int(token)) for token in event_tokens),
+            })
+            return
+        
+        out_file.write(self.format_particles(particles) + "\n")
+        self.total_samples_written += 1
+        if len(particles) == 0:
+            self.total_empty_samples += 1
+    
+    def record_partial_event(
+        self,
+        invalid_records: list[dict[str, Any]],
+        event_tokens: list[int],
+        source_row_start_index: int,
+        source_token_start_index: int,
+        source_row_end_index: int,
+        source_token_end_index: int | None,
+        reason: str,
+        invalid_token: int | None = None,
+    ) -> None:
+        """Record an event span that never reached EVENT_END."""
+        self.total_partial_events += 1
+        self.total_invalid_samples += 1
+        if invalid_token is not None:
+            self.total_invalid_tokens += 1
+        invalid_records.append({
+            "event_index": None,
+            "partial_event_index": self.total_partial_events - 1,
+            "source_row_start_index": source_row_start_index,
+            "source_token_start_index": source_token_start_index,
+            "source_row_end_index": source_row_end_index,
+            "source_token_end_index": source_token_end_index,
+            "invalid_token": None if invalid_token is None else int(invalid_token),
+            "reason": reason,
+            "event_row": " ".join(str(int(token)) for token in event_tokens),
+        })
+    
+    def split_packed_token_row(self, tokens: list[int]) -> tuple[list[list[int]], list[list[int]]]:
+        """
+        Split one packed generated row into complete EVENT_START...EVENT_END spans.
+
+        This helper is retained for callers that only need row-local splitting.
+        File untokenization uses a streaming parser so event spans can cross row
+        boundaries.
+        """
+        event_spans = []
+        partial_spans = []
+        current_event = None
+        
+        for token in tokens:
+            token = int(token)
+            if self.stop_at_padding and self.token_is_padding(token):
+                break
+            
+            if self._is_event_start_token(token):
+                if current_event:
+                    partial_spans.append(current_event)
+                current_event = [token]
+                continue
+            
+            if current_event is None:
+                continue
+            
+            current_event.append(token)
+            if self._is_event_end_token(token):
+                event_spans.append(current_event)
+                current_event = None
+        
+        if current_event:
+            partial_spans.append(current_event)
+        
+        return event_spans, partial_spans
+    
+    def _is_event_start_token(self, token: int) -> bool:
+        return token == int(self.dictionary.event_start_token)
+
+    def _is_event_end_token(self, token: int) -> bool:
+        return token == int(self.dictionary.event_end_token)
+    
+    def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
+        """
+        Decode one complete EVENT_START...EVENT_END token span.
+
+        The decoder consumes tokens according to dictionary.tokenization_schema.
+        If any token is invalid for the schema position where it appears, the
+        event is rejected and the first invalid token is returned.
+        """
+        particles = []
+        feature_buffer = {}
+        schema_idx = 0
+        seen_event_start = False
+        schema_to_offset_and_bins = {
+            "pt": ("PT_OFFSET", "pt_bins"),
+            "px": ("PX_OFFSET", "px_bins"),
+            "py": ("PY_OFFSET", "py_bins"),
+            "pz": ("PZ_OFFSET", "pz_bins"),
+            "energy": ("ENERGY_OFFSET", "e_bins"),
+            "eta": ("ETA_OFFSET", "eta_bins"),
+            "theta": ("THETA_OFFSET", "theta_bins"),
+            "phi": ("PHI_OFFSET", "phi_bins"),
+        }
+        
+        for token in tokens:
+            token = int(token)
+            if self._is_event_start_token(token):
+                if seen_event_start or particles or feature_buffer or schema_idx != 0:
+                    return [], token, "encountered EVENT_START after event decoding had already started"
+                seen_event_start = True
+                feature_buffer = {}
+                schema_idx = 0
+                continue
+            if self._is_event_end_token(token):
+                if feature_buffer or schema_idx != 0:
+                    return [], token, (
+                        "encountered EVENT_END before completing the current particle; "
+                        f"expected {self.tokenization_schema[schema_idx]!r} at schema position {schema_idx}"
+                    )
+                break
+            if self.stop_at_padding and self.token_is_padding(token):
+                if feature_buffer or schema_idx != 0:
+                    return [], token, (
+                        "encountered padding before completing the current particle; "
+                        f"expected {self.tokenization_schema[schema_idx]!r} at schema position {schema_idx}"
+                    )
+                break
+            
+            schema_name = self.tokenization_schema[schema_idx]
+            next_schema_idx = (schema_idx + 1) % len(self.tokenization_schema)
+            
+            if schema_name == "particle_start":
+                if not self.is_particle_start_token(token):
+                    expected = int(self.dictionary.particle_start_token)
+                    return [], token, f"expected particle_start token {expected}, got token {token}"
+                feature_buffer = {}
+                schema_idx = next_schema_idx
+                continue
+            if schema_name == "particle_end":
+                if not self.is_particle_end_token(token):
+                    expected = int(self.dictionary.particle_end_token)
+                    return [], token, f"expected particle_end token {expected}, got token {token}"
+                particles.append(self.finalize_particle(feature_buffer))
+                feature_buffer = {}
+                schema_idx = next_schema_idx
+                continue
+            
+            decoded_value, invalid_reason = self.decode_feature_token(schema_name, token, schema_to_offset_and_bins)
+            if invalid_reason is not None:
+                return [], token, invalid_reason
+            feature_buffer[schema_name] = decoded_value
+            schema_idx = next_schema_idx
+            
+            if schema_idx == 0:
+                particles.append(self.finalize_particle(feature_buffer))
+                feature_buffer = {}
+        
+        return particles, None, None
+
+    def is_particle_start_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "particle_start_token") and token == int(self.dictionary.particle_start_token)
+
+    def is_particle_end_token(self, token: int) -> bool:
+        return hasattr(self.dictionary, "particle_end_token") and token == int(self.dictionary.particle_end_token)
+
+    def decode_feature_token(self, schema_name: str, token: int, schema_to_offset_and_bins: dict[str, tuple[str, str]]) -> tuple[float | int | None, str | None]:
+        """
+        Decode one feature token using the offset and bins for its schema field.
+        """
+        if schema_name == "pdgid":
+            offset = int(getattr(self.dictionary, "PDGID_OFFSET"))
+            particle_index = int(token) - offset
+            if particle_index < 0:
+                return None, f"expected pdgid token >= {offset}, got token {token}"
+            if self.index_to_pdgid and particle_index not in self.index_to_pdgid:
+                max_index = max(self.index_to_pdgid)
+                return None, (
+                    f"expected pdgid token in [{offset}, {offset + max_index}], "
+                    f"got token {token}"
+                )
+            return self.index_to_pdgid.get(particle_index, self.default_pdgid), None
+        
+        if schema_name not in schema_to_offset_and_bins:
+            raise RuntimeError(f"Untokenizer: Unknown tokenization schema: {schema_name}")
+        
+        offset_attr, bins_attr = schema_to_offset_and_bins[schema_name]
+        offset = int(getattr(self.dictionary, offset_attr))
+        bins = np.asarray(getattr(self.dictionary, bins_attr), dtype=np.float64)
+        bin_idx = int(token) - offset
+        valid_start = offset
+        valid_end_exclusive = offset + len(bins)
+        if bin_idx < 0 or bin_idx >= len(bins):
+            return None, (
+                f"expected {schema_name} token in [{valid_start}, {valid_end_exclusive}), "
+                f"got token {token}"
+            )
+        return bin_value_from_index(bin_idx, bins), None
+
+    def finalize_particle(self, feature_buffer: dict[str, float | int]) -> dict[str, float | int]:
+        """
+        Convert decoded feature values into raw-style pdgid, energy, px, py, pz.
+        """
+        pdgid = int(feature_buffer.get("pdgid", self.default_pdgid))
+        px = feature_buffer.get("px", None)
+        py = feature_buffer.get("py", None)
+        pz = feature_buffer.get("pz", None)
+        energy = feature_buffer.get("energy", None)
+        
+        if px is None or py is None or pz is None:
+            px, py, pz = momentum_from_features(feature_buffer)
+        if energy is None:
+            energy = math.sqrt(float(px) ** 2 + float(py) ** 2 + float(pz) ** 2)
+        
+        return {
+            "pdgid": pdgid,
+            "energy": float(energy),
+            "px": float(px),
+            "py": float(py),
+            "pz": float(pz),
+        }
+    
+    def write_metadata(self) -> None:
+        """Write metadata including packed-stream source-row accounting."""
+        super().write_metadata()
+        with self.output_metadata_filepath.open("r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        metadata.update({
+            "packed_event_stream": True,
+            "total_source_rows_read": self.total_source_rows_read,
+            "total_complete_events_found": self.total_complete_events_found,
+            "total_partial_events": self.total_partial_events,
+            "total_events_spanning_rows": self.total_events_spanning_rows,
+        })
+        with self.output_metadata_filepath.open("w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=4)
 
 class WholeParticleUntokenizer(BaseUntokenizer):
     """
@@ -550,6 +937,8 @@ def main() -> None:
     tokenizer_class = str(tokenized_metadata.get("tokenizer_class", ""))
     if tokenization_format == "whole_particle" or tokenizer_class == "EventPerSequenceWholeParticleTokenizer":
         untokenizer = WholeParticleUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
+    elif tokenizer_class == "PackedEventStreamParticleFeatureTokenizer":
+        untokenizer = PackedEventStreamParticleFeatureUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
     else:
         untokenizer = ParticleFeatureUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
     untokenizer.untokenize_file()

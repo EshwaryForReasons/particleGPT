@@ -1,3 +1,9 @@
+"""
+Run from the main project directory with:
+
+python -m particleGPT.tokenizer dictionary.json
+"""
+
 import shutil
 import sys
 import os
@@ -11,6 +17,7 @@ from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+import warnings
 
 from particleGPT.dictionary import Dictionary
 import particleGPT.configurator as conf
@@ -51,6 +58,7 @@ class Paths:
     tokenized_data_filepath: Path = None
     # Directory to store temp tokenized files before concatenation
     temp_data_dir: Path = None
+    dictionary_filepath: Path = None
 
 class BaseTokenizer():
     
@@ -61,16 +69,19 @@ class BaseTokenizer():
         dtype=np.uint16,
         sequence_length: int = 1024,
         flush_tokens: int = 1024 ** 2,
+        flush_lens: int = 1024 ** 2,
         clean_temp_dir: bool = True
     ):
         self.dictionary = dictionary
         self.in_paths = in_paths
         self.dtype = np.dtype(dtype)
         self.flush_tokens = int(flush_tokens)
+        self.flush_lens = int(flush_lens)
         self.sequence_length = int(sequence_length)
         self.clean_temp_dir = clean_temp_dir
         
         self.total_sequences_written = 0
+        self.total_events_written = 0
         self.total_tokens_written = 0
         
         if self.flush_tokens <= 0:
@@ -124,7 +135,7 @@ class BaseTokenizer():
         if self.clean_temp_dir:
             for f in self.in_paths.temp_data_dir.glob("token_stream_batch_*.bin"):
                 f.unlink()
-            for f in self.in_paths.temp_data_dir.glob("token_stream_batch_*.temp"):
+            for f in self.in_paths.temp_data_dir.glob("token_stream_batch_*.tmp"):
                 f.unlink()
             for f in self.in_paths.temp_data_dir.glob("concatenated_data.bin"):
                 f.unlink()
@@ -150,18 +161,23 @@ class BaseTokenizer():
 
             for f in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing"):
                 worker_idx, num_events_written, num_tokens_written = f.result()
-                self.total_sequences_written += num_events_written
+                self.total_events_written += num_events_written
                 self.total_tokens_written += num_tokens_written
 
-        print(f"Tokenized {self.total_sequences_written:,} valid events, composed of {self.total_tokens_written:,} tokens.")
+        print(f"Tokenized {self.total_events_written:,} valid events, composed of {self.total_tokens_written:,} tokens.")
         print(f"Concatenating data.")
         
         worker_indices = [worker_idx for worker_idx, _, _ in ranges]
-        concat_tokens = self.concatenate_encoded_batches(worker_indices)
+        concat_tokens, concat_events = self.concatenate_encoded_batches(worker_indices)
         if concat_tokens != self.total_tokens_written:
             raise RuntimeError(
                 f"Token count mismatch: workers reported {self.total_tokens_written}, "
                 f"but concatenated file contains {concat_tokens}."
+            )
+        if concat_events != self.total_events_written:
+            raise RuntimeError(
+                f"Event count mismatch: workers reported {self.total_events_written}, "
+                f"but concatenated file contains {concat_events}."
             )
 
     def encode_byte_range_worker(
@@ -178,14 +194,18 @@ class BaseTokenizer():
         Event @ end_type is NOT ignored even if it is a partial event.
         The above setup ensures all events are encoded.
         """
-        temp_output_data_filepath = temp_data_dir / f"token_stream_batch_{worker_idx}.temp"
+        temp_output_data_filepath = temp_data_dir / f"token_stream_batch_{worker_idx}.tmp"
+        temp_output_lens_filepath = temp_data_dir / f"lens_stream_batch_{worker_idx}.tmp"
         output_data_filepath = temp_data_dir / f"token_stream_batch_{worker_idx}.bin"
+        output_lens_filepath = temp_data_dir / f"lens_stream_batch_{worker_idx}.bin"
 
         num_events_written = 0
         num_tokens_written = 0
         token_buffer: list[int] = []
+        event_lens_buffer: list[int] = []
         with open(input_data_filepath, "rb", buffering=IO_BUFFER) as in_file, \
-             open(temp_output_data_filepath, "wb", buffering=IO_BUFFER) as out_file:
+             open(temp_output_data_filepath, "wb", buffering=IO_BUFFER) as out_data_file, \
+             open(temp_output_lens_filepath, "wb", buffering=IO_BUFFER) as out_lens_file:
 
             if start_byte == 0:
                 in_file.seek(0)
@@ -215,38 +235,33 @@ class BaseTokenizer():
                         f"Worker {worker_idx} failed to parse line near byte {in_file.tell()}: {line[:500]}"
                     ) from exc
 
-                # try:
-                #     event = list(map(
-                #         float,
-                #         (
-                #             feature_str for particle_str in line.split(";")
-                #             for feature_str in particle_str.split()
-                #         )
-                #     ))
-                # except ValueError as exc:
-                #     raise RuntimeError(
-                #         f"Worker {worker_idx} failed to parse line near byte {in_file.tell()}: {line[:500]}"
-                #     ) from exc
-
                 tokenized_event = self.encode_event(event)
                 if tokenized_event is None or len(tokenized_event) == 0:
                     continue
                 
                 token_buffer.extend(tokenized_event)
+                event_lens_buffer.append(len(tokenized_event))
                 
                 num_events_written += 1
                 num_tokens_written += len(tokenized_event)
                 
                 if len(token_buffer) >= self.flush_tokens:
-                    self.flush_binary_tokens(token_buffer, out_file)
+                    self.flush_binary_tokens(token_buffer, out_data_file)
                     token_buffer.clear()
+                if len(event_lens_buffer) >= self.flush_tokens:
+                    self.flush_binary_tokens(event_lens_buffer, out_lens_file)
+                    event_lens_buffer.clear()
                     
             # Flush final buffer
             if token_buffer:
-                self.flush_binary_tokens(token_buffer, out_file)
+                self.flush_binary_tokens(token_buffer, out_data_file)
                 token_buffer.clear()
+            if event_lens_buffer:
+                self.flush_binary_tokens(event_lens_buffer, out_lens_file)
+                event_lens_buffer.clear()
                 
         temp_output_data_filepath.replace(output_data_filepath)
+        temp_output_lens_filepath.replace(output_lens_filepath)
         return worker_idx, num_events_written, num_tokens_written
 
     def flush_binary_tokens(self, token_buffer: list[int], out_file):
@@ -256,29 +271,13 @@ class BaseTokenizer():
         
         if not token_buffer:
             return None
-        
-        # arr = np.array(token_buffer, dtype=np.int64)
-        
-        # # Ensure this datatype can handle our token values. Technically, this check
-        # # is done in __init__ but good to have it here in case something goes horribly
-        # # wrong
-        # # dtype_info = np.iinfo(self.dtype)
-        # # arr_min = int(arr.min())
-        # # arr_max = int(arr.max())
-        # # if arr_min < dtype_info.min or arr_max > dtype_info.max:
-        # #     raise ValueError(
-        # #         f"Token ID out of range for dtype={self.dtype}: "
-        # #         f"min={arr_min}, max={arr_max}, "
-        # #         f"dtype range=[{dtype_info.min}, {dtype_info.max}]"
-        # #     )
-        
-        # arr.astype(self.dtype, copy=False).tofile(out_file)
-        
+
         np.asarray(token_buffer, dtype=self.dtype).tofile(out_file)
     
     def concatenate_encoded_batches(self, worker_indices: list[int]) -> int:
         """
         Concatenate worker .bin streams in worker-index order.
+        Both the token stream and lens stream will be concatenated in the same order, ensuring they remain aligned.
 
         This preserves global event/token order because worker_idx corresponds to
         increasing byte ranges in the original input file.
@@ -286,24 +285,38 @@ class BaseTokenizer():
         The output is a flattened sequence of encoded events. To read properly, use the
         associated metadata file.
         """
+        # output_data_filepath = self.in_paths.temp_data_dir / f"token_stream_batch_{worker_idx}.bin"
+        # output_lens_filepath = self.in_paths.temp_data_dir / f"lens_stream_batch_{worker_idx}.bin"
+        
         token_stream_files = [
             self.in_paths.temp_data_dir / f"token_stream_batch_{worker_idx}.bin"
             for worker_idx in sorted(worker_indices)
         ]
+        lens_stream_files = [
+            self.in_paths.temp_data_dir / f"lens_stream_batch_{worker_idx}.bin"
+            for worker_idx in sorted(worker_indices)
+        ]
         
-        missing = [p for p in token_stream_files if not p.exists()]
-        if missing:
+        missing_tokens_files = [p for p in token_stream_files if not p.exists()]
+        if missing_tokens_files:
             raise RuntimeError(
-                "Missing expected worker output files:\n"
-                + "\n".join(str(p) for p in missing)
+                "Missing expected worker token stream output files:\n"
+                + "\n".join(str(p) for p in missing_tokens_files)
+            )
+        missing_lens_files = [p for p in lens_stream_files if not p.exists()]
+        if missing_lens_files:
+            raise RuntimeError(
+                "Missing expected worker lens stream output files:\n"
+                + "\n".join(str(p) for p in missing_lens_files)
             )
         
         itemsize = self.dtype.itemsize
         total_tokens = 0
+        total_events = 0
 
-        out_file = self.in_paths.temp_data_dir / 'concatenated_data.bin'
-        with open(out_file, "wb", buffering=0) as outfile:
-            for file_path in tqdm(token_stream_files, desc="Concatenating binary streams"):
+        out_data_file = self.in_paths.temp_data_dir / 'concatenated_data.bin'
+        with open(out_data_file, "wb", buffering=0) as outfile:
+            for file_path in tqdm(token_stream_files, desc="Concatenating binary data streams"):
                 file_size = file_path.stat().st_size
 
                 if file_size % itemsize != 0:
@@ -316,14 +329,32 @@ class BaseTokenizer():
 
                 with open(file_path, "rb", buffering=0) as infile:
                     shutil.copyfileobj(infile, outfile, length=COPY_BUFFER)
+        
+        out_lens_file = self.in_paths.temp_data_dir / 'concatenated_lens.bin'
+        with open(out_lens_file, "wb", buffering=0) as outfile:
+            for file_path in tqdm(lens_stream_files, desc="Concatenating binary lens streams"):
+                file_size = file_path.stat().st_size
 
-        return total_tokens
+                if file_size % itemsize != 0:
+                    raise RuntimeError(
+                        f"Worker file {file_path} has size {file_size} bytes, "
+                        f"which is not divisible by dtype itemsize {itemsize}."
+                    )
+
+                total_events += file_size // itemsize
+
+                with open(file_path, "rb", buffering=0) as infile:
+                    shutil.copyfileobj(infile, outfile, length=COPY_BUFFER)
+
+        return total_tokens, total_events
 
     def postprocess_data(self):
         """
         Takes final concatenated encoded events and runs through post processing.
         This method should me implemented per tokenizer depending on the postprocessing
         required.
+        
+        NOTE: This should calculate self.total_sequences_written.
         """
         raise NotImplementedError("Subclasses must implement this method.")
     
@@ -340,10 +371,12 @@ class BaseTokenizer():
             "vocab_size": self.dictionary.vocab_size,
             "sequence_length": self.sequence_length,
             "total_sequences": int(self.total_sequences_written),
+            "total_events": int(self.total_events_written),
             "total_tokens": int(self.total_tokens_written),
             "num_full_sequences": int(self.total_tokens_written // self.sequence_length),
             "remainder_tokens": int(self.total_tokens_written % self.sequence_length),
-            "tokenized_data_filepath": str(self.in_paths.tokenized_data_filepath),
+            "tokenized_data_file": str(paths.project_relative_path(self.in_paths.tokenized_data_filepath)),
+            "dictionary_file": str(paths.project_relative_path(self.in_paths.dictionary_filepath))
         }
         
         metadata_path = self.in_paths.tokenized_data_filepath.with_suffix(self.in_paths.tokenized_data_filepath.suffix + ".json")
@@ -512,9 +545,30 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
 
         # Simply copy the flattened file to the final filepath
         concat_data_filepath = self.in_paths.temp_data_dir / 'concatenated_data.bin'
+        concat_lens_filepath = self.in_paths.temp_data_dir / 'concatenated_lens.bin'
+        
+        data = np.memmap(concat_data_filepath, mode='r+', dtype=self.dtype)
+        data_len = len(data)
+        del data
+        
+        if data_len % self.sequence_length != 0:
+            raise RuntimeError(
+                f"Final token count {data_len} is not divisible by sequence_length {self.sequence_length}. "
+                f"Some tokens will be dropped when reshaping into sequences."
+            )
+            
+        self.total_sequences_written = int(data_len // self.sequence_length)
+        # This tokenizer should have num_events == num_sequences since its one event per sequence
+        if self.total_sequences_written != self.total_events_written:
+            raise RuntimeError(
+                f"Inconsistent event and sequence counts: {self.total_events_written} events, {self.total_sequences_written} sequences. "
+                "EventPerSequenceParticleFeatureTokenizer should have num_events == num_sequences since its one event per sequence."
+            )
+            
         shutil.copyfile(concat_data_filepath, self.in_paths.tokenized_data_filepath)
-    
-    
+        shutil.copyfile(concat_lens_filepath, self.in_paths.tokenized_lens_filepath)
+
+
 class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
     """
     The goal is to create natural language style packed tokens.
@@ -602,15 +656,39 @@ class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
 
     def postprocess_data(self):
         """
-        For this tokenizer, no post processing is required since the encoded events are the data.
-        The encoded events will be packed anyway so no padding is required to the correct sequence
-        length.
+        Pad the final sequence such that the data is divisible by sequence_length.
+        
         Important: a meta-data file needs to be written so the correct sequence length is used
         """
 
-        # Simply copy the flattened file to the final filepath
         concat_data_filepath = self.in_paths.temp_data_dir / 'concatenated_data.bin'
+        concat_lens_filepath = self.in_paths.temp_data_dir / 'concatenated_lens.bin'
+        data = np.memmap(concat_data_filepath, mode='r', dtype=self.dtype)
+        data_len = len(data)
+        del data
+        
+        new_len = data_len
+        remainder_tokens = data_len % self.sequence_length
+        if remainder_tokens != 0:
+            padding_len = self.sequence_length - remainder_tokens
+            new_len = data_len + padding_len
+            
+            warnings.warn(
+                f"Warning: total tokens {data_len} is not divisible by sequence_length {self.sequence_length}. "
+                f"Padding with {padding_len} additional tokens.",
+                RuntimeWarning
+            )
+            
+            data = np.memmap(concat_data_filepath, mode='r+', dtype=self.dtype, shape=(new_len,))
+            data[data_len:new_len] = self.dictionary.padding_token
+            data.flush()
+            del data
+        
+        self.total_tokens_written = int(new_len)
+        self.total_sequences_written = int(new_len // self.sequence_length)
+        
         shutil.copyfile(concat_data_filepath, self.in_paths.tokenized_data_filepath)
+        shutil.copyfile(concat_lens_filepath, self.in_paths.tokenized_lens_filepath)
 
 
 class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
@@ -760,7 +838,12 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
 
         # Simply copy the flattened file to the final filepath
         concat_data_filepath = self.in_paths.temp_data_dir / 'concatenated_data.bin'
+        concat_lens_filepath = self.in_paths.temp_data_dir / 'concatenated_lens.bin'
+        
+        # @TODO: set total sequences_written and check it matches total_events_written since its one event per sequence
+        
         shutil.copyfile(concat_data_filepath, self.in_paths.tokenized_data_filepath)
+        shutil.copyfile(concat_lens_filepath, self.in_paths.tokenized_lens_filepath)
 
     def write_metadata(self):
         """
@@ -773,6 +856,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
             "vocab_size": vocab_size,
             "sequence_length": self.sequence_length,
             "total_sequences": int(self.total_sequences_written),
+            "total_events": int(self.total_events_written),
             "total_tokens": int(self.total_tokens_written),
             "num_full_sequences": int(self.total_tokens_written // self.sequence_length),
             "remainder_tokens": int(self.total_tokens_written % self.sequence_length),
@@ -784,7 +868,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
             json.dump(metadata, f, indent=4)
 
         print(f"Wrote metadata: {metadata_path}")
-    
+
 
 # Main can also do everything in case we only want to tokenize the data but not prepare
 # it for training.
@@ -795,14 +879,19 @@ if __name__ == "__main__":
     relevant_paths = Paths(
         input_data_filepath     = paths.PROJECT_DIR / 'data' / 'raw' / dictionary.dataset_name,
         tokenized_data_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.bin',
-        temp_data_dir           = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp'
+        temp_data_dir           = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp',
+        dictionary_filepath     = paths.PROJECT_DIR / dictionary_filepath
     )
     humanized_dictionary_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.txt'
     
     # dictionary.update_dictionary_particle_list(relevant_paths.input_data_filepath, dictionary_filepath)
     dictionary.output_humanized_dictionary(humanized_dictionary_filepath)
     
-    tokenizer = EventPerSequenceWholeParticleTokenizer(
+    tokenizer_class = globals()[dictionary.tokenizer_class_str]
+    if tokenizer_class is None:
+        raise RuntimeError("tokenizer_class cannot be none!")
+    
+    tokenizer = tokenizer_class(
         dictionary=dictionary,
         in_paths=relevant_paths,
         dtype=np.uint16,

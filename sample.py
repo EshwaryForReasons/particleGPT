@@ -42,6 +42,7 @@ import torch
 import torch.multiprocessing as mp
 
 import paths
+import pUtil
 import particleGPT.configurator as conf
 from particleGPT.model import GPT, GPTConfig
 from train import clean_state_dict_keys
@@ -175,13 +176,37 @@ def load_model_for_sampling(checkpoint_path: str, device: str, compile_model: bo
         model = torch.compile(model, mode="default", dynamic=False, fullgraph=False)
     return model
 
+def extract_starters(job: dict[str, Any]) -> np.ndarray:
+    num_starter_tokens = int(job["num_starter_tokens"])
+    split_start_token_idx = int(job["split_start_token_idx"])
+    max_test_sequences = int(job["max_test_sequences"])
+    sequence_length = int(job["sequence_length"])
+    event_start_token = int(job["event_start_token"])
+    # event_end_token = int(job["event_end_token"])
+
+    data = np.memmap(job["tokenized_data_filepath"], dtype=np.dtype(job["tokenized_dtype"]), mode="r")
+
+    num_split_tokens = max_test_sequences * sequence_length
+    test_sequences = data[split_start_token_idx:split_start_token_idx + num_split_tokens]
+
+    event_starts = np.flatnonzero(test_sequences == event_start_token)
+
+    # Keep only starts that have enough tokens for a full starter prompt.
+    event_starts = event_starts[event_starts + num_starter_tokens <= len(test_sequences)]
+
+    # Build a 2D array of shape (num_events_found, num_starter_tokens)
+    prompt_indices = event_starts[:, None] + np.arange(num_starter_tokens)
+    prompts = test_sequences[prompt_indices]
+    
+    return prompts
+
 def sampling_worker(rank: int, job: dict[str, Any]) -> None:
     """
-    Generate one contiguous shard of test starters on one worker/device.
+    Generate one contiguous shard of extracted starter prompts on one worker/device.
 
     This must remain a top-level function because torch.multiprocessing.spawn
     needs a pickleable entrypoint. Each worker owns a contiguous slice of the
-    first `job["total_starters"]` test sequences.
+    starter prompts extracted from this job's test-token window.
     """
     device = job["device_names"][rank]
     if device.startswith("cuda"):
@@ -194,17 +219,14 @@ def sampling_worker(rank: int, job: dict[str, Any]) -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    total_starters = int(job["total_starters"])
     world_size = len(job["device_names"])
-    start_sequence_idx = (total_starters * rank) // world_size
-    end_sequence_idx = (total_starters * (rank + 1)) // world_size
-
-    data = np.memmap(job["tokenized_data_filepath"], dtype=np.dtype(job["tokenized_dtype"]), mode="r")
-    split_token_start = int(job["split_start_token_idx"])
-    sequence_length = int(job["sequence_length"])
-    starter_tokens = int(job["starter_tokens"])
-    split_tokens = total_starters * sequence_length
-    test_sequences = data[split_token_start:split_token_start + split_tokens].reshape(total_starters, sequence_length)
+    
+    # Get prompts for this worker's assigned slice of test sequences.
+    prompts = extract_starters(job)
+    prompts = prompts.astype(np.int64, copy=False)
+    start_prompt_idx = (len(prompts) * rank) // world_size
+    end_prompt_idx = (len(prompts) * (rank + 1)) // world_size
+    prompts = prompts[start_prompt_idx:end_prompt_idx]
 
     model = load_model_for_sampling(job["checkpoint_path"], device, bool(job["compile"]))
     dtype = dtype_from_config(job["dtype_name"])
@@ -216,9 +238,9 @@ def sampling_worker(rank: int, job: dict[str, Any]) -> None:
     t0 = time.time()
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         with torch.no_grad():
-            for batch_start in range(start_sequence_idx, end_sequence_idx, int(job["batch_size"])):
-                batch_end = min(batch_start + int(job["batch_size"]), end_sequence_idx)
-                starter_batch = test_sequences[batch_start:batch_end, :starter_tokens].astype(np.int64, copy=True)
+            for batch_start in range(0, len(prompts), int(job["batch_size"])):
+                batch_end = min(batch_start + int(job["batch_size"]), len(prompts))
+                starter_batch = prompts[batch_start:batch_end]
                 idx = torch.from_numpy(starter_batch).to(device, non_blocking=True)
 
                 with autocast_context(device_type, dtype):
@@ -240,14 +262,14 @@ def sampling_worker(rank: int, job: dict[str, Any]) -> None:
                 if int(job["log_interval"]) > 0 and written % int(job["log_interval"]) == 0:
                     elapsed = max(time.time() - t0, 1e-12)
                     print(
-                        f"worker {rank}: wrote {written:,} / {end_sequence_idx - start_sequence_idx:,} events "
+                        f"worker {rank}: wrote {written:,} / {end_prompt_idx - start_prompt_idx:,} events "
                         f"({written / elapsed:.2f} events/s)",
                         flush=True,
                     )
 
     print(
         f"worker {rank}: finished {written:,} events from test sequences "
-        f"[{start_sequence_idx:,}, {end_sequence_idx:,}) -> {output_path}",
+        f"[{start_prompt_idx:,}, {end_prompt_idx:,}) -> {output_path}",
         flush=True,
     )
 
@@ -295,11 +317,11 @@ def main() -> None:
         )
 
     # @TODO: this should be configured somehow. Maybe the tokenizer class can be used to calculate this?
-    starter_tokens = 5
-    if starter_tokens <= 0:
-        raise ValueError(f"starter_tokens must be positive, got {starter_tokens}.")
-    if starter_tokens > tmd_conf.sequence_length:
-        raise ValueError(f"starter_tokens={starter_tokens}, but sequence_length={tmd_conf.sequence_length}.")
+    num_starter_tokens = 5
+    if num_starter_tokens <= 0:
+        raise ValueError(f"starter_tokens must be positive, got {num_starter_tokens}.")
+    if num_starter_tokens > tmd_conf.sequence_length:
+        raise ValueError(f"starter_tokens={num_starter_tokens}, but sequence_length={tmd_conf.sequence_length}.")
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model_args = dict(checkpoint["model_args"])
@@ -309,14 +331,14 @@ def main() -> None:
         raise ValueError(
             f"Checkpoint vocab_size={model_args['vocab_size']}, but tokenized metadata vocab_size={tmd_conf.vocab_size}."
         )
-    if starter_tokens > int(model_args["block_size"]):
+    if num_starter_tokens > int(model_args["block_size"]):
         raise ValueError(
-            f"starter_tokens={starter_tokens}, but checkpoint block_size={model_args['block_size']}."
+            f"starter_tokens={num_starter_tokens}, but checkpoint block_size={model_args['block_size']}."
         )
 
     max_new_tokens = conf.sampling.max_new_tokens
     if max_new_tokens is None:
-        max_new_tokens = int(tmd_conf.sequence_length) - starter_tokens
+        max_new_tokens = int(tmd_conf.sequence_length) - num_starter_tokens
     if max_new_tokens <= 0:
         raise ValueError(f"max_new_tokens must be positive, got {max_new_tokens}.")
 
@@ -349,6 +371,8 @@ def main() -> None:
         path.unlink()
     for path in output_dir.glob("*.tmp"):
         path.unlink()
+        
+    dictionary = pUtil.get_dictionary(conf.generic.preparation_config_file)
 
     require_batch_generate = False # @TODO: make configurable
     job = {
@@ -356,7 +380,7 @@ def main() -> None:
         "output_dir": paths.project_relative_path(output_dir),
         "device_names": tuple(device_names),
         "batch_size": batch_size,
-        "starter_tokens": starter_tokens,
+        "num_starter_tokens": num_starter_tokens,
         "max_new_tokens": max_new_tokens,
         "temperature": float(conf.sampling.temperature),
         "top_k": top_k,
@@ -373,12 +397,14 @@ def main() -> None:
         "sequence_length": int(tmd_conf.sequence_length),
         "split_start_token_idx": int(raw_start),
         "max_test_sequences": max_test_sequences_metadata,
+        "event_start_token": int(dictionary.event_start_token),
+        "event_end_token": int(dictionary.event_end_token)
     }
 
     print(f"Sampling from checkpoint: {checkpoint_path}")
     print(f"Sampling output directory: {output_dir}")
     print(f"Sampling test starters: {total_starters:,} / {dls_conf.num_sequences:,}")
-    print(f"Starter tokens per event: {starter_tokens}")
+    print(f"Starter tokens per event: {num_starter_tokens}")
     print(f"New tokens per event: {max_new_tokens}")
     print(f"Batch size per worker: {batch_size}")
     print(f"Worker devices: {', '.join(device_names)}")

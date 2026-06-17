@@ -1,6 +1,4 @@
 {
-    "preparation_name": "preparation_exp12_100k",
-    "dataset": "rdataset_full_50M.csv",
     "preparation_config_file": "config/preparations/preparation_test_1.json",
     "training_config": {
         "eval_interval": -1,
@@ -20,7 +18,8 @@
         "beta2": 0.98,
         "warmup_iters": 27,
         "max_num_failed_checkpoint_checks": 16,
-        "eval_every_epoch": true
+        "eval_every_epoch": true,
+        "use_self_contained_blocks": true
     },
     "sampling_config": {
         "temperature": 0.8,

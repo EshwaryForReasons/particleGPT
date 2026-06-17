@@ -1,5 +1,6 @@
 {
-  "tokenization_name": "tokenizer_test_2",
+  "tokenization_name": "tdataset_full_50M_r2_v1",
+  "tokenizer_class": "EventPerSequenceParticleFeatureTokenizer",
   "dataset": "rdataset_full_50M.csv",
   "particle_count_override": 42,
   "tokenization": {
@@ -19,37 +20,22 @@
     "event_start": 1,
     "event_end": 2,
     "particle_start": 3,
-    "particle_end": 4,
-    "reserved_5": 5,
-    "reserved_6": 6,
-    "reserved_7": 7,
-    "reserved_8": 8,
-    "reserved_9": 9
-  },
-  "materials_named": {
-    "G4_C": 0,
-    "G4_Al": 1,
-    "G4_Si": 2,
-    "G4_Ar": 3,
-    "G4_Fe": 4,
-    "G4_Cu": 5,
-    "G4_W": 6,
-    "G4_Pb": 7
+    "particle_end": 4
   },
   "eta_bin_data": {
     "min": -4,
     "max": 4.01,
-    "n_bins": 50
+    "step_size": 0.001
   },
   "phi_bin_data": {
     "min": -3.15,
     "max": 3.15,
-    "n_bins": 50
+    "step_size": 0.001
   },
   "pt_bin_data": {
     "min": 0,
     "max": 35000,
-    "n_bins": 50
+    "step_size": 100
   },
   "pdgids": {
     "0": 1000030080,

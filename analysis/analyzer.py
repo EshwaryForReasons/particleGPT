@@ -160,23 +160,40 @@ class Analyzer:
         """
         tokenization_format = str(self.tokenized_metadata.get('format', 'base_tokenizer'))
         tokenizer_class = str(self.tokenized_metadata.get('tokenizer_class', ''))
-        if tokenization_format == 'whole_particle' or tokenizer_class == 'EventPerSequenceWholeParticleTokenizer':
-            return untokenizer.WholeParticleUntokenizer(
-                self.dictionary,
-                input_samples_filepath,
-                output_samples_filepath,
-                output_metadata_filepath,
+        
+        selected_untokenizer = None
+        if tokenizer_class == "EventPerSequenceWholeParticleTokenizer":
+            selected_untokenizer = untokenizer.WholeParticleUntokenizer(
+                self.dictionary, 
+                input_samples_filepath, 
+                output_samples_filepath, 
+                output_metadata_filepath, 
                 output_invalid_tokens_filepath,
-                self.tokenized_metadata,
+                self.tokenized_metadata
             )
-        return untokenizer.ParticleFeatureUntokenizer(
-            self.dictionary,
-            input_samples_filepath,
-            output_samples_filepath,
-            output_metadata_filepath,
-            output_invalid_tokens_filepath,
-            self.tokenized_metadata,
-        )
+        elif tokenizer_class == "PackedEventStreamParticleFeatureTokenizer":
+            selected_untokenizer = untokenizer.PackedEventStreamParticleFeatureUntokenizer(
+                self.dictionary,
+                input_samples_filepath, 
+                output_samples_filepath, 
+                output_metadata_filepath, 
+                output_invalid_tokens_filepath,
+                self.tokenized_metadata
+            )
+        else:
+            selected_untokenizer = untokenizer.ParticleFeatureUntokenizer(
+                self.dictionary, 
+                input_samples_filepath, 
+                output_samples_filepath, 
+                output_metadata_filepath, 
+                output_invalid_tokens_filepath,
+                self.tokenized_metadata
+            )
+
+        if selected_untokenizer is None:
+            raise ValueError(f"Could not determine untokenizer for tokenization format {tokenization_format} and tokenizer class {tokenizer_class}.")
+        
+        return selected_untokenizer
 
     def untokenize_generated_data(self):
         """

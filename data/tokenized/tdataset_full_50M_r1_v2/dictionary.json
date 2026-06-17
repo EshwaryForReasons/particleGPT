@@ -1,6 +1,7 @@
 {
-  "tokenization_name": "tdataset_exp14_full_149M",
-  "dataset": "rdataset_full_149M.csv",
+  "tokenization_name": "tdataset_full_50M_r1_v2",
+  "tokenizer_class": "PackedEventStreamParticleFeatureTokenizer",
+  "dataset": "rdataset_full_50M.csv",
   "particle_count_override": 42,
   "tokenization": {
     "0": "pdgid",

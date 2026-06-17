@@ -162,6 +162,10 @@ class Dictionary():
         # assert self.preparation_name is not None, "preparation_name must be defined in the dictionary."
         self.tokenization_name = self.dictionary_data.get('tokenization_name', None)
         assert self.tokenization_name is not None, "tokenization_name must be defined in the dictionary."
+        
+        self.tokenizer_class_str = self.dictionary_data.get('tokenizer_class', None)
+        if self.tokenizer_class_str is None:
+            raise ValueError("tokenizer_class must be defined in the dictionary.")
 
         self.num_special_tokens = len(self.dictionary_data['special_tokens'])
         self.num_particles      = len(self.dictionary_data['pdgids'])

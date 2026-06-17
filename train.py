@@ -1317,7 +1317,6 @@ def log_training_configuration(
         "Training configuration",
         {
             "config_file_path": conf.generic.config_file_path,
-            "preparation": conf.generic.preparation_name,
             "model_name": conf.generic.model_name,
             "ddp": ddp_state.enabled,
             "ddp_rank": ddp_state.rank,
