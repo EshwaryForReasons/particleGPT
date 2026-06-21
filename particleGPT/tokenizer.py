@@ -421,7 +421,7 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
                 )
             num_particles_max = dictionary.particle_count_override
         
-        self.padding_sequence = dictionary.get_padding_sequence()
+        self.padding_sequence = dictionary.padding_sequence
         if len(self.padding_sequence) == 0:
             raise ValueError("padding_sequence cannot be empty.")
         
@@ -727,7 +727,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
                 )
             num_particles_max = dictionary.particle_count_override
         
-        self.padding_sequence = dictionary.get_padding_sequence()
+        self.padding_sequence = dictionary.padding_sequence
         # This tokenizer pads to the max possible particles. +2 to handle EVENT_START and EVENT_END tokens.
         sequence_length = num_particles_max * dictionary.num_tokens_per_particle + 2
         super().__init__(dictionary, in_paths, dtype, sequence_length, flush_tokens, clean_temp_dir)
@@ -882,7 +882,7 @@ if __name__ == "__main__":
         temp_data_dir           = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp',
         dictionary_filepath     = paths.PROJECT_DIR / dictionary_filepath
     )
-    humanized_dictionary_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.txt'
+    humanized_dictionary_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.md'
     
     # dictionary.update_dictionary_particle_list(relevant_paths.input_data_filepath, dictionary_filepath)
     dictionary.output_humanized_dictionary(humanized_dictionary_filepath)
