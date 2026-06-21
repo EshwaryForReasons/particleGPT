@@ -9,10 +9,9 @@ import sys
 import os
 import json
 import math
-import csv
 import numpy as np
 import paths as paths
-from numba import njit, float64
+from numba import njit
 from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -20,7 +19,6 @@ from dataclasses import dataclass
 import warnings
 
 from particleGPT.dictionary import Dictionary
-import particleGPT.configurator as conf
 
 NUM_FEATURES_PER_PARTICLE_RAW = 5
 N_WORKERS = os.cpu_count() # 256--old hardcoded value
@@ -28,12 +26,23 @@ IO_BUFFER = 16 * 1024 * 1024  # 16 MB
 COPY_BUFFER = 256 * 1024 * 1024  # 256 MB
 
 @njit("int64(float64, float64[:])", cache=True, nogil=True)
-def custom_searchsorted(value, bins):
-    if value < bins[0]:
-        return 0
-    elif value >= bins[-1]:
-        return len(bins) - 1
-    return np.searchsorted(bins, value, side='right')
+def custom_searchsorted(value, thresholds):
+    """
+    Return local feature-bin token using the same convention as FeatureBins.tokenize_value.
+
+    thresholds are interior bin edges:
+        edges = [0, 1, 2, 3]
+        thresholds = [1, 2]
+
+    Then:
+        value < 1      -> 0
+        1 <= value < 2 -> 1
+        value >= 2     -> 2
+
+    This intentionally clips below/above the configured range into edge bins,
+    matching the behavior of np.searchsorted with side='right'.
+    """
+    return np.searchsorted(thresholds, value, side='right')
 
 def analyze_dataset(dataset_filepath, delimiter = ';'):
     num_events = 0
@@ -56,6 +65,7 @@ class Paths:
     input_data_filepath: Path = None
     # Output tokenized data
     tokenized_data_filepath: Path = None
+    tokenized_lens_filepath: Path = None
     # Directory to store temp tokenized files before concatenation
     temp_data_dir: Path = None
     dictionary_filepath: Path = None
@@ -86,6 +96,8 @@ class BaseTokenizer():
         
         if self.flush_tokens <= 0:
             raise ValueError("flush_tokens must be positive.")
+        if self.flush_lens <= 0:
+            raise ValueError("flush_lens must be positive.")
         if self.sequence_length <= 0:
             raise ValueError("sequence_length must be positive.")
         if not np.issubdtype(self.dtype, np.integer):
@@ -99,7 +111,7 @@ class BaseTokenizer():
                 f"dtype range=[{dtype_info.min}, {dtype_info.max}]"
             )
     
-    def encode_event(self, tokens: list[float]) -> list[int]:
+    def encode_event(self, tokens: list[float]) -> list[int] | None:
         raise NotImplementedError("Subclasses must implement this method.")
     
     def make_byte_ranges(self, filepath, n_ranges):
@@ -137,7 +149,13 @@ class BaseTokenizer():
                 f.unlink()
             for f in self.in_paths.temp_data_dir.glob("token_stream_batch_*.tmp"):
                 f.unlink()
+            for f in self.in_paths.temp_data_dir.glob("lens_stream_batch_*.bin"):
+                f.unlink()
+            for f in self.in_paths.temp_data_dir.glob("lens_stream_batch_*.tmp"):
+                f.unlink()
             for f in self.in_paths.temp_data_dir.glob("concatenated_data.bin"):
+                f.unlink()
+            for f in self.in_paths.temp_data_dir.glob("concatenated_lens.bin"):
                 f.unlink()
         
         self.in_paths.temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -248,7 +266,7 @@ class BaseTokenizer():
                 if len(token_buffer) >= self.flush_tokens:
                     self.flush_binary_tokens(token_buffer, out_data_file)
                     token_buffer.clear()
-                if len(event_lens_buffer) >= self.flush_tokens:
+                if len(event_lens_buffer) >= self.flush_lens:
                     self.flush_binary_tokens(event_lens_buffer, out_lens_file)
                     event_lens_buffer.clear()
                     
@@ -376,6 +394,7 @@ class BaseTokenizer():
             "num_full_sequences": int(self.total_tokens_written // self.sequence_length),
             "remainder_tokens": int(self.total_tokens_written % self.sequence_length),
             "tokenized_data_file": str(paths.project_relative_path(self.in_paths.tokenized_data_filepath)),
+            "tokenized_lens_file": str(paths.project_relative_path(self.in_paths.tokenized_lens_filepath)),
             "dictionary_file": str(paths.project_relative_path(self.in_paths.dictionary_filepath))
         }
         
@@ -406,6 +425,7 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
         in_paths: Paths,
         dtype=np.uint16,
         flush_tokens: int = 1024 ** 2,
+        flush_lens: int = 1024 ** 2,
         clean_temp_dir: bool = True,
     ):
         num_events, num_particles_max = analyze_dataset(in_paths.input_data_filepath)
@@ -427,9 +447,9 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
         
         # This tokenizer pads to the max possible particles. +2 to handle EVENT_START and EVENT_END tokens.
         sequence_length = num_particles_max * dictionary.num_tokens_per_particle + 2
-        super().__init__(dictionary, in_paths, dtype, sequence_length, flush_tokens, clean_temp_dir)
+        super().__init__(dictionary, in_paths, dtype, sequence_length, flush_tokens, flush_lens, clean_temp_dir)
         
-    def tokenize_event(self, event: list[float]) -> list[int]:
+    def tokenize_event(self, event: list[float]) -> list[int] | None:
         """
         Tokenizes and returns a single event.
         """
@@ -468,21 +488,21 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
                 if schema == "pdgid":
                     tokenized_event.append(particle_index + self.dictionary.PDGID_OFFSET)
                 elif schema == "pt":
-                    tokenized_event.append(custom_searchsorted(pt, self.dictionary.pt_bins) + self.dictionary.PT_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pt, self.dictionary.pt_bins.thresholds) + self.dictionary.PT_OFFSET)
                 elif schema == "px":
-                    tokenized_event.append(custom_searchsorted(px, self.dictionary.px_bins) + self.dictionary.PX_OFFSET)
+                    tokenized_event.append(custom_searchsorted(px, self.dictionary.px_bins.thresholds) + self.dictionary.PX_OFFSET)
                 elif schema == "py":
-                    tokenized_event.append(custom_searchsorted(py, self.dictionary.py_bins) + self.dictionary.PY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(py, self.dictionary.py_bins.thresholds) + self.dictionary.PY_OFFSET)
                 elif schema == "pz":
-                    tokenized_event.append(custom_searchsorted(pz, self.dictionary.pz_bins) + self.dictionary.PZ_OFFSET)
-                elif schema == "energy":
-                    tokenized_event.append(custom_searchsorted(energy, self.dictionary.e_bins) + self.dictionary.ENERGY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pz, self.dictionary.pz_bins.thresholds) + self.dictionary.PZ_OFFSET)
+                elif schema == "e":
+                    tokenized_event.append(custom_searchsorted(energy, self.dictionary.e_bins.thresholds) + self.dictionary.ENERGY_OFFSET)
                 elif schema == "eta":
-                    tokenized_event.append(custom_searchsorted(eta, self.dictionary.eta_bins) + self.dictionary.ETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(eta, self.dictionary.eta_bins.thresholds) + self.dictionary.ETA_OFFSET)
                 elif schema == "theta":
-                    tokenized_event.append(custom_searchsorted(theta, self.dictionary.theta_bins) + self.dictionary.THETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(theta, self.dictionary.theta_bins.thresholds) + self.dictionary.THETA_OFFSET)
                 elif schema == "phi":
-                    tokenized_event.append(custom_searchsorted(phi, self.dictionary.phi_bins) + self.dictionary.PHI_OFFSET)
+                    tokenized_event.append(custom_searchsorted(phi, self.dictionary.phi_bins.thresholds) + self.dictionary.PHI_OFFSET)
                 elif schema == "particle_start":
                     tokenized_event.append(self.dictionary.particle_start_token)
                 elif schema == "particle_end":
@@ -521,7 +541,7 @@ class EventPerSequenceParticleFeatureTokenizer(BaseTokenizer):
         padded_event = event + self.padding_sequence * num_padding_sequences_required
         return padded_event
 
-    def encode_event(self, tokens: list[float]) -> list[int]:
+    def encode_event(self, tokens: list[float]) -> list[int] | None:
         tokenized_event = self.tokenize_event(tokens)
         padded_event = self.pad_sequence(tokenized_event)
         
@@ -585,7 +605,7 @@ class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
     P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END EVENT_START P1_F1 P1_F2 P1_F3 P1_F4 P2_F1 P2_F2 P2_F3 P2_F4 P3_F1 P3_F2 P3_F3 P3_F4 EVENT_END
     """
 
-    def tokenize_event(self, event: list[float]) -> list[int]:
+    def tokenize_event(self, event: list[float]) -> list[int] | None:
         """
         Tokenizes and returns a single event.
         """
@@ -623,21 +643,21 @@ class PackedEventStreamParticleFeatureTokenizer(BaseTokenizer):
                 if schema == "pdgid":
                     tokenized_event.append(particle_index + self.dictionary.PDGID_OFFSET)
                 elif schema == "pt":
-                    tokenized_event.append(custom_searchsorted(pt, self.dictionary.pt_bins) + self.dictionary.PT_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pt, self.dictionary.pt_bins.thresholds) + self.dictionary.PT_OFFSET)
                 elif schema == "px":
-                    tokenized_event.append(custom_searchsorted(px, self.dictionary.px_bins) + self.dictionary.PX_OFFSET)
+                    tokenized_event.append(custom_searchsorted(px, self.dictionary.px_bins.thresholds) + self.dictionary.PX_OFFSET)
                 elif schema == "py":
-                    tokenized_event.append(custom_searchsorted(py, self.dictionary.py_bins) + self.dictionary.PY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(py, self.dictionary.py_bins.thresholds) + self.dictionary.PY_OFFSET)
                 elif schema == "pz":
-                    tokenized_event.append(custom_searchsorted(pz, self.dictionary.pz_bins) + self.dictionary.PZ_OFFSET)
-                elif schema == "energy":
-                    tokenized_event.append(custom_searchsorted(energy, self.dictionary.e_bins) + self.dictionary.ENERGY_OFFSET)
+                    tokenized_event.append(custom_searchsorted(pz, self.dictionary.pz_bins.thresholds) + self.dictionary.PZ_OFFSET)
+                elif schema == "e":
+                    tokenized_event.append(custom_searchsorted(energy, self.dictionary.e_bins.thresholds) + self.dictionary.ENERGY_OFFSET)
                 elif schema == "eta":
-                    tokenized_event.append(custom_searchsorted(eta, self.dictionary.eta_bins) + self.dictionary.ETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(eta, self.dictionary.eta_bins.thresholds) + self.dictionary.ETA_OFFSET)
                 elif schema == "theta":
-                    tokenized_event.append(custom_searchsorted(theta, self.dictionary.theta_bins) + self.dictionary.THETA_OFFSET)
+                    tokenized_event.append(custom_searchsorted(theta, self.dictionary.theta_bins.thresholds) + self.dictionary.THETA_OFFSET)
                 elif schema == "phi":
-                    tokenized_event.append(custom_searchsorted(phi, self.dictionary.phi_bins) + self.dictionary.PHI_OFFSET)
+                    tokenized_event.append(custom_searchsorted(phi, self.dictionary.phi_bins.thresholds) + self.dictionary.PHI_OFFSET)
                 elif schema == "particle_start":
                     tokenized_event.append(self.dictionary.particle_start_token)
                 elif schema == "particle_end":
@@ -712,6 +732,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         in_paths: Paths,
         dtype=np.uint16,
         flush_tokens: int = 1024 ** 2,
+        flush_lens: int = 1024 ** 2,
         clean_temp_dir: bool = True,
     ):
         num_events, num_particles_max = analyze_dataset(in_paths.input_data_filepath)
@@ -730,9 +751,9 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         self.padding_sequence = dictionary.padding_sequence
         # This tokenizer pads to the max possible particles. +2 to handle EVENT_START and EVENT_END tokens.
         sequence_length = num_particles_max * dictionary.num_tokens_per_particle + 2
-        super().__init__(dictionary, in_paths, dtype, sequence_length, flush_tokens, clean_temp_dir)
+        super().__init__(dictionary, in_paths, dtype, sequence_length, flush_tokens, flush_lens, clean_temp_dir)
         
-    def tokenize_event(self, event: list[float]) -> list[int]:
+    def tokenize_event(self, event: list[float]) -> list[int] | None:
         """
         Tokenizes and returns a single event.
         
@@ -776,9 +797,9 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
             n_eta_bins = len(self.dictionary.eta_bins)
             n_phi_bins = len(self.dictionary.phi_bins)
             
-            pt_bin = custom_searchsorted(pt, self.dictionary.pt_bins)
-            eta_bin = custom_searchsorted(eta, self.dictionary.eta_bins)
-            phi_bin = custom_searchsorted(phi, self.dictionary.phi_bins)
+            pt_bin = custom_searchsorted(pt, self.dictionary.pt_bins.thresholds)
+            eta_bin = custom_searchsorted(eta, self.dictionary.eta_bins.thresholds)
+            phi_bin = custom_searchsorted(phi, self.dictionary.phi_bins.thresholds)
             
             token = self.dictionary.ETA_OFFSET + eta_bin + (n_eta_bins * pt_bin) + (n_eta_bins * n_pt_bins * phi_bin)
             tokenized_event.append(token)
@@ -814,7 +835,7 @@ class EventPerSequenceWholeParticleTokenizer(BaseTokenizer):
         padded_event = event + self.padding_sequence * num_padding_sequences_required
         return padded_event
 
-    def encode_event(self, tokens: list[float]) -> list[int]:
+    def encode_event(self, tokens: list[float]) -> list[int] | None:
         tokenized_event = self.tokenize_event(tokens)
         padded_event = self.pad_sequence(tokenized_event)
         
@@ -879,6 +900,7 @@ if __name__ == "__main__":
     relevant_paths = Paths(
         input_data_filepath     = paths.PROJECT_DIR / 'data' / 'raw' / dictionary.dataset_name,
         tokenized_data_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.bin',
+        tokenized_lens_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_lens.bin',
         temp_data_dir           = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp',
         dictionary_filepath     = paths.PROJECT_DIR / dictionary_filepath
     )

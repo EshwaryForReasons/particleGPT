@@ -195,11 +195,18 @@ class FeatureBins:
     @property
     def centers(self) -> np.ndarray:
         return self._centers
-
     @property
     def thresholds(self) -> np.ndarray:
         return self._thresholds
-
+    @property
+    def exists(self) -> bool:
+        return len(self.edges) > 0
+    @property
+    def num_tokens(self) -> int:
+        if not self.exists:
+            return 0
+        return len(self.edges) - 1
+    
     def tokenize_values(self, values: np.ndarray) -> np.ndarray:
         if not self.exists:
             raise ValueError(f"{self.name}: cannot tokenize values because feature has no bins")
@@ -217,39 +224,25 @@ class FeatureBins:
 
         return np.searchsorted(self._thresholds, values, side="right").astype(np.int64)
 
-    @property
-    def exists(self) -> bool:
-        return len(self.edges) > 0
-
-    @property
-    def num_tokens(self) -> int:
-        if not self.exists:
-            return 0
-        return len(self.edges) - 1
-
     def contains_global_token(self, token: int, offset: int) -> bool:
         return offset <= token < offset + self.num_tokens
 
     def global_to_local(self, token: int, offset: int) -> int:
         local_token = int(token) - offset
-
         if local_token < 0 or local_token >= self.num_tokens:
             raise ValueError(
                 f"{self.name}: token {token} is outside token range "
                 f"[{offset}, {offset + self.num_tokens})"
             )
-
         return local_token
 
     def local_to_global(self, local_token: int, offset: int) -> int:
         local_token = int(local_token)
-
         if local_token < 0 or local_token >= self.num_tokens:
             raise ValueError(
                 f"{self.name}: local token {local_token} is outside range "
                 f"[0, {self.num_tokens})"
             )
-
         return offset + local_token
 
     def tokenize_value(self, value: float) -> int:
@@ -301,7 +294,9 @@ class Dictionary():
         self.special_tokens = self._load_contiguous_int_values(self.dictionary_data["special_tokens"], "special_tokens")
         self.num_special_tokens = len(self.special_tokens)
         # Materials
-        self.materials_named = self._load_contiguous_int_values(self.dictionary_data["materials_named"], "materials_named")
+        self.materials_named = {}
+        if 'materials_named' in self.dictionary_data:
+            self.materials_named = self._load_contiguous_int_values(self.dictionary_data["materials_named"], "materials_named")
         self.num_materials = len(self.materials_named)
         # tokenization schema
         tokenization_by_position = self._load_contiguous_int_keys(self.dictionary_data["tokenization"], "tokenization", value_type=str)
