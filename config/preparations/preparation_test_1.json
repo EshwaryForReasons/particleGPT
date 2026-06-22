@@ -1,6 +1,6 @@
 {
     "preparation_name": "test_prep",
-    "tokenized_metadata_file": "data/tokenized/tdataset_full_50M_r1_v1/tokenized_data.bin.json",
+    "tokenized_metadata_file": "data/tokenized/tdataset_full_50M_r2_v1/tokenized_data.bin.json",
     "train_bin": {
         "num_sequences": 2000000,
         "skip_sequences": 0,

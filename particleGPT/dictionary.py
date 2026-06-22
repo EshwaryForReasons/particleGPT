@@ -26,7 +26,7 @@ class ETokenTypes(Enum):
     PX = 9
     PY = 10
     PZ = 11
-    
+
 FEATURE_TYPES = [
     ("e", "Energy", ETokenTypes.ENERGY),
     ("eta", "Eta", ETokenTypes.ETA),
@@ -206,61 +206,6 @@ class FeatureBins:
         if not self.exists:
             return 0
         return len(self.edges) - 1
-    
-    def tokenize_values(self, values: np.ndarray) -> np.ndarray:
-        if not self.exists:
-            raise ValueError(f"{self.name}: cannot tokenize values because feature has no bins")
-    
-        values = np.asarray(values, dtype=np.float64)
-        invalid = (
-            ~np.isfinite(values)
-            | (values < self.edges[0])
-            | (values > self.edges[-1])
-        )
-
-        if np.any(invalid):
-            bad_values = values[invalid][:10]
-            raise ValueError(f"{self.name}: invalid values for tokenization: {bad_values}")
-
-        return np.searchsorted(self._thresholds, values, side="right").astype(np.int64)
-
-    def contains_global_token(self, token: int, offset: int) -> bool:
-        return offset <= token < offset + self.num_tokens
-
-    def global_to_local(self, token: int, offset: int) -> int:
-        local_token = int(token) - offset
-        if local_token < 0 or local_token >= self.num_tokens:
-            raise ValueError(
-                f"{self.name}: token {token} is outside token range "
-                f"[{offset}, {offset + self.num_tokens})"
-            )
-        return local_token
-
-    def local_to_global(self, local_token: int, offset: int) -> int:
-        local_token = int(local_token)
-        if local_token < 0 or local_token >= self.num_tokens:
-            raise ValueError(
-                f"{self.name}: local token {local_token} is outside range "
-                f"[0, {self.num_tokens})"
-            )
-        return offset + local_token
-
-    def tokenize_value(self, value: float) -> int:
-        return int(self.tokenize_values(np.array([value]))[0])
-
-    def detokenize_local(self, local_token: int) -> float:
-        local_token = int(local_token)
-
-        if local_token < 0 or local_token >= self.num_tokens:
-            raise ValueError(
-                f"{self.name}: local token {local_token} is outside range "
-                f"[0, {self.num_tokens})"
-            )
-
-        return float(self.centers[local_token])
-
-    def detokenize_global(self, token: int, offset: int) -> float:
-        return self.detokenize_local(self.global_to_local(token, offset))
 
 
 class Dictionary():
