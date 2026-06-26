@@ -484,7 +484,7 @@ def main() -> None:
     )
 
     print(f"Finished. Final generated samples CSV: {final_path}")
-    print(f"Sampling took {sampling_elapsed_seconds:.2f} seconds using {metadata.num_gpus_used} GPU(s).")
+    print(f"Sampling took {sampling_elapsed_seconds:.2f} seconds using {metadata['num_gpus_used']} GPU(s).")
 
 if __name__ == "__main__":
     main()

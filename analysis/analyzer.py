@@ -514,20 +514,20 @@ if __name__ == "__main__":
         print("Untokenizing data")
         untokenize_generated_data(sampling_metadata_filepath)
         
-    # dataset_analyzer = Analyzer(conf.generic.model_name)
+    dataset_analyzer = Analyzer(conf.generic.model_name)
     
-    # # Generate verbose data
-    # print("Generating verbose particle information")
-    # dataset_analyzer.generate_verbose_particle_information()
+    # Generate verbose data
+    print("Generating verbose particle information")
+    dataset_analyzer.generate_verbose_particle_information()
     
-    # # Generate distributions
-    # if not args.no_distributions:
-    #     print("Generating distributions")
-    #     dataset_analyzer.generate_distributions()
+    # Generate distributions
+    if not args.no_distributions:
+        print("Generating distributions")
+        dataset_analyzer.generate_distributions()
         
-    # # Calculate metrics
-    # if not args.no_metrics:
-    #     print("Calculating metrics")
-    #     dataset_analyzer.calculate_metrics()
+    # Calculate metrics
+    if not args.no_metrics:
+        print("Calculating metrics")
+        dataset_analyzer.calculate_metrics()
 
-    # print('Analysis finished successfully.')
+    print('Analysis finished successfully.')
