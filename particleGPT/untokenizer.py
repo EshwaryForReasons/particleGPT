@@ -74,7 +74,6 @@ class BaseUntokenizer():
         self.output_metadata_filepath = output_metadata_filepath
         self.output_invalid_tokens_filepath = output_invalid_tokens_filepath
         self.tokenized_metadata = tokenized_metadata
-        self.tokenization_format = str(tokenized_metadata.get("format", "base_tokenizer"))
         self.tokenization_schema = list(tokenized_metadata.get("tokenization_schema", getattr(dictionary, "tokenization_schema", [])))
         self.default_pdgid = 0
         self.stop_at_event_end = conf.sampling.stop_at_event_end
@@ -88,16 +87,16 @@ class BaseUntokenizer():
         
         if self.float_precision < 0:
             raise ValueError(f"float_precision must be non-negative, got {self.float_precision}.")
-        if len(self.tokenization_schema) == 0 and self.tokenization_format != "whole_particle":
+        if len(self.tokenization_schema) == 0:
             raise ValueError(
                 "Could not determine tokenization_schema from tokenized metadata or dictionary. "
                 "Make sure the tokenized metadata was written by the current tokenizer."
             )
         
-        self.index_to_pdgid = {}
-        pdgids_to_index = getattr(dictionary, "pdgids_to_index", None)
-        if pdgids_to_index is not None:
-            self.index_to_pdgid = {int(index): int(pdgid) for pdgid, index in pdgids_to_index.items()}
+        self.index_to_pdgid = {
+            int(index): int(pdgid)
+            for index, pdgid in getattr(dictionary, "pdgids", {}).items()
+        }
 
     def untokenize_file(self) -> None:
         """
@@ -193,9 +192,27 @@ class BaseUntokenizer():
         padding_token = getattr(self.dictionary, "padding_token", None)
         if padding_token is not None:
             padding_tokens.add(int(padding_token))
-        padding_sequence = getattr(self.dictionary, "get_padding_sequence", None)
+
+        padding_sequence = getattr(self.dictionary, "padding_sequence", None)
         if callable(padding_sequence):
-            padding_tokens.update(int(x) for x in padding_sequence())
+            padding_sequence = padding_sequence()
+        if padding_sequence is not None:
+            structural_tokens = {
+                int(value)
+                for value in (
+                    getattr(self.dictionary, "event_start_token", None),
+                    getattr(self.dictionary, "event_end_token", None),
+                    getattr(self.dictionary, "particle_start_token", None),
+                    getattr(self.dictionary, "particle_end_token", None),
+                )
+                if value is not None
+            }
+            padding_tokens.update(
+                int(value)
+                for value in padding_sequence
+                if int(value) not in structural_tokens
+            )
+
         return int(token) in padding_tokens
 
     def write_metadata(self) -> None:
@@ -219,6 +236,7 @@ class BaseUntokenizer():
         with self.output_metadata_filepath.open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4)
 
+
 class ParticleFeatureUntokenizer(BaseUntokenizer):
     """
     Untokenizer for feature-token particle data.
@@ -227,18 +245,6 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
     It uses the dictionary schema to group per-particle tokens and then
     reconstructs raw-style particles.
     """
-    
-    def _is_event_start_token(self, token: int) -> bool:
-        return token == int(self.dictionary.event_start_token)
-
-    def _is_event_end_token(self, token: int) -> bool:
-        return token == int(self.dictionary.event_end_token)
-    
-    def is_event_start_token(self, token: int) -> bool:
-        return self._is_event_start_token(token)
-
-    def is_event_end_token(self, token: int) -> bool:
-        return self._is_event_end_token(token)
     
     def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
         """
@@ -252,27 +258,27 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
         feature_buffer = {}
         schema_idx = 0
         seen_event_start = False
-        schema_to_offset_and_bins = {
-            "pt": ("PT_OFFSET", "pt_bins"),
-            "px": ("PX_OFFSET", "px_bins"),
-            "py": ("PY_OFFSET", "py_bins"),
-            "pz": ("PZ_OFFSET", "pz_bins"),
-            "energy": ("ENERGY_OFFSET", "e_bins"),
-            "eta": ("ETA_OFFSET", "eta_bins"),
-            "theta": ("THETA_OFFSET", "theta_bins"),
-            "phi": ("PHI_OFFSET", "phi_bins"),
+        schema_to_feature_name = {
+            "e": "e",
+            "eta": "eta",
+            "theta": "theta",
+            "phi": "phi",
+            "pt": "pt",
+            "px": "px",
+            "py": "py",
+            "pz": "pz",
         }
         
         for token in tokens:
             token = int(token)
-            if self._is_event_start_token(token):
+            if token == self.dictionary.event_start_token:
                 if seen_event_start or particles or feature_buffer or schema_idx != 0:
                     return [], token, "encountered EVENT_START after event decoding had already started"
                 seen_event_start = True
                 feature_buffer = {}
                 schema_idx = 0
                 continue
-            if self._is_event_end_token(token):
+            if token == self.dictionary.event_end_token:
                 if feature_buffer or schema_idx != 0:
                     return [], token, (
                         "encountered EVENT_END before completing the current particle; "
@@ -295,14 +301,14 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
             next_schema_idx = (schema_idx + 1) % len(self.tokenization_schema)
             
             if schema_name == "particle_start":
-                if not self.is_particle_start_token(token):
+                if token != self.dictionary.particle_start_token:
                     expected = int(self.dictionary.particle_start_token)
                     return [], token, f"expected particle_start token {expected}, got token {token}"
                 feature_buffer = {}
                 schema_idx = next_schema_idx
                 continue
             if schema_name == "particle_end":
-                if not self.is_particle_end_token(token):
+                if token != self.dictionary.particle_end_token:
                     expected = int(self.dictionary.particle_end_token)
                     return [], token, f"expected particle_end token {expected}, got token {token}"
                 particles.append(self.finalize_particle(feature_buffer))
@@ -310,7 +316,7 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
                 schema_idx = next_schema_idx
                 continue
             
-            decoded_value, invalid_reason = self.decode_feature_token(schema_name, token, schema_to_offset_and_bins)
+            decoded_value, invalid_reason = self.decode_feature_token(schema_name, token, schema_to_feature_name)
             if invalid_reason is not None:
                 return [], token, invalid_reason
             feature_buffer[schema_name] = decoded_value
@@ -322,44 +328,47 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
         
         return particles, None, None
 
-    def is_particle_start_token(self, token: int) -> bool:
-        return hasattr(self.dictionary, "particle_start_token") and token == int(self.dictionary.particle_start_token)
-
-    def is_particle_end_token(self, token: int) -> bool:
-        return hasattr(self.dictionary, "particle_end_token") and token == int(self.dictionary.particle_end_token)
-
-    def decode_feature_token(self, schema_name: str, token: int, schema_to_offset_and_bins: dict[str, tuple[str, str]]) -> tuple[float | int | None, str | None]:
+    def decode_feature_token(self, schema_name: str, token: int, schema_to_feature_name: dict[str, str]) -> tuple[float | int | None, str | None]:
         """
         Decode one feature token using the offset and bins for its schema field.
         """
         if schema_name == "pdgid":
-            offset = int(getattr(self.dictionary, "PDGID_OFFSET"))
-            particle_index = int(token) - offset
-            if particle_index < 0:
-                return None, f"expected pdgid token >= {offset}, got token {token}"
-            if self.index_to_pdgid and particle_index not in self.index_to_pdgid:
-                max_index = max(self.index_to_pdgid)
+            offset = self.dictionary.PDGID_OFFSET
+            particle_index = token - offset
+            num_particles = self.dictionary.num_particles
+            if particle_index < 0 or particle_index >= num_particles:
                 return None, (
-                    f"expected pdgid token in [{offset}, {offset + max_index}], "
+                    f"expected pdgid token in [{offset}, {offset + num_particles}), "
                     f"got token {token}"
                 )
             return self.index_to_pdgid.get(particle_index, self.default_pdgid), None
-        
-        if schema_name not in schema_to_offset_and_bins:
+
+        if schema_name == "material":
+            offset = self.dictionary.MATERIAL_OFFSET
+            material_index = token - offset
+            num_materials = self.dictionary.num_materials
+            if material_index < 0 or material_index >= num_materials:
+                return None, (
+                    f"expected material token in [{offset}, {offset + num_materials}), "
+                    f"got token {token}"
+                )
+            return material_index, None
+
+        if schema_name not in schema_to_feature_name:
             raise RuntimeError(f"Untokenizer: Unknown tokenization schema: {schema_name}")
-        
-        offset_attr, bins_attr = schema_to_offset_and_bins[schema_name]
-        offset = int(getattr(self.dictionary, offset_attr))
-        bins = np.asarray(getattr(self.dictionary, bins_attr), dtype=np.float64)
-        bin_idx = int(token) - offset
+
+        feature_name = schema_to_feature_name[schema_name]
+        offset = self.dictionary.feature_offsets[feature_name]
+        bin_values = feature_bin_values(self.dictionary.feature_bins[feature_name])
+        bin_idx = token - offset
         valid_start = offset
-        valid_end_exclusive = offset + len(bins)
-        if bin_idx < 0 or bin_idx >= len(bins):
+        valid_end_exclusive = offset + len(bin_values)
+        if bin_idx < 0 or bin_idx >= len(bin_values):
             return None, (
                 f"expected {schema_name} token in [{valid_start}, {valid_end_exclusive}), "
                 f"got token {token}"
             )
-        return bin_value_from_index(bin_idx, bins), None
+        return float(bin_values[bin_idx]), None
 
     def finalize_particle(self, feature_buffer: dict[str, float | int]) -> dict[str, float | int]:
         """
@@ -369,7 +378,7 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
         px = feature_buffer.get("px", None)
         py = feature_buffer.get("py", None)
         pz = feature_buffer.get("pz", None)
-        energy = feature_buffer.get("energy", None)
+        energy = feature_buffer.get("energy", feature_buffer.get("e", None))
         
         if px is None or py is None or pz is None:
             px, py, pz = momentum_from_features(feature_buffer)
@@ -383,6 +392,7 @@ class ParticleFeatureUntokenizer(BaseUntokenizer):
             "py": float(py),
             "pz": float(pz),
         }
+
 
 class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
     """
@@ -449,7 +459,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
                             current_event_start_token_idx = None
                         break
                     
-                    if self._is_event_start_token(token):
+                    if token == self.dictionary.event_start_token:
                         if current_event is not None:
                             self.record_partial_event(
                                 invalid_records,
@@ -470,7 +480,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
                         continue
                     
                     current_event.append(token)
-                    if self._is_event_end_token(token):
+                    if token == self.dictionary.event_end_token:
                         self.write_complete_event(
                             out_file,
                             invalid_records,
@@ -585,7 +595,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
             if self.stop_at_padding and self.token_is_padding(token):
                 break
             
-            if self._is_event_start_token(token):
+            if token == self.dictionary.event_start_token:
                 if current_event:
                     partial_spans.append(current_event)
                 current_event = [token]
@@ -595,7 +605,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
                 continue
             
             current_event.append(token)
-            if self._is_event_end_token(token):
+            if token == self.dictionary.event_end_token:
                 event_spans.append(current_event)
                 current_event = None
         
@@ -603,12 +613,6 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
             partial_spans.append(current_event)
         
         return event_spans, partial_spans
-    
-    def _is_event_start_token(self, token: int) -> bool:
-        return token == int(self.dictionary.event_start_token)
-
-    def _is_event_end_token(self, token: int) -> bool:
-        return token == int(self.dictionary.event_end_token)
     
     def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
         """
@@ -622,27 +626,28 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
         feature_buffer = {}
         schema_idx = 0
         seen_event_start = False
-        schema_to_offset_and_bins = {
-            "pt": ("PT_OFFSET", "pt_bins"),
-            "px": ("PX_OFFSET", "px_bins"),
-            "py": ("PY_OFFSET", "py_bins"),
-            "pz": ("PZ_OFFSET", "pz_bins"),
-            "energy": ("ENERGY_OFFSET", "e_bins"),
-            "eta": ("ETA_OFFSET", "eta_bins"),
-            "theta": ("THETA_OFFSET", "theta_bins"),
-            "phi": ("PHI_OFFSET", "phi_bins"),
+        schema_to_feature_name = {
+            "e": "e",
+            "energy": "e",
+            "eta": "eta",
+            "theta": "theta",
+            "phi": "phi",
+            "pt": "pt",
+            "px": "px",
+            "py": "py",
+            "pz": "pz",
         }
         
         for token in tokens:
             token = int(token)
-            if self._is_event_start_token(token):
+            if token == self.dictionary.event_start_token:
                 if seen_event_start or particles or feature_buffer or schema_idx != 0:
                     return [], token, "encountered EVENT_START after event decoding had already started"
                 seen_event_start = True
                 feature_buffer = {}
                 schema_idx = 0
                 continue
-            if self._is_event_end_token(token):
+            if token == self.dictionary.event_end_token:
                 if feature_buffer or schema_idx != 0:
                     return [], token, (
                         "encountered EVENT_END before completing the current particle; "
@@ -661,14 +666,14 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
             next_schema_idx = (schema_idx + 1) % len(self.tokenization_schema)
             
             if schema_name == "particle_start":
-                if not self.is_particle_start_token(token):
+                if token != self.dictionary.particle_start_token:
                     expected = int(self.dictionary.particle_start_token)
                     return [], token, f"expected particle_start token {expected}, got token {token}"
                 feature_buffer = {}
                 schema_idx = next_schema_idx
                 continue
             if schema_name == "particle_end":
-                if not self.is_particle_end_token(token):
+                if token != self.dictionary.particle_end_token:
                     expected = int(self.dictionary.particle_end_token)
                     return [], token, f"expected particle_end token {expected}, got token {token}"
                 particles.append(self.finalize_particle(feature_buffer))
@@ -676,7 +681,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
                 schema_idx = next_schema_idx
                 continue
             
-            decoded_value, invalid_reason = self.decode_feature_token(schema_name, token, schema_to_offset_and_bins)
+            decoded_value, invalid_reason = self.decode_feature_token(schema_name, token, schema_to_feature_name)
             if invalid_reason is not None:
                 return [], token, invalid_reason
             feature_buffer[schema_name] = decoded_value
@@ -688,44 +693,47 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
         
         return particles, None, None
 
-    def is_particle_start_token(self, token: int) -> bool:
-        return hasattr(self.dictionary, "particle_start_token") and token == int(self.dictionary.particle_start_token)
-
-    def is_particle_end_token(self, token: int) -> bool:
-        return hasattr(self.dictionary, "particle_end_token") and token == int(self.dictionary.particle_end_token)
-
-    def decode_feature_token(self, schema_name: str, token: int, schema_to_offset_and_bins: dict[str, tuple[str, str]]) -> tuple[float | int | None, str | None]:
+    def decode_feature_token(self, schema_name: str, token: int, schema_to_feature_name: dict[str, str]) -> tuple[float | int | None, str | None]:
         """
         Decode one feature token using the offset and bins for its schema field.
         """
         if schema_name == "pdgid":
-            offset = int(getattr(self.dictionary, "PDGID_OFFSET"))
+            offset = int(self.dictionary.PDGID_OFFSET)
             particle_index = int(token) - offset
-            if particle_index < 0:
-                return None, f"expected pdgid token >= {offset}, got token {token}"
-            if self.index_to_pdgid and particle_index not in self.index_to_pdgid:
-                max_index = max(self.index_to_pdgid)
+            num_particles = int(self.dictionary.num_particles)
+            if particle_index < 0 or particle_index >= num_particles:
                 return None, (
-                    f"expected pdgid token in [{offset}, {offset + max_index}], "
+                    f"expected pdgid token in [{offset}, {offset + num_particles}), "
                     f"got token {token}"
                 )
             return self.index_to_pdgid.get(particle_index, self.default_pdgid), None
-        
-        if schema_name not in schema_to_offset_and_bins:
+
+        if schema_name == "material":
+            offset = int(self.dictionary.MATERIAL_OFFSET)
+            material_index = int(token) - offset
+            num_materials = int(self.dictionary.num_materials)
+            if material_index < 0 or material_index >= num_materials:
+                return None, (
+                    f"expected material token in [{offset}, {offset + num_materials}), "
+                    f"got token {token}"
+                )
+            return material_index, None
+
+        if schema_name not in schema_to_feature_name:
             raise RuntimeError(f"Untokenizer: Unknown tokenization schema: {schema_name}")
-        
-        offset_attr, bins_attr = schema_to_offset_and_bins[schema_name]
-        offset = int(getattr(self.dictionary, offset_attr))
-        bins = np.asarray(getattr(self.dictionary, bins_attr), dtype=np.float64)
+
+        feature_name = schema_to_feature_name[schema_name]
+        offset = int(self.dictionary.feature_offsets[feature_name])
+        bin_values = feature_bin_values(self.dictionary.feature_bins[feature_name])
         bin_idx = int(token) - offset
         valid_start = offset
-        valid_end_exclusive = offset + len(bins)
-        if bin_idx < 0 or bin_idx >= len(bins):
+        valid_end_exclusive = offset + len(bin_values)
+        if bin_idx < 0 or bin_idx >= len(bin_values):
             return None, (
                 f"expected {schema_name} token in [{valid_start}, {valid_end_exclusive}), "
                 f"got token {token}"
             )
-        return bin_value_from_index(bin_idx, bins), None
+        return float(bin_values[bin_idx]), None
 
     def finalize_particle(self, feature_buffer: dict[str, float | int]) -> dict[str, float | int]:
         """
@@ -735,7 +743,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
         px = feature_buffer.get("px", None)
         py = feature_buffer.get("py", None)
         pz = feature_buffer.get("pz", None)
-        energy = feature_buffer.get("energy", None)
+        energy = feature_buffer.get("energy", feature_buffer.get("e", None))
         
         if px is None or py is None or pz is None:
             px, py, pz = momentum_from_features(feature_buffer)
@@ -765,6 +773,7 @@ class PackedEventStreamParticleFeatureUntokenizer(BaseUntokenizer):
         with self.output_metadata_filepath.open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4)
 
+
 class WholeParticleUntokenizer(BaseUntokenizer):
     """
     Untokenizer for EventPerSequenceWholeParticleTokenizer.
@@ -778,10 +787,15 @@ class WholeParticleUntokenizer(BaseUntokenizer):
     
     def decode_token_row(self, tokens: list[int]) -> tuple[list[dict[str, float | int]], int | None, str | None]:
         particles = []
-        base_offset = int(getattr(self.dictionary, "ETA_OFFSET"))
-        n_eta_bins = len(self.dictionary.eta_bins)
-        n_pt_bins = len(self.dictionary.pt_bins)
-        n_phi_bins = len(self.dictionary.phi_bins)
+        base_offset = int(self.dictionary.feature_offsets["eta"])
+        eta_bin_values = feature_bin_values(self.dictionary.feature_bins["eta"])
+        pt_bin_values = feature_bin_values(self.dictionary.feature_bins["pt"])
+        phi_bin_values = feature_bin_values(self.dictionary.feature_bins["phi"])
+        n_eta_bins = len(eta_bin_values)
+        n_pt_bins = len(pt_bin_values)
+        n_phi_bins = len(phi_bin_values)
+        if n_eta_bins == 0 or n_pt_bins == 0 or n_phi_bins == 0:
+            raise ValueError("Whole-particle untokenization requires eta, pt, and phi bins.")
         vocab_end = base_offset + (n_eta_bins * n_pt_bins * n_phi_bins)
         seen_event_start = False
         
@@ -807,9 +821,9 @@ class WholeParticleUntokenizer(BaseUntokenizer):
             phi_bin = local_token // (n_eta_bins * n_pt_bins)
             
             feature_buffer = {
-                "eta": bin_value_from_index(eta_bin, np.asarray(self.dictionary.eta_bins, dtype=np.float64)),
-                "pt": bin_value_from_index(pt_bin, np.asarray(self.dictionary.pt_bins, dtype=np.float64)),
-                "phi": bin_value_from_index(phi_bin, np.asarray(self.dictionary.phi_bins, dtype=np.float64)),
+                "eta": float(eta_bin_values[eta_bin]),
+                "pt": float(pt_bin_values[pt_bin]),
+                "phi": float(phi_bin_values[phi_bin]),
             }
             px, py, pz = momentum_from_features(feature_buffer)
             energy = math.sqrt(float(px) ** 2 + float(py) ** 2 + float(pz) ** 2)
@@ -828,6 +842,25 @@ class WholeParticleUntokenizer(BaseUntokenizer):
 
     def is_event_end_token(self, token: int) -> bool:
         return hasattr(self.dictionary, "event_end_token") and token == int(self.dictionary.event_end_token)
+
+
+def feature_bin_values(feature_bins) -> np.ndarray:
+    """
+    Return one representative value per local feature token.
+
+    Current dictionaries expose FeatureBins objects whose centers align exactly
+    with the local tokens produced from FeatureBins.thresholds. The fallback for
+    legacy NumPy-array dictionaries preserves the previous midpoint behavior.
+    """
+    centers = getattr(feature_bins, "centers", None)
+    if centers is not None:
+        return np.asarray(centers, dtype=np.float64)
+
+    legacy_bins = np.asarray(feature_bins, dtype=np.float64)
+    return np.asarray(
+        [bin_value_from_index(bin_idx, legacy_bins) for bin_idx in range(len(legacy_bins))],
+        dtype=np.float64,
+    )
 
 def bin_value_from_index(bin_idx: int, bins: np.ndarray) -> float:
     """
@@ -905,19 +938,6 @@ def main() -> None:
     
     preparation_config_filepath = paths.PROJECT_DIR / conf.generic.preparation_config_file
     dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
-    if not dls_conf.verify():
-        raise RuntimeError("Failure when verifying test split config. Ensure all required arguments exist.")
-    
-    tokenized_metadata_filepath = paths.PROJECT_DIR / dls_conf.tokenized_metadata_filepath
-    try:
-        with tokenized_metadata_filepath.open("r", encoding="utf-8") as f:
-            tokenized_metadata = json.load(f)
-    except Exception as exc:
-        raise RuntimeError(f"Failure while trying to load json from {tokenized_metadata_filepath}! Exception:\n{exc}") from exc
-    
-    tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
-    if not tmd_conf.verify():
-        raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
     
     dictionary = pUtil.get_dictionary(conf.generic.preparation_config_filepath)
     
@@ -933,11 +953,9 @@ def main() -> None:
     output_metadata_filepath = output_dir / DEFAULT_METADATA_NAME
     output_invalid_tokens_filepath = output_dir / DEFAULT_INVALID_TOKENS_NAME
     
-    tokenization_format = str(tokenized_metadata.get("format", "base_tokenizer"))
-    tokenizer_class = str(tokenized_metadata.get("tokenizer_class", ""))
-    if tokenization_format == "whole_particle" or tokenizer_class == "EventPerSequenceWholeParticleTokenizer":
+    if dls_conf.tmd_conf.tokenizer_class == "EventPerSequenceWholeParticleTokenizer":
         untokenizer = WholeParticleUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
-    elif tokenizer_class == "PackedEventStreamParticleFeatureTokenizer":
+    elif dls_conf.tmd_conf.tokenizer_class == "PackedEventStreamParticleFeatureTokenizer":
         untokenizer = PackedEventStreamParticleFeatureUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)
     else:
         untokenizer = ParticleFeatureUntokenizer(dictionary, input_samples_filepath, output_samples_filepath, output_metadata_filepath, output_invalid_tokens_filepath, tokenized_metadata)

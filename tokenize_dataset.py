@@ -13,17 +13,13 @@ from pathlib import Path
 import paths as paths
 from particleGPT.dictionary import Dictionary
 from particleGPT.tokenizers import (
-    TokenizerPaths,
     BaseTokenizer,
     EventPerSequenceParticleFeatureTokenizer,
     PackedEventStreamParticleFeatureTokenizer,
-    EventPerSequenceWholeParticleTokenizer
 )
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Tokenizes dataset provided a dictionary file."
-    )
+    parser = argparse.ArgumentParser(description="Tokenizes dataset provided a dictionary file.")
     parser.add_argument("dictionary_path", type=Path)
     args = parser.parse_args()
     
@@ -31,16 +27,7 @@ def main():
         raise ValueError("Dictionary path is required.")
     
     dictionary = Dictionary(args.dictionary_path)
-    
-    relevant_paths = TokenizerPaths(
-        input_data_filepath     = paths.PROJECT_DIR / 'data' / 'raw' / dictionary.dataset_name,
-        tokenized_data_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.bin',
-        tokenized_lens_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_lens.bin',
-        temp_data_dir           = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp',
-        dictionary_filepath     = paths.PROJECT_DIR / args.dictionary_path
-    )
     humanized_dictionary_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'humanized_dictionary.md'
-    
     # dictionary.update_dictionary_particle_list(relevant_paths.input_data_filepath, relevant_paths.dictionary_filepath)
     dictionary.output_humanized_dictionary(humanized_dictionary_filepath)
     
@@ -48,15 +35,14 @@ def main():
     if tokenizer_class is None:
         raise RuntimeError("tokenizer_class cannot be none!")
     
-    tokenizer = tokenizer_class(
-        dictionary=dictionary,
-        in_paths=relevant_paths,
-        dtype=np.uint16,
-        clean_temp_dir=True
-    )
-    tokenizer.batch_encode_byte_ranges()
+    temp_dir = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp'
+    raw_data_filepath = paths.PROJECT_DIR / 'data' / 'raw' / dictionary.dataset_name
+    tokenized_data_filepath = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'tokenized_data.bin'
+    
+    tokenizer = tokenizer_class(dictionary, temp_dir=temp_dir, dtype=np.uint16)
+    tokenizer.encode_dataset(raw_data_filepath)
     tokenizer.postprocess_data()
-    tokenizer.write_metadata()
+    tokenizer.save_data(tokenized_data_filepath)
     
 if __name__ == "__main__":
     main()

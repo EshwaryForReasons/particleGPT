@@ -1,11 +1,12 @@
 
 import json
-import csv
+import re
 from pathlib import Path
 import paths
 import particleGPT.configurator as conf
 from particleGPT.preparation import ESplitTypes, DataloaderSplitConfig
 from particleGPT.dictionary import Dictionary
+from pydantic import validate_call
 
 script_dir = Path(__file__).resolve().parent
 
@@ -26,48 +27,15 @@ def get_dictionary(preparation_config_filepath: Path) -> Dictionary:
     """
     preparation_config_filepath = paths.PROJECT_DIR / preparation_config_filepath
     dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
-    tokenized_metadata_filepath = paths.PROJECT_DIR / dls_conf.tokenized_metadata_filepath
-    if not tokenized_metadata_filepath.exists():
-        raise FileNotFoundError(f"Tokenized metadata file does not exist: {tokenized_metadata_filepath}")
+    if not dls_conf.tmd_conf.dictionary_filepath.exists():
+        raise FileNotFoundError(f"Dictionary file does not exist: {dls_conf.tmd_conf.dictionary_filepath}")
     
-    try:
-        with tokenized_metadata_filepath.open("r", encoding="utf-8") as f:
-            tokenized_metadata = json.load(f)
-    except Exception as e:
-        raise RuntimeError(f"Error reading tokenized metadata file: {e}")
-
-    dictionary_file = tokenized_metadata.get("dictionary_file", None)
-    if dictionary_file is None:
-        raise ValueError("No dictionary file found in tokenized metadata.")
-    
-    dictionary_filepath = paths.PROJECT_DIR / Path(dictionary_file)
-    if not dictionary_filepath.exists():
-        raise FileNotFoundError(f"Dictionary file does not exist: {dictionary_filepath}")
-    
-    dictionary = Dictionary(dictionary_filepath)
+    dictionary = Dictionary(dls_conf.tmd_conf.dictionary_filepath)
     return dictionary
 
 
-def get_sampling_dir(model_name):
-    return script_dir / GENERATED_SAMPLES_DIR_NAME / model_name
-
 def get_training_dir(model_name):
     return script_dir / TRAINED_MODELS_DIR_NAME / model_name
-
-def get_preparation_dir(preparation_name):
-    return script_dir / PREPARATIONS_DIR_NAME / preparation_name
-
-def get_data_dir():
-    return script_dir / DATASETS_DIR_NAME
-
-# If model_name is None, it returns the global temp directory
-def get_temp_dir(model_name=None):
-    if model_name is None:
-        return script_dir / TEMP_DIR_NAME
-    raise ValueError("model_name must be None to get the global temp directory")
-
-
-
 
 
 def get_model_config_filepath(model_name):
@@ -90,112 +58,37 @@ def get_model_config_filepath(model_name):
         raise ValueError(f"No config file found for model name {model_name}.")
     
     return correct_config_file
-
-# ===== Preparation =====
-
-def get_model_preparation_name(model_name):
-    config_filepath = get_model_config_filepath(model_name)
-    with open(config_filepath, 'r') as f:
-        config = json.load(f)
-    
-    preparation_name = config.get('preparation_name', None)
-    if preparation_name is None:
-        raise ValueError(f"No preparation name found in config for model {model_name}.")
-
-    return preparation_name
-
-# Gets the preparation directory of a model given the model name
-def get_model_preparation_dir(model_name):
-    preparation_name = get_model_preparation_name(model_name)
-    preparation_dir = script_dir / PREPARATIONS_DIR_NAME / preparation_name
-    return preparation_dir
-
-
-def get_model_tokenized_data_filepath(model_name, split):
-    preparation_name = get_model_preparation_name(model_name)
-    preparation_dir = get_model_preparation_dir(model_name)
-    
-    prep_data_filepath = preparation_dir / 'preparation.json'
-    if not prep_data_filepath.exists():
-        raise ValueError(f"preparation.json not found for preparation {preparation_name}.")
-    
-    with open(prep_data_filepath, 'r') as f:
-        prep_data = json.load(f)
-    
-    if not f'{split}_bin' in prep_data or not 'tokenized_dataset' in prep_data[f'{split}_bin']:
-        raise ValueError(f"Tokenized dataset information not found for split {split} in preparation {preparation_name}.")
-    tokenized_dataset_name = prep_data[f'{split}_bin']['tokenized_dataset']
-
-    tokenized_data_filepath = script_dir / DATASETS_DIR_NAME / 'tokenized' / tokenized_dataset_name / 'tokenized_data.csv'
-    return tokenized_data_filepath
                     
-# Gets the meta file of the preparation a model is trained on
-def get_model_meta_filepath(model_name):
-    config_filepath = get_model_config_filepath(model_name)
-    with open(config_filepath, 'r') as f:
-        config = json.load(f)
-        preparation_name = config.get('preparation_name', None)
+
+@validate_call
+def get_latest_sampling_dir(model_name: str, sampling_idx_override: int | None = None) -> Path:
+    """
+    Return the selected sampling directory for the current sampling pipeline.
     
-    if preparation_name is None:
-        raise ValueError(f"No preparation name found in config for model {model_name}.")
-
-    meta_filepath = script_dir / DATASETS_DIR_NAME / preparation_name / 'meta.pkl'
-    return meta_filepath
+    The sampler writes generated samples to:
+        PROJECT_DIR/generated_samples/<model_name>/sampling_<idx>/
+        
+    untokenizer.resolve_sampling_idx handles explicit sample_idx config values
+    and otherwise chooses the newest sampling_<idx> directory.
+    """
+    generated_samples_dir = paths.PROJECT_DIR / 'generated_samples' / model_name
+    if not generated_samples_dir.exists():
+        raise FileNotFoundError(f"Generated samples directory does not exist: {generated_samples_dir}")
     
-
-
-def get_model_dataset_name(model_name):
-    config_filepath = get_model_config_filepath(model_name)
-    with open(config_filepath, 'r') as f:
-        config = json.load(f)
-        dataset_name = config.get('dataset', None)
-    
-    if dataset_name is None:
-        raise ValueError(f"No dataset name found in config for model {model_name}.")
-
-    return dataset_name
-
-# Sampling
-
-def get_latest_sampling_id(model_name):
-    generated_samples_dir = script_dir / Path(GENERATED_SAMPLES_DIR_NAME) / model_name
-    largest_sampling = -1
-    for folder in generated_samples_dir.glob("sampling_*"):
-        if folder.is_dir():
-            try:
-                sampling_id = int(folder.name.split("_")[-1])
-                if sampling_id > largest_sampling:
-                    largest_sampling = sampling_id
-            except ValueError:
+    if sampling_idx_override is not None:
+        sampling_idx = sampling_idx_override
+    else:
+        max_idx = -1
+        for path in generated_samples_dir.iterdir():
+            if not path.is_dir():
                 continue
-    return largest_sampling
+            match = re.fullmatch(r"sampling_(\d+)", path.name)
+            if match:
+                max_idx = max(max_idx, int(match.group(1)))
+        
+        if max_idx < 0:
+            raise FileNotFoundError(f"No sampling_N directories found in {generated_samples_dir}.")
+        
+        sampling_idx = max_idx
 
-def get_latest_sampling_dir(model_name):
-    latest_sampling_id = get_latest_sampling_id(model_name)
-    return get_sampling_dir(model_name) / f'sampling_{latest_sampling_id}'
-
-# csv file utils
-
-def count_rows(csv_filename):
-    # This takes about a minute to run on 100M events. Fastest way I can think of.
-    with open(csv_filename, 'rb') as f:
-        return sum(buf.count(b'\n') for buf in iter(lambda: f.read(1024 * 1024), b''))
-    
-def count_columns(csv_filename, delim=' '):
-    # Since the csv is uniform, simply the first line can provide the max sequence length
-    with open(csv_filename, 'r') as f:
-        reader = csv.reader(f)
-        first_line = next(reader)
-        return len(first_line[0].split(delim))
-
-def concat_csv_files(csv_filepaths, out_filename, log_outputs=False):
-    with open(out_filename, "w", newline='', encoding="utf-8") as outfile:
-        writer = csv.writer(outfile)
-
-        for file_path in csv_filepaths:
-            if log_outputs:
-                print(f"Processing {file_path}...")
-
-            with open(file_path, "r", encoding="utf-8") as infile:
-                reader = csv.reader(infile)
-                writer.writerows(reader)
+    return generated_samples_dir / f'sampling_{sampling_idx}'

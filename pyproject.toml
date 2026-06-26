@@ -1,0 +1,25 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # import sorting
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "SIM",    # simplify
+    "ARG",    # unused arguments
+    "C4",     # comprehensions
+    "NPY",    # NumPy-specific rules
+    "PERF"    # performance hints
+]
+ignore = [
+    "E501",   # handled by formatter / line-length preference
+    "ARG002"  # useful to ignore for abstract/interface-like methods
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

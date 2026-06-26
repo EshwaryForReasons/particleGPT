@@ -166,53 +166,16 @@ class TokenBlockDataset(Dataset):
         # Load preparation config file and extract relevant data from it
         preparation_config_filepath = Path(conf.generic.preparation_config_file)
         self.dls_conf = DataloaderSplitConfig(self.split_type, preparation_config_filepath)
-        if not self.dls_conf.verify():
-            raise RuntimeError("Failure when verifying dataloader split config. Ensure all required arguments exist.")
         
-        # Load tokenized metadata and extract relevant data from it
-        tokenized_metadata_filepath = Path(self.dls_conf.tokenized_metadata_filepath)
-        self.tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
-        if not self.tmd_conf.verify():
-            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
-        
-        if use_self_contained_blocks and self.block_size % self.tmd_conf.sequence_length != 0:
+        if use_self_contained_blocks and self.block_size % self.dls_conf.tmd_conf.sequence_length != 0:
             raise ValueError(
-                f"block_size {self.block_size} must be a multiple of sequence_length {self.tmd_conf.sequence_length} "
+                f"block_size {self.block_size} must be a multiple of sequence_length {self.dls_conf.tmd_conf.sequence_length} "
                 "when use_self_contained_blocks is True to ensure blocks do not cross sequence boundaries."
             )
                 
-        # Fancy way to calculate token count in dataset without using np.memmap and len().
-        # Small performance optimization
-        file_bytes = self.tmd_conf.tokenized_data_filepath.stat().st_size
-        dtype_bytes = np.dtype(self.tmd_conf.dtype).itemsize
-        if file_bytes % dtype_bytes != 0:
-            raise ValueError(
-                f"Size of tokenized data file ({file_bytes} bytes) is not divisible by the size of the dtype {self.tmd_conf.dtype} "
-                f"({dtype_bytes} bytes). The file may be corrupted or the metadata may be wrong."
-            )
-        _data_total_tokens = file_bytes // dtype_bytes
-        
-        # Verify data is well-formed and our metadata is reliable
-        if _data_total_tokens != self.tmd_conf.total_tokens:
-            raise ValueError(
-                f"Tokenized data contains {_data_total_tokens:,} tokens, but expected {self.tmd_conf.total_tokens:,} "
-                "based on the tokenized metadata. Regenerate the prepared data or fix the metadata."
-            )
-        if _data_total_tokens % self.tmd_conf.sequence_length != 0:
-            raise ValueError(
-                f"Tokenized data contains {_data_total_tokens:,} tokens, which is not divisible by the sequence length "
-                f"{self.tmd_conf.sequence_length}. Regenerate the prepared data or fix the metadata."
-            )
-        _data_total_sequences = _data_total_tokens // self.tmd_conf.sequence_length
-        if _data_total_sequences != self.tmd_conf.num_full_sequences:
-            raise ValueError(
-                f"Tokenized data contains {_data_total_sequences:,} full sequences, but expected {self.tmd_conf.num_full_sequences:,} "
-                "based on the tokenized metadata. Regenerate the prepared data or fix the metadata."
-            )
-            
-        raw_split_tokens = self.dls_conf.num_sequences * self.tmd_conf.sequence_length
-        tokens_needed_per_sample = self.block_size + int(self.use_extra_target_token)
         # Ensure this preparation provides this split at least enough tokens for one sample given the configured block size
+        raw_split_tokens = self.dls_conf.num_sequences * self.dls_conf.tmd_conf.sequence_length
+        tokens_needed_per_sample = self.block_size + int(self.use_extra_target_token)
         if raw_split_tokens < tokens_needed_per_sample:
             raise ValueError(
                 f"Split has {raw_split_tokens} tokens, but block_size={self.block_size} "
@@ -238,35 +201,12 @@ class TokenBlockDataset(Dataset):
             warnings.warn(warning_txt, RuntimeWarning)
             log_info(0, warning_txt)
         
-        # Calculate raw (before block_size adjustment) start and end token indices and verify the dataset can provide it.
-        # This is for verification for the config.
-        # Example:
-        #     total_tokens = 100
-        #     sequence_length = 10
-        #     skip_sequences = 8      # start at token 80
-        #     num_sequences = 3       # raw request is tokens 80:110, invalid
-        #     block_size = 19
-        # Raw split asks for 30 tokens, but usable split becomes 20 tokens. This makes the final range
-        # 80:100, which is valid, but the config is misleading because it implies 30 tokens when only 20 are usable.
-        # The following check catches this style of issue.
-        if self.dls_conf.from_end:
-            raw_end = (self.tmd_conf.num_full_sequences - self.dls_conf.skip_sequences) * self.tmd_conf.sequence_length
-            raw_start = raw_end - raw_split_tokens
-        else:
-            raw_start = self.dls_conf.skip_sequences * self.tmd_conf.sequence_length
-            raw_end = raw_start + raw_split_tokens
-
-        if raw_start < 0 or raw_end > self.tmd_conf.total_tokens or raw_start >= raw_end:
-            raise ValueError(
-                f"Invalid raw split range: raw_start={raw_start}, raw_end={raw_end}, "
-                f"total_tokens={self.tmd_conf.total_tokens}."
-            )
-            
+        raw_start, raw_end = self.dls_conf.get_raw_tokens_range()
         self.split_start_token_idx = raw_start
         self.split_end_token_idx = raw_start + self.num_split_tokens
         
         if (self.split_start_token_idx < 0
-            or self.split_end_token_idx > self.tmd_conf.total_tokens
+            or self.split_end_token_idx > self.dls_conf.tmd_conf.total_tokens
             or self.split_start_token_idx >= self.split_end_token_idx
             or self.split_end_token_idx - self.split_start_token_idx != self.num_split_tokens
         ):
@@ -274,7 +214,7 @@ class TokenBlockDataset(Dataset):
                 f"Invalid usable token range: split_start_token_idx={self.split_start_token_idx}, "
                 f"split_end_token_idx={self.split_end_token_idx}, "
                 f"num_split_tokens={self.num_split_tokens}, "
-                f"total_tokens={self.tmd_conf.total_tokens}."
+                f"total_tokens={self.dls_conf.tmd_conf.total_tokens}."
             )
         
         # Set to None so _get_data can function properly, i.e. so lazy loading works
@@ -284,7 +224,7 @@ class TokenBlockDataset(Dataset):
         """Open the memmap lazily so each DataLoader worker owns its handle."""
         if self._data is None:
             data = np.memmap(
-                self.tmd_conf.tokenized_data_filepath, dtype=self.tmd_conf.dtype, mode="r"
+                self.dls_conf.tmd_conf.tokenized_data_filepath, dtype=self.dls_conf.tmd_conf.dtype, mode="r"
             )
             self._data = data[self.split_start_token_idx : self.split_end_token_idx]
         return self._data
@@ -400,9 +340,10 @@ class EpochSeededRandomSampler(Sampler[int]):
     def __len__(self) -> int:
         return len(self.dataset)
 
+
 def assert_no_overlap(a: TokenBlockDataset, b: TokenBlockDataset) -> None:
-    a_path = Path(a.tmd_conf.tokenized_data_filepath).resolve()
-    b_path = Path(b.tmd_conf.tokenized_data_filepath).resolve()
+    a_path = Path(a.dls_conf.tmd_conf.tokenized_data_filepath).resolve()
+    b_path = Path(b.dls_conf.tmd_conf.tokenized_data_filepath).resolve()
     
     # If the datasets are not the same, then probably no overlap. We do not check
     # for overlap across different files because that overlap would not be a sequence
@@ -413,7 +354,6 @@ def assert_no_overlap(a: TokenBlockDataset, b: TokenBlockDataset) -> None:
 
     lo = max(a.split_start_token_idx, b.split_start_token_idx)
     hi = min(a.split_end_token_idx, b.split_end_token_idx)
-
     if lo < hi:
         raise ValueError(
             "Dataset split overlap detected: "
@@ -904,10 +844,8 @@ def get_lr(iter_num: int) -> float:
         return learning_rate * iter_num / warmup_iters
 
     if lr_decay_iters <= warmup_iters:
-        raise ValueError(
-            f"lr_decay_iters={lr_decay_iters} must be greater than warmup_iters={warmup_iters} "
-            f"for scheduler={scheduler!r}."
-        )
+        raise ValueError(f"lr_decay_iters={lr_decay_iters} must be greater than warmup_iters={warmup_iters} for scheduler={scheduler!r}."
+)
 
     if scheduler == "cosine_annealing_with_warmup":
         if iter_num >= lr_decay_iters:
@@ -1451,21 +1389,11 @@ def main() -> None:
         # Load preparation config file and extract relevant data from it
         preparation_config_filepath = Path(conf.generic.preparation_config_file)
         dls_conf = DataloaderSplitConfig(ESplitTypes.TRAIN, preparation_config_filepath)
-        if not dls_conf.verify():
-            raise RuntimeError("Failure when verifying dataloader split config. Ensure all required arguments exist.")
-        
-        # Load tokenized metadata and extract relevant data from it
-        tokenized_metadata_filepath = Path(dls_conf.tokenized_metadata_filepath)
-        tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
-        if not tmd_conf.verify():
-            raise RuntimeError("Failure when verifying tokenized metadata config. Ensure all required arguments exist.")
         
         if conf.training.block_size == -1 and conf.training.context_sequences != -1:
-            conf.training.block_size = conf.training.context_sequences * tmd_conf.sequence_length
+            conf.training.block_size = conf.training.context_sequences * dls_conf.tmd_conf.sequence_length
         if conf.training.block_size <= 0:
-            raise ValueError(
-                f"Invalid block_size {conf.training.block_size}. Must be positive or -1 to infer from context_sequences."
-            )
+            raise ValueError(f"Invalid block_size {conf.training.block_size}. Must be positive or -1 to infer from context_sequences.")
         
         train_dataset = TokenBlockDataset(ESplitTypes.TRAIN)
         val_dataset = TokenBlockDataset(ESplitTypes.VALIDATION)
@@ -1480,11 +1408,11 @@ def main() -> None:
         validate_epoch_shape(train_step_loader)
         log_training_configuration(
             logger_idx, ddp_state, precision, 
-            train_dataset.tmd_conf.vocab_size,
-            train_dataset.tmd_conf.sequence_length
+            train_dataset.dls_conf.tmd_conf.vocab_size,
+            train_dataset.dls_conf.tmd_conf.sequence_length
         )
 
-        model_args = build_model_args(train_dataset.tmd_conf.vocab_size)
+        model_args = build_model_args(train_dataset.dls_conf.tmd_conf.vocab_size)
         init_result = initialize_or_resume_model(model_output_dir=model_output_dir, model_args=model_args, logger_idx=logger_idx, device=ddp_state.device)
         
         # maybe crop block size--Crop RoPE/cache buffers if the current config asks for a shorter context.

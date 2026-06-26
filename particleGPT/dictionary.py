@@ -206,6 +206,9 @@ class FeatureBins:
         if not self.exists:
             return 0
         return len(self.edges) - 1
+    
+    def contains_global_token(self, token: int, offset: int) -> bool:
+        return offset <= token < offset + self.num_tokens
 
 
 class Dictionary():
@@ -356,7 +359,7 @@ class Dictionary():
         for key, value in raw.items():
             if not isinstance(key, str):
                 raise ValueError(f"{name}: key {key!r} must be a string")
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not isinstance(value, int):
                 raise ValueError(f"{name}: value for {key!r} must be an integer, got {value!r}")
             parsed[key] = value
 
@@ -371,8 +374,7 @@ class Dictionary():
             raise ValueError(f"{name}: values must be unique, got {values}")
         if actual != expected:
             raise ValueError(
-                f"{name}: values must be contiguous 0..N-1. "
-                f"Expected={sorted(expected)}, got={sorted(actual)}"
+                f"{name}: values must be contiguous 0..N-1. Expected={sorted(expected)}, got={sorted(actual)}"
             )
 
         return parsed
@@ -386,37 +388,14 @@ class Dictionary():
         """
         parsed = {}
         for key, value in raw.items():
-            try:
-                idx = int(key)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{name}: key {key!r} must be an integer string") from exc
-
+            idx = int(key)
             if idx < 0:
                 raise ValueError(f"{name}: key {key!r} must be non-negative")
-
             if idx in parsed:
-                raise ValueError(
-                    f"{name}: duplicate normalized key {idx}; "
-                    f"key {key!r} collides with an earlier key"
-                )
+                raise ValueError(f"{name}: duplicate normalized key {idx}; key {key!r} collides with an earlier key")
 
-            if value_type is not None:
-                if value_type is int:
-                    if isinstance(value, bool):
-                        raise ValueError(f"{name}: value at key {key!r} must be an integer, got bool {value}")
-                    
-                    try:
-                        value = int(value)
-                    except (TypeError, ValueError) as exc:
-                        raise ValueError(f"{name}: value at key {key!r} must be an integer, got {value!r}") from exc
-                elif value_type is str:
-                    if not isinstance(value, str):
-                        raise ValueError(f"{name}: value at key {key!r} must be a string, got {value!r}")
-                else:
-                    try:
-                        value = value_type(value)
-                    except (TypeError, ValueError) as exc:
-                        raise ValueError(f"{name}: value at key {key!r} could not be converted to {value_type}: {value!r}") from exc
+            if not isinstance(value, value_type):
+                raise ValueError(f"{name}: value at key {key!r} could not be converted to {value_type}: {value!r}") from exc
 
             parsed[idx] = value
 
@@ -428,9 +407,7 @@ class Dictionary():
 
         if actual != expected:
             raise ValueError(
-                f"{name}: keys must be contiguous 0..N-1. "
-                f"Missing={sorted(expected - actual)}, "
-                f"unexpected={sorted(actual - expected)}"
+                f"{name}: keys must be contiguous 0..N-1. Missing={sorted(expected - actual)}, unexpected={sorted(actual - expected)}"
             )
 
         return {idx: parsed[idx] for idx in range(len(parsed))}

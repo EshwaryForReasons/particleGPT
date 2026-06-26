@@ -17,7 +17,7 @@
         "min_lr": 1e-04,
         "beta2": 0.98,
         "warmup_iters": 27,
-        "max_num_failed_checkpoint_checks": 16,
+        "max_num_failed_checkpoint_checks": 4,
         "eval_every_epoch": true,
         "use_self_contained_blocks": true
     },
@@ -26,7 +26,6 @@
         "top_k": 200,
         "seed": 1337,
         "device": "cuda",
-        "compile": true,
-        "max_test_sequences": 10000
+        "compile": true
     }
 }

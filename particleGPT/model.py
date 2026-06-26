@@ -36,10 +36,11 @@ import paths
 
 # Won't always have a dictionary if training on generic data
 try:
-    from particleGPT.dictionary import Dictionary, ETokenTypes
+    from particleGPT.dictionary import Dictionary, ETokenTypes, FEATURE_TYPES
 except Exception as exc:  # Allows generic/non-particle training without dictionary.py.
     Dictionary = None
     ETokenTypes = None
+    FEATURE_TYPES = ()
     _dictionary_import_error = exc
 else:
     _dictionary_import_error = None
@@ -94,7 +95,7 @@ if _conf_data_mode() == "particle":
         with open(tokenized_metadata_filepath, "r") as f:
             tokenized_metadata = json.load(f)
         
-        dictionary_filepath = script_dir / tokenized_metadata["dictionary_file"]
+        dictionary_filepath = script_dir / tokenized_metadata["dictionary_filepath"]
         with open(dictionary_filepath, "r") as f:
             dictionary = Dictionary(dictionary_filepath)
     except Exception as exc:
@@ -495,9 +496,8 @@ class GPTConfig:
     embedding_norm_init_scale: float = 0.02
 
     use_particle_index_embeddings: bool = False
-    # @TODO: if we plant to keep these, make sure to implement auto-detection of these values.
-    # @IMPORTANT: see above todo
-    num_features_per_particle: int = 4
+    # Derived automatically from dictionary when it is used
+    num_features_per_particle: int | None = None
     max_particles_per_event: int = 42
 
     use_bin_value_embeddings: bool = False
@@ -529,7 +529,7 @@ class GPTConfig:
             raise ValueError(f"Unknown mlp_type: {self.mlp_type}")
         if self.embedding_norm_type not in {"none", "rmsnorm"}:
             raise ValueError(f"Unknown embedding_norm_type: {self.embedding_norm_type}")
-        if self.use_particle_index_embeddings and self.num_features_per_particle <= 0:
+        if self.use_particle_index_embeddings and self.num_features_per_particle is not None and self.num_features_per_particle <= 0:
             raise ValueError("num_features_per_particle must be positive")
         if self.use_particle_index_embeddings and self.max_particles_per_event <= 0:
             raise ValueError("max_particles_per_event must be positive")
@@ -583,16 +583,7 @@ class GPT(nn.Module):
     ORDINAL_TOKEN_TYPES = (
         set()
         if ETokenTypes is None
-        else {
-            ETokenTypes.ENERGY.value,
-            ETokenTypes.ETA.value,
-            ETokenTypes.THETA.value,
-            ETokenTypes.PHI.value,
-            ETokenTypes.PT.value,
-            ETokenTypes.PX.value,
-            ETokenTypes.PY.value,
-            ETokenTypes.PZ.value,
-        }
+        else {token_type.value for _, _, token_type in FEATURE_TYPES}
     )
 
     def __init__(self, config: GPTConfig):
@@ -602,12 +593,40 @@ class GPT(nn.Module):
 
         self.config = config
         
+        self.tokens_per_particle = None
+        self.physics_tokens_per_particle = None
+        
         if config.data_mode == "particle":
-            _require_particle_dictionary("particle data_mode")
+            d = _require_particle_dictionary("particle data_mode")
+            
+            if config.vocab_size != d.vocab_size:
+                raise ValueError(
+                    f"config.vocab_size={config.vocab_size} does not match "
+                    f"dictionary.vocab_size={d.vocab_size}"
+                )
+
+            # @TODO: maybe move this to config init in the training script?
+            # The problem is then I would have to introduce the Dictionary there.
+            if config.use_particle_index_embeddings:
+                config.num_features_per_particle = d.num_tokens_per_particle
+                self.tokens_per_particle = int(d.num_tokens_per_particle)
+
+                # Count only non-special per-particle schema entries for the cumsum path.
+                self.physics_tokens_per_particle = sum(
+                    0 if str(schema_name).lower() in d.special_tokens else 1
+                    for schema_name in d.tokenization_schema
+                )
+
+                if self.tokens_per_particle <= 0:
+                    raise ValueError("dictionary.num_tokens_per_particle must be positive")
+                if self.physics_tokens_per_particle <= 0:
+                    raise ValueError(
+                        "tokenization_schema must contain at least one non-special particle token "
+                        "when particle index embeddings are enabled"
+                    )
 
         modules: dict[str, nn.Module] = {
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
-            # "type_emb": nn.Embedding(config.num_token_types, config.n_embd),
             "emb_norm": choose_embedding_norm(config),
             "drop": nn.Dropout(config.dropout),
             "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
@@ -617,9 +636,6 @@ class GPT(nn.Module):
         if config.use_token_type_embeddings:
             modules["type_emb"] = nn.Embedding(config.num_token_types, config.n_embd)
         
-        if config.use_token_type_embeddings:
-            modules["type_emb"] = nn.Embedding(config.num_token_types, config.n_embd)
-
         if config.use_bin_value_embeddings:
             modules["bin_value_mlp"] = nn.Sequential(
                 nn.Linear(3, config.n_embd, bias=config.bias),
@@ -670,27 +686,25 @@ class GPT(nn.Module):
         """
         Return contiguous token ranges as `(type, start, length)`.
 
-        Padding is intentionally excluded. Special tokens start at
-        `SPECIAL_TOKENS_OFFSET + 1` so that token 0/padding is not accidentally treated
-        as a normal special token.
+        Padding is included in the SPECIAL range here, then explicitly overwritten as
+        PADDING in get_token_type_ids. This is robust even if the padding special token
+        is not local special-token id 0.
         """
         d = _require_particle_dictionary("token type ranges")
-        return (
-            (
-                ETokenTypes.SPECIAL,
-                d.SPECIAL_TOKENS_OFFSET + 1,
-                max(d.num_special_tokens - 1, 0),
-            ),
+        
+        specs = [
+            (ETokenTypes.SPECIAL, d.SPECIAL_TOKENS_OFFSET, d.num_special_tokens),
             (ETokenTypes.PDGID, d.PDGID_OFFSET, d.num_particles),
-            (ETokenTypes.ENERGY, d.ENERGY_OFFSET, len(d.e_bins)),
-            (ETokenTypes.ETA, d.ETA_OFFSET, len(d.eta_bins)),
-            (ETokenTypes.THETA, d.THETA_OFFSET, len(d.theta_bins)),
-            (ETokenTypes.PHI, d.PHI_OFFSET, len(d.phi_bins)),
-            (ETokenTypes.PT, d.PT_OFFSET, len(d.pt_bins)),
-            (ETokenTypes.PX, d.PX_OFFSET, len(d.px_bins)),
-            (ETokenTypes.PY, d.PY_OFFSET, len(d.py_bins)),
-            (ETokenTypes.PZ, d.PZ_OFFSET, len(d.pz_bins)),
-        )
+            (ETokenTypes.MATERIAL, d.MATERIAL_OFFSET, d.num_materials),
+        ]
+        for feature_name, _, token_type in FEATURE_TYPES:
+            feature_bins = d.feature_bins[feature_name]
+            specs.append((
+                token_type,
+                d.feature_offsets[feature_name],
+                feature_bins.num_tokens,
+            ))
+        return tuple(specs)
 
     def _precompute_token_type_ranges(self) -> None:
         """Build `token_type_value -> (start, end_inclusive)` for non-empty token ranges."""
@@ -711,13 +725,14 @@ class GPT(nn.Module):
 
         d = _require_particle_dictionary("token type ids")
         type_ids = torch.full_like(idx, fill_value=ETokenTypes.PADDING.value)
-        type_ids[idx == d.padding_token] = ETokenTypes.PADDING.value
-
+        
         for token_type, start, length in self._token_type_specs():
             if length <= 0:
                 continue
             type_ids[(idx >= start) & (idx < start + length)] = token_type.value
 
+        # Must happen after the SPECIAL range pass, because padding is also a special token.
+        type_ids[idx == d.padding_token] = ETokenTypes.PADDING.value
         return type_ids
 
     # ----------------------------------------------------------------------------------
@@ -798,15 +813,16 @@ class GPT(nn.Module):
             features[offset : offset + length, 1] = torch.sin(centers)
             features[offset : offset + length, 2] = torch.cos(centers)
             mask[offset : offset + length, 0] = 1.0
+        
+        for feature_name, _, _ in FEATURE_TYPES:
+            feature_bins = d.feature_bins[feature_name]
+            offset = d.feature_offsets[feature_name]
+            length = feature_bins.num_tokens
 
-        fill_scalar(d.ENERGY_OFFSET, d.e_bins, len(d.e_bins))
-        fill_scalar(d.ETA_OFFSET, d.eta_bins, len(d.eta_bins))
-        fill_scalar(d.THETA_OFFSET, d.theta_bins, len(d.theta_bins))
-        fill_scalar(d.PT_OFFSET, d.pt_bins, len(d.pt_bins))
-        fill_scalar(d.PX_OFFSET, d.px_bins, len(d.px_bins))
-        fill_scalar(d.PY_OFFSET, d.py_bins, len(d.py_bins))
-        fill_scalar(d.PZ_OFFSET, d.pz_bins, len(d.pz_bins))
-        fill_phi(d.PHI_OFFSET, d.phi_bins, len(d.phi_bins))
+            if feature_name == "phi":
+                fill_phi(offset, feature_bins.centers, length)
+            else:
+                fill_scalar(offset, feature_bins.centers, length)
 
         return features, mask
 
@@ -960,7 +976,7 @@ class GPT(nn.Module):
         """
         _require_particle_dictionary("particle index embeddings")
         physics_mask = (type_ids != ETokenTypes.PADDING.value) & (type_ids != ETokenTypes.SPECIAL.value)
-
+        
         if position_ids is not None:
             if position_ids.dim() == 1:
                 position_ids = position_ids.unsqueeze(0)
@@ -970,10 +986,10 @@ class GPT(nn.Module):
                 raise ValueError(f"position_ids shape {tuple(position_ids.shape)} must match idx shape {tuple(idx.shape)}")
 
             physics_position = (position_ids - 1).clamp(min=0)
-            particle_index = physics_position // self.config.num_features_per_particle
+            particle_index = physics_position // self.tokens_per_particle
         else:
             physics_counter = torch.cumsum(physics_mask.long(), dim=1) - 1
-            particle_index = physics_counter // self.config.num_features_per_particle
+            particle_index = physics_counter // self.physics_tokens_per_particle
 
         particle_index = particle_index.clamp(min=0, max=self.config.max_particles_per_event - 1)
         return torch.where(physics_mask, particle_index + 1, torch.zeros_like(particle_index))
@@ -1030,48 +1046,101 @@ class GPT(nn.Module):
 
         probs = F.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).squeeze(1)
+    
+    @staticmethod
+    def _schema_token_range(schema_name: str) -> tuple[int, int]:
+        """
+        Return `(start, length)` for one entry in dictionary.tokenization_schema.
 
+        Supports:
+            * special token names, e.g. "particle_start"
+            * "pdgid" / "pdgids"
+            * "material" / "materials"
+            * feature names from FEATURE_TYPES, e.g. "pt", "eta", "phi"
+        """
+        d = _require_particle_dictionary("event grammar schema")
+        name = str(schema_name).lower()
+
+        if name in d.special_tokens:
+            return d.SPECIAL_TOKENS_OFFSET + int(d.special_tokens[name]), 1
+        if name in {"pdgid", "pdgids"}:
+            return int(d.PDGID_OFFSET), int(d.num_particles)
+        if name in {"material", "materials"}:
+            return int(d.MATERIAL_OFFSET), int(d.num_materials)
+        if name in d.feature_offsets:
+            feature_bins = d.feature_bins[name]
+            return int(d.feature_offsets[name]), int(feature_bins.num_tokens)
+
+        raise ValueError(
+            f"Unsupported tokenization_schema entry {schema_name!r}. "
+            f"Expected a special token name, 'pdgid', 'material', or one of "
+            f"{[feature_name for feature_name, _, _ in FEATURE_TYPES]}."
+        )
+    
     def mask_logits_for_next_token(self, logits: torch.Tensor, prev_token: torch.Tensor) -> torch.Tensor:
         """
-        Apply the generation grammar for the current event format.
+        Apply generation grammar from dictionary.tokenization_schema.
 
-        Grammar:
-            EVENT_START -> PDGID
-            PDGID       -> PT
-            PT          -> ETA
-            ETA         -> PHI
-            PHI         -> PDGID or EVENT_END
-            EVENT_END   -> PAD
+        General grammar:
+            EVENT_START -> first schema token
+            schema[i]   -> schema[i + 1]
+            schema[-1]  -> first schema token or EVENT_END
+            EVENT_END   -> first padding-sequence token
+            padding seq -> next padding-sequence token
             PAD         -> PAD
         """
         if not self.config.use_event_grammar:
             raise RuntimeError("grammar_mask=True but config.use_event_grammar=False")
         d = _require_particle_dictionary("event grammar mask")
-        
+
+        if len(d.tokenization_schema) == 0:
+            raise ValueError("dictionary.tokenization_schema must contain at least one token")
+
         allowed = torch.zeros_like(logits, dtype=torch.bool)
-        prev_type = self.get_token_type_ids(prev_token)
 
+        schema_ranges = [
+            self._schema_token_range(schema_name)
+            for schema_name in d.tokenization_schema
+        ]
+
+        for schema_name, (start, length) in zip(d.tokenization_schema, schema_ranges, strict=True):
+            if length <= 0:
+                raise ValueError(f"tokenization_schema entry {schema_name!r} maps to an empty token range")
+            if start < 0 or start + length > logits.size(-1):
+                raise ValueError(
+                    f"tokenization_schema entry {schema_name!r} maps to token range "
+                    f"[{start}, {start + length}), which exceeds logits vocab size {logits.size(-1)}"
+                )
+
+        first_start, first_length = schema_ranges[0]
         is_start = prev_token == d.event_start_token
-        allowed[is_start, d.PDGID_OFFSET : d.PDGID_OFFSET + d.num_particles] = True
+        allowed[is_start, first_start : first_start + first_length] = True
 
-        is_pdgid = prev_type == ETokenTypes.PDGID.value
-        allowed[is_pdgid, d.PT_OFFSET : d.PT_OFFSET + len(d.pt_bins)] = True
+        for schema_idx, (cur_start, cur_length) in enumerate(schema_ranges):
+            is_current_schema_token = (
+                (prev_token >= cur_start)
+                & (prev_token < cur_start + cur_length)
+            )
 
-        is_pt = prev_type == ETokenTypes.PT.value
-        allowed[is_pt, d.ETA_OFFSET : d.ETA_OFFSET + len(d.eta_bins)] = True
+            if schema_idx + 1 < len(schema_ranges):
+                next_start, next_length = schema_ranges[schema_idx + 1]
+                allowed[is_current_schema_token, next_start : next_start + next_length] = True
+            else:
+                allowed[is_current_schema_token, first_start : first_start + first_length] = True
+                allowed[is_current_schema_token, d.event_end_token] = True
 
-        is_eta = prev_type == ETokenTypes.ETA.value
-        allowed[is_eta, d.PHI_OFFSET : d.PHI_OFFSET + len(d.phi_bins)] = True
-
-        is_phi = prev_type == ETokenTypes.PHI.value
-        allowed[is_phi, d.PDGID_OFFSET : d.PDGID_OFFSET + d.num_particles] = True
-        allowed[is_phi, d.event_end_token] = True
+        padding_sequence = d.padding_sequence
+        if len(padding_sequence) == 0:
+            padding_sequence = [d.padding_token]
 
         is_end = prev_token == d.event_end_token
-        allowed[is_end, d.padding_token] = True
+        allowed[is_end, padding_sequence[0]] = True
 
-        is_pad = prev_token == d.padding_token
-        allowed[is_pad, d.padding_token] = True
+        for cur_pad_token, next_pad_token in zip(padding_sequence, padding_sequence[1:]):
+            allowed[prev_token == cur_pad_token, next_pad_token] = True
+
+        allowed[prev_token == padding_sequence[-1], d.padding_token] = True
+        allowed[prev_token == d.padding_token, d.padding_token] = True
 
         # Safety fallback: never create a row of all -inf logits.
         empty_rows = ~allowed.any(dim=-1)
@@ -1421,9 +1490,8 @@ class GPT(nn.Module):
         """
         Generate many samples on one GPU using fixed-length prompt batches.
 
-        Assumption: every row has the same non-padding prompt length. This works since the
-        prompt is always (EVENT_START, PDGID, PT, ETA, PHI), kinematics being for the incident
-        particle.
+        Assumption: every row has the same non-padding prompt length. For particle data,
+        the prompt should follow the dictionary-defined event prefix/tokenization schema.
         """
         with self._temporary_eval_mode():
             if idx.dim() == 1:

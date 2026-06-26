@@ -1,10 +1,13 @@
 
 import json
+import os
 import sys
-import torch
 import paths
+import multiprocessing as mp
 from pathlib import Path
 from dataclasses import dataclass, field
+
+import torch
 
 @dataclass
 class GenericConfiguration:
@@ -108,17 +111,18 @@ class TrainingConfiguration:
 class SamplingConfiguration:
     samples_storage_dir:    str = ''
     batch_size:             int = 128
-    max_new_tokens:         int | None = 500 # If none will be auto calculated as sequence_length - starting_tokens
+    max_new_tokens:         int | None = 500 # If None will be auto calculated as sequence_length - starting_tokens
     temperature:            float = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
     top_k:                  int = 200
     seed:                   int = 1337
     device:                 str = 'cuda'
     dtype:                  str = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
     compile:                bool = True
-    max_test_sequences:     int | None = None
+    num_sample_sequences:   int | None = None # If None, will use all test sequences
     keep_shards:            bool = False
     sampling_idx_override:  int | None = None
     force_single_gpu:       bool = False
+    log_interval:           int = 1000
     
     # Used for untokenization
     stop_at_event_end:      bool = True
@@ -129,12 +133,31 @@ generic = None
 training = None
 sampling = None
 
+def should_print_import_configuration_message() -> bool:
+    """
+    Return True only for the top-level process that should emit import-time
+    configurator messages.
+
+    This preserves configurator side effects on import, but prevents repeated
+    stdout spam from DDP ranks, mp.spawn children, and spawned worker processes.
+    """
+    if mp.current_process().name != "MainProcess":
+        return False
+
+    rank = os.environ.get("RANK")
+    if rank is not None and int(rank) != 0:
+        return False
+
+    return True
+
 def perform_configuration(config_file_path):
     generic = GenericConfiguration()
     training = TrainingConfiguration()
     sampling = SamplingConfiguration()
     
-    print(f'Configurator found file {config_file_path}.')
+    if should_print_import_configuration_message():
+        print(f'Configurator found file {config_file_path}.')
+    
     with open(config_file_path, 'r') as f:
         config = json.load(f)
 

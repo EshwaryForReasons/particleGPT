@@ -163,3 +163,32 @@ def convert_data_features_to_4vector(input_data, pad_token=np.nan):
     
     np.nan_to_num(output_data, copy=False, nan=pad_token)
     return output_data
+
+def convert_to_verbose_particles(untokenized_data):
+    """
+    Convert raw-style particles into the verbose analysis layout.
+    
+    Input rows are expected to contain:
+        pdgid, e, px, py, pz
+    Output rows contain the columns expected by analysis_v2.plotting:
+        pdgid, e, px, py, pz, pt, eta, theta, phi
+    """
+    
+    NUM_FEATURES_PER_PARTICLE_VERBOSE = 9
+    verbose_data = np.full(shape=(untokenized_data.shape[0], untokenized_data.shape[1], NUM_FEATURES_PER_PARTICLE_VERBOSE), fill_value=np.nan, dtype=np.float64)
+    for idx_e, event in enumerate(untokenized_data):
+        for idx_p, particle in enumerate(event):
+            pdgid = particle[0]
+            if np.isnan(pdgid):
+                continue
+            
+            pdgid, e, px, py, pz = particle
+            r = np.sqrt(px * px + py * py + pz * pz)
+            pt = np.sqrt(px * px + py * py)
+            theta = np.arccos(np.clip(pz / r, -1.0, 1.0)) if r != 0 else 0
+            phi = np.arctan2(py, px)
+            eta = -np.log(np.tan(theta / 2)) if theta != 0 else np.inf
+            
+            verbose_data[idx_e, idx_p] = [pdgid, e, px, py, pz, pt, eta, theta, phi]
+    
+    return verbose_data
