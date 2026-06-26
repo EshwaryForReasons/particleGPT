@@ -35,8 +35,6 @@ import re
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Optional
-import dataclasses
 from pydantic.dataclasses import dataclass
 import warnings
 
@@ -147,7 +145,7 @@ def shard_path(output_dir: Path, rank: int) -> Path:
     """Return the temporary CSV shard path for one worker."""
     return output_dir / f"worker_{rank:03d}{SHARD_SUFFIX}"
 
-def generate_batch(model: torch.nn.Module, idx: torch.Tensor, max_new_tokens: int, temperature: float, top_k: Optional[int], require_batch_generate: bool) -> torch.Tensor:
+def generate_batch(model: torch.nn.Module, idx: torch.Tensor, max_new_tokens: int, temperature: float, top_k: int | None, require_batch_generate: bool) -> torch.Tensor:
     """
     Run batched generation through the model's batch-capable generation path.
 
@@ -188,7 +186,7 @@ def extract_starters(job: SamplingJob) -> np.ndarray:
     prompts = test_sequences[prompt_indices]
     return prompts
 
-def sampling_worker(rank: int, job: SamplingJob) -> None:
+def sampling_worker(rank: int, job: SamplingJob, output_dir: Path) -> None:
     """
     Generate one contiguous shard of extracted starter prompts on one worker/device.
     Each worker owns a contiguous slice of the starter prompts extracted from this job's test-token window.
@@ -240,7 +238,7 @@ def sampling_worker(rank: int, job: SamplingJob) -> None:
     dtype = dtype_map[job.dtype_name]
 
     device_type = "cuda" if device.startswith("cuda") else "cpu"
-    output_path = shard_path(Path(job["output_dir"]), rank)
+    output_path = shard_path(output_dir, rank)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
@@ -248,7 +246,7 @@ def sampling_worker(rank: int, job: SamplingJob) -> None:
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         with torch.no_grad():
             for batch_start in range(0, len(prompts), int(job.batch_size)):
-                batch_end = min(batch_start + int(job["batch_size"]), len(prompts))
+                batch_end = min(batch_start + int(job.batch_size), len(prompts))
                 starter_batch = prompts[batch_start:batch_end]
                 idx = torch.from_numpy(starter_batch).to(device, non_blocking=True)
 
@@ -446,9 +444,9 @@ def main() -> None:
     # Main sampling
     world_size = len(device_names)
     if world_size == 1:
-        sampling_worker(0, job)
+        sampling_worker(0, job, output_dir)
     else:
-        mp.spawn(sampling_worker, args=(job,), nprocs=world_size, join=True)
+        mp.spawn(sampling_worker, args=(job, output_dir), nprocs=world_size, join=True)
 
     sampling_elapsed_seconds = time.time() - sample_t0
     

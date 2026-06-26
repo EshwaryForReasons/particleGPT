@@ -62,7 +62,7 @@ class EUsageType(Enum):
     
 @dataclass
 class DecodeEventResult():
-    event: list = field(default_factory=list)
+    event: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     event_idx: int = -1
     success: bool = False
     failure_reason: str | None = None
