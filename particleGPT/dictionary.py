@@ -156,7 +156,7 @@ class FeatureBins:
         Ensures that the edges are valid and properly formatted. Makes sure edges is truly immutable.
         the frozen=True flag only ensure it can't be reassigned, not that the contents are immutable.
         """
-        edges = np.asarray(self.edges, dtype=np.float64, copy=True)
+        edges = np.array(self.edges, dtype=np.float64, copy=True)
 
         if edges.ndim != 1:
             raise ValueError(f"{self.name}: edges must be 1D, got shape {edges.shape}")

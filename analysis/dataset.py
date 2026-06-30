@@ -1,26 +1,13 @@
 
-import json
 from collections import Counter, defaultdict
-from types import SimpleNamespace
-from pathlib import Path
-import pickle
-import time
-# Math
-import math
 import numpy as np
-import pandas as pd
-from numba import njit, float64, types
-from numba.experimental import jitclass
-from numba.typed import Dict
-from scipy.signal import savgol_filter
+from numba import njit
 
 from particle import Particle
 import vector
-# particleGPT
+
 import pUtil
 from particleGPT.dictionary import Dictionary
-import data_manager
-import paths
 from analysis.plotting import plotting_v2
 
 class dataset:
@@ -78,9 +65,67 @@ class dataset:
     # ===================== 
     # Process data for various analysis 
     # =====================
-
+    
     @staticmethod
-    def extract_single_column_for_analysis(in_dataset, column_name, return_only_leading=False):
+    @njit("int64[:](float64[:,:,:])", cache=True, nogil=True)
+    def _get_num_secondaries(in_dataset: np.ndarray):
+        out = np.empty(in_dataset.shape[0], dtype=np.int64)
+        for event_idx in range(in_dataset.shape[0]):
+            count = 0
+            # Skip incident particle at index 0
+            for particle_idx in range(1, in_dataset.shape[1]):
+                pdgid = in_dataset[event_idx, particle_idx, 0]
+                # padding is at the end
+                if np.isnan(pdgid):
+                    break
+                count += 1
+            out[event_idx] = count
+        return out
+    
+    @staticmethod
+    @njit("float64[:](float64[:,:,:], int64)", cache=True, nogil=True)
+    def _get_column_from_leading_particle(in_dataset: np.ndarray, column_idx: np.int64):
+        in_dataset = in_dataset[:, 1:, :]
+        
+        n_events = in_dataset.shape[0]
+        n_particles = in_dataset.shape[1]
+        
+        # Max possible output length is one leading particle per event
+        out = np.empty(n_events, dtype=np.float64)
+        out_count = 0
+        
+        for event_idx in range(n_events):
+            best_particle_idx = -1
+            best_energy = -np.inf
+            
+            for particle_idx in range(n_particles):
+                energy = in_dataset[event_idx, particle_idx, 1]
+                
+                # Ignore padded / invalid particles
+                if np.isnan(energy):
+                    break # padding will be at the end, not in the middle
+                
+                if energy > best_energy:
+                    best_particle_idx = particle_idx
+                    best_energy = energy
+                        
+            out[out_count] = in_dataset[event_idx, best_particle_idx, column_idx]
+            out_count += 1
+        
+        return out[:out_count].copy()
+    
+    @staticmethod
+    @njit("float64[:](float64[:,:,:], int64)")
+    def _get_column_from_all_particles(in_dataset: np.ndarray, column_idx: np.int64):
+        in_dataset = in_dataset[:, 1:, :]
+        # Keep only column of interest and flatten the array to make it easier to remove padding events
+        secondaries_column = in_dataset[:, :, column_idx].ravel()
+        # Remove padding events (i.e. np.nan)
+        secondaries_column = secondaries_column[~np.isnan(secondaries_column)]
+        return secondaries_column
+    
+    @staticmethod
+    def extract_single_column_for_analysis(in_dataset: np.ndarray, column_name, return_only_leading=False):
         """
         Processes in_dataset for analysis. This includes
         1) Removing incident particle from dataset (i.e. only keeping outgoing particles)
@@ -94,36 +139,14 @@ class dataset:
         # @TODO: add verification that in_dataset is valid
         
         if column_name == 'num_particles':
-            num_secondaries_across_events = []
-            for event in in_dataset:
-                # event has shape (num_particles (including padded), num features per particle)
-                # Remove first particle (incident particle) and extract only pdgids since we only need one feature to test particle validity
-                event_pdgids = event[1:, 0]
-                valid_pdgids = event_pdgids[~np.isnan(event_pdgids)]
-                num_secondaires = len(valid_pdgids)
-                num_secondaries_across_events.append(num_secondaires)
-            return np.asarray(num_secondaries_across_events)
+            return dataset._get_num_secondaries(in_dataset)
         
         relevant_column_pos = plotting_v2.verbose_columns.index(column_name)
-        # Remove incident particle
-        secondaries = in_dataset[:, 1:, :]
         
         if return_only_leading:
-            # Extract energies for comparison
-            energies = secondaries[:, :, 1]
-            # Only consider events with at least one particle
-            valid_events = ~np.all(np.isnan(energies), axis=1)
-            leading_idx = np.nanargmax(energies[valid_events], axis=1)
-            leadings = secondaries[valid_events, :, :][np.arange(len(leading_idx)), leading_idx]
-            leadings_column = leadings[:, relevant_column_pos].ravel()
-            return leadings_column
-        
-        # Keep only column of interest
-        # Flatten the array to make it easier to remove padding events
-        secondaries_column = secondaries[:, :, relevant_column_pos].ravel()
-        # Remove padding events (i.e. np.nan)
-        secondaries_column = secondaries_column[~np.isnan(secondaries_column)]
-        return secondaries_column
+            return dataset._get_column_from_leading_particle(in_dataset, relevant_column_pos)
+        else:
+            return dataset._get_column_from_all_particles(in_dataset, relevant_column_pos)
             
     @classmethod
     def extract_ein_eout_for_analysis(cls, model_name, in_dataset):

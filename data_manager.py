@@ -1,9 +1,24 @@
+
+import json
 import numpy as np
+from numba import njit, prange
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from particle import Particle
 
-def load_geant4_dataset(dataset_filepath, flattened_events=False, pad_token=np.nan):
+import paths
+import particleGPT.quickmaths as quickmaths
+
+NUM_FEATURES_PER_PARTICLE_RAW = 5
+
+
+
+def _get_metadata_filename(data_filepath: Path):
+    """For the sake of consistency"""
+    return f'{data_filepath.name}.json'
+
+def _load_geant4_dataset_csv(dataset_filepath, flattened_events=False, pad_token=np.nan):
     """
     Ultra-fast loader for Geant4 MC dataset files.
     a Geant4 dataset refers to data in the format "pdgid e px py pz; pdgid e px py pz; ...".
@@ -15,7 +30,6 @@ def load_geant4_dataset(dataset_filepath, flattened_events=False, pad_token=np.n
 
     all_data = []
     lengths = []
-    num_features = 5
 
     with open(dataset_filepath, 'r') as f:
         for line in f:
@@ -27,24 +41,98 @@ def load_geant4_dataset(dataset_filepath, flattened_events=False, pad_token=np.n
             if floats.size == 0:
                 continue
 
-            reshaped = floats.reshape(-1, num_features)
+            reshaped = floats.reshape(-1, NUM_FEATURES_PER_PARTICLE_RAW)
             all_data.append(reshaped)
             lengths.append(reshaped.shape[0])
 
     if not all_data:
-        return np.empty((0, 0, num_features), dtype=np.float64)
+        return np.empty((0, 0, NUM_FEATURES_PER_PARTICLE_RAW), dtype=np.float64)
 
     max_particles = max(lengths)
     n_events = len(all_data)
 
     # Preallocate final array and copy using slice assignment
-    result = np.full((n_events, max_particles, num_features), pad_token, dtype=np.float64)
+    result = np.full((n_events, max_particles, NUM_FEATURES_PER_PARTICLE_RAW), pad_token, dtype=np.float64)
     for i, (ev, length) in enumerate(zip(all_data, lengths)):
         result[i, :length, :] = ev
 
     if flattened_events:
         return result.reshape(n_events, -1)
     return result
+
+def load_geant4_dataset(dataset_filepath: Path, flattened_events: bool = False, pad_token=np.nan):
+    metadata_filepath = dataset_filepath.parent / _get_metadata_filename(dataset_filepath)
+    if not metadata_filepath.exists():
+        # @TODO: Metadata should not be required if the format is a .csv, but should be supported for faster loading
+        raise RuntimeError("Metadata not found! Support for running this without accompanying metadata is planned for the future!")
+    
+    with metadata_filepath.open('r') as f:
+        metadata = json.load(f)
+    
+    num_events = metadata['num_events']
+    num_particles_max = metadata['num_particles_max']
+    
+    match dataset_filepath.suffix:
+        case ".csv":
+            data = _load_geant4_dataset_csv(dataset_filepath, flattened_events=flattened_events, pad_token=pad_token)
+        case ".bin":
+            # np.fromfile because we want a clone of the data; np.memmap would modify the data if we change it.
+            data = np.fromfile(dataset_filepath, dtype=np.float64)
+            data = data.reshape(num_events, num_particles_max, NUM_FEATURES_PER_PARTICLE_RAW)
+        case ".npy":
+            data = np.load(dataset_filepath)
+            data = data.reshape(num_events, num_particles_max, NUM_FEATURES_PER_PARTICLE_RAW)
+        case __:
+            raise NotImplementedError("This file format is not supported!")
+
+    return data
+
+def save_geant4_dataset(dataset, output_filepath: Path):
+    """
+    Saves data to specified file format in the shape of (pdgid, e, px, py, pz)
+    """
+    
+    num_events = len(dataset)
+    num_particles_max = 0
+    match output_filepath.suffix:
+        case ".csv":
+            with open(output_filepath, "w") as output:
+                for event in dataset:
+                    event_len = len(event)
+                    if event_len % NUM_FEATURES_PER_PARTICLE_RAW != 0:
+                        raise RuntimeError(f"Event length is incorrect, must be a multiple of {NUM_FEATURES_PER_PARTICLE_RAW}, current length = {len(event)}")
+                    
+                    num_particles = int(event_len // NUM_FEATURES_PER_PARTICLE_RAW)
+                    if num_particles > num_particles_max:
+                        num_particles_max = num_particles
+                    
+                    for start in range(0, event_len, NUM_FEATURES_PER_PARTICLE_RAW):
+                        pdgid, energy, px, py, pz = event[start:start + 5]
+                        output.write(f"{int(pdgid)} {energy:.5f} {px:.5f} {py:.5f} {pz:.5f};")
+                        
+                    output.write("\n")
+        case ".bin":
+            dataset = quickmaths.pad_jagged_1d_fast(dataset)
+            dataset.tofile(output_filepath)
+            num_particles_max = int(dataset.shape[1] // NUM_FEATURES_PER_PARTICLE_RAW)
+        case ".npy":
+            dataset = quickmaths.pad_jagged_1d_fast(dataset)
+            np.save(output_filepath, dataset)
+            num_particles_max = int(dataset.shape[1] // NUM_FEATURES_PER_PARTICLE_RAW)
+        case __:
+            raise NotImplementedError("This output format is not supported!")
+        
+    metadata = {
+        "output_data_filepath": paths.project_relative_path(output_filepath),
+        "num_events": num_events,
+        "num_particles_max": num_particles_max
+    }
+    
+    output_metadata_filepath = output_filepath.parent / _get_metadata_filename(output_filepath)
+    with output_metadata_filepath.open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=4)
+    print(f"Wrote metadata: {output_metadata_filepath}")
+    
 
 def load_verbose_dataset(dataset_filepath, flattened_events=False, pad_token=np.nan):
     """
@@ -163,32 +251,3 @@ def convert_data_features_to_4vector(input_data, pad_token=np.nan):
     
     np.nan_to_num(output_data, copy=False, nan=pad_token)
     return output_data
-
-def convert_to_verbose_particles(untokenized_data):
-    """
-    Convert raw-style particles into the verbose analysis layout.
-    
-    Input rows are expected to contain:
-        pdgid, e, px, py, pz
-    Output rows contain the columns expected by analysis_v2.plotting:
-        pdgid, e, px, py, pz, pt, eta, theta, phi
-    """
-    
-    NUM_FEATURES_PER_PARTICLE_VERBOSE = 9
-    verbose_data = np.full(shape=(untokenized_data.shape[0], untokenized_data.shape[1], NUM_FEATURES_PER_PARTICLE_VERBOSE), fill_value=np.nan, dtype=np.float64)
-    for idx_e, event in enumerate(untokenized_data):
-        for idx_p, particle in enumerate(event):
-            pdgid = particle[0]
-            if np.isnan(pdgid):
-                continue
-            
-            pdgid, e, px, py, pz = particle
-            r = np.sqrt(px * px + py * py + pz * pz)
-            pt = np.sqrt(px * px + py * py)
-            theta = np.arccos(np.clip(pz / r, -1.0, 1.0)) if r != 0 else 0
-            phi = np.arctan2(py, px)
-            eta = -np.log(np.tan(theta / 2)) if theta != 0 else np.inf
-            
-            verbose_data[idx_e, idx_p] = [pdgid, e, px, py, pz, pt, eta, theta, phi]
-    
-    return verbose_data

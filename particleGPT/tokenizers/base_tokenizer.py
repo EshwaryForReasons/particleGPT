@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+import paths
+import data_manager
+from paths import path_constants as pc
 from particleGPT.dictionary import Dictionary
 
 NUM_FEATURES_PER_PARTICLE_RAW = 5
@@ -271,7 +274,7 @@ class BaseTokenizer():
     # Decoding
     # =====================
     
-    def decode_dataset(self, sampled_data_filepath: Path):
+    def decode_dataset_from_file(self, sampled_data_filepath: Path):
         """
         For the time being, I am not worried about memory usage. We do not decode enough events for now.
         @TODO: implement a memory-efficient decoding method later on.
@@ -281,13 +284,29 @@ class BaseTokenizer():
             raise FileNotFoundError(f"Sampled data file does not exist: {sampled_data_filepath}")
         self.input_data_filepath = sampled_data_filepath
         
-        self.usage_type = EUsageType.EDecoder
-        self.build_caches()
-        
         # ===== Decode dataset =====
         
         # @TODO: make this load binary data using the datatype stored by sample once I make sampler output binary data
-        data = np.loadtxt(sampled_data_filepath, delimiter=' ', dtype=np.int32)
+        match sampled_data_filepath.suffix:
+            case ".csv":
+                data = np.loadtxt(sampled_data_filepath, delimiter=' ', dtype=np.int32)
+            case ".bin":
+                data = np.memmap(sampled_data_filepath, mode='r', dtype=np.int32)
+            case __:
+                raise NotImplementedError("This filetype is not support for datasets!")
+        
+        self.decode_dataset(data)
+        
+    def decode_dataset(self, data: np.ndarray):
+        """
+        For the time being, I am not worried about memory usage. We do not decode enough events for now.
+        Decode data provided as an np.ndarray. Does not require reading files.
+        @TODO: implement a memory-efficient decoding method later on.
+        """
+        
+        self.usage_type = EUsageType.EDecoder
+        self.build_caches()
+        
         # In principle, this will handle packed streams as well as even per row.
         # More precisely, this converts the input to a packed stream and decodes it
         data_flat = data.ravel()
@@ -307,7 +326,7 @@ class BaseTokenizer():
             decoded_events.append(decode_result.event)
             self.total_events_written += 1
             self.total_tokens_written += len(decode_result.event)
-        
+            
         self.decoded_dataset = decoded_events
         self.failed_events = failed_events
     
@@ -428,57 +447,68 @@ class BaseTokenizer():
                 "EventPerSequenceParticleFeatureTokenizer should have num_events == num_sequences since its one event per sequence."
             )
     
-    def save_data(self, output_data_filepath: Path, skip_write_metadata: bool=False):
-        # @TODO: implement ways to save into different formats, i.e .bin, .csv, .npy for each case
-        
-        if self.usage_type == EUsageType.ENONE:
-            raise RuntimeError("usage_type was not set! Has the tokenizer been used yet?")
-        
-        self.output_data_filepath = output_data_filepath
-        
-        if self.usage_type == EUsageType.EEncoder:
-            # Simply copy the flattened file to the final filepath
-            concat_data_filepath = self.temp_dir / 'concatenated_data.bin'
-            concat_lens_filepath = self.temp_dir / 'concatenated_lens.bin'
+    
+    def _save_data_encoder(self):
+        match self.output_data_filepath.suffix:
+            case ".csv":
+                raise NotImplementedError(".csv files are not supported!")
+            case ".bin":
+                # Simply copy the flattened file to the final filepath
+                concat_data_filepath = self.temp_dir / 'concatenated_data.bin'
+                concat_lens_filepath = self.temp_dir / 'concatenated_lens.bin'
 
-            self.output_lens_filepath = self.output_data_filepath.parent / 'tokenized_lens.bin'
-            shutil.copyfile(concat_data_filepath, self.output_data_filepath)
-            shutil.copyfile(concat_lens_filepath, self.output_lens_filepath)
-
-            # in case the user wants to save it in a location of their choice they can call the function directly
-            if not skip_write_metadata:
-                output_metadata_filepath = self.output_data_filepath.parent / 'tokenized_data.bin.json'
-                self.write_metadata(output_metadata_filepath)
-        elif self.usage_type == EUsageType.EDecoder:
-            # Write main decoded data file
-            with open(self.output_data_filepath, "w") as output:
-                for event in self.decoded_dataset:
-                    if len(event) % NUM_FEATURES_PER_PARTICLE_RAW != 0:
-                        raise RuntimeError(f"Event length is incorrect, must be a multiple of {NUM_FEATURES_PER_PARTICLE_RAW}, current length = {len(event)}")
-                    
-                    for start in range(0, len(event), NUM_FEATURES_PER_PARTICLE_RAW):
-                        pdgid, energy, px, py, pz = event[start:start + 5]
-                        output.write(f"{int(pdgid)} {energy:.5f} {px:.5f} {py:.5f} {pz:.5f};")
-                        
-                    output.write("\n")
+                self.output_lens_filepath = self.output_data_filepath.parent / 'tokenized_lens.bin'
+                shutil.copyfile(concat_data_filepath, self.output_data_filepath)
+                shutil.copyfile(concat_lens_filepath, self.output_lens_filepath)
+            case ".npy":
+                raise NotImplementedError(".npy files are not supported!")
+            case __:
+                raise NotImplementedError("This output format is not supported!")
             
-            # Write invalid events file
-            failed_dict = []
-            for fe in self.failed_events:
-                failed_dict.append({
-                    'event_idx': fe.event_idx,
-                    'failure_reason': fe.failure_reason,
-                    'event_row': " ".join(str(v) for v in fe.event),
-                })
-                
+    def _dataset_padder(self, in_dataset):
+        # pad the dataset to convert to np.array
+        max_particle_count = np.max(len(e) for e in in_dataset)
+        max_values_count = max_particle_count * NUM_FEATURES_PER_PARTICLE_RAW
+        for i, e in in_dataset:
+            pad_shape = (0, max_values_count - len(e))
+            in_dataset[i] = np.pad(e, pad_shape, "constant")
+        return np.array(in_dataset)
+        
+    def _save_data_decoder(self):
+        data_manager.save_geant4_dataset(self.decoded_dataset, self.output_data_filepath)
+            
+        # Write invalid events file
+        failed_dict = []
+        for fe in self.failed_events:
+            failed_dict.append({
+                'event_idx': fe.event_idx,
+                'failure_reason': fe.failure_reason,
+                'event_row': " ".join(str(v) for v in fe.event),
+            })
+        
+        if self.invalid_data_filepath is None:
             self.invalid_data_filepath = self.output_data_filepath.parent / 'invalid_token_events.json'
-            with self.invalid_data_filepath.open('w') as invalid_out:
-                json.dump(failed_dict, invalid_out, indent=4)
-            
-            # in case the user wants to save it in a location of their choice they can call the function directly
-            if not skip_write_metadata:
-                output_metadata_filepath = self.output_data_filepath.parent / 'untokenized_samples_metadata.json'
-                self.write_metadata(output_metadata_filepath)
+        with self.invalid_data_filepath.open('w') as invalid_out:
+            json.dump(failed_dict, invalid_out, indent=4)
+    
+    def save_data(self, output_data_filepath: Path, invalid_data_filepath: Path | None = None, skip_write_metadata: bool = False):
+        self.output_data_filepath = output_data_filepath
+        self.invalid_data_filepath = invalid_data_filepath
+        
+        match self.usage_type:
+            case EUsageType.EEncoder:
+                self._save_data_encoder()
+                output_metadata_filepath = self.output_data_filepath.parent / 'tokenized_data.bin.json'
+            case EUsageType.EDecoder:
+                self._save_data_decoder()
+                output_metadata_filepath = self.output_data_filepath.parent / paths.as_json(pc.samples_decoded_filename)
+            case EUsageType.ENONE:
+                raise RuntimeError("usage_type was not set! Has the tokenizer been used yet?")
+        
+        # in case the user wants to save it in a location of their choice they can call the function directly
+        if not skip_write_metadata:
+            self.write_metadata(output_metadata_filepath)
+        
         
     def write_metadata(self, output_metadata_filepath: Path):
         """
@@ -506,10 +536,25 @@ class BaseTokenizer():
                 "dictionary_filepath":  str(paths.project_relative_path(self.dictionary.dictionary_filename))
             }
         elif self.usage_type == EUsageType.EDecoder:
+            input_data_source = (
+                paths.project_relative_path(self.input_data_filepath)
+                if self.input_data_filepath is not None and self.input_data_filepath.exists()
+                else "none"
+            )
+            output_data_loc = (
+                paths.project_relative_path(self.output_data_filepath)
+                if self.output_data_filepath is not None and self.output_data_filepath.exists()
+                else "none"
+            )
+            invalid_events_loc = (
+                paths.project_relative_path(self.invalid_data_filepath)
+                if self.invalid_data_filepath is not None and self.invalid_data_filepath.exists()
+                else "none"
+            )
             metadata = {
-                "input_data_filepath": paths.project_relative_path(self.input_data_filepath),
-                "output_data_filepath": paths.project_relative_path(self.output_data_filepath),
-                "invalid_events_filepath": paths.project_relative_path(self.invalid_data_filepath),
+                "input_data_filepath": input_data_source,
+                "output_data_filepath": output_data_loc,
+                "invalid_events_filepath": invalid_events_loc,
                 "tokenization_schema": self.dictionary.tokenization_schema,
                 # "float_precision": self.float_precision, @TODO: implement this
                 "total_events_written": self.total_events_written,

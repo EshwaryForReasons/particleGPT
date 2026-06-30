@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import warnings
 
 import paths
+from paths import path_constants as pc
 import pUtil
 import data_manager
 from analysis.dataset import dataset
@@ -34,76 +35,39 @@ from particleGPT.tokenizers import (
     # EventPerSequenceWholeParticleTokenizer,
     PackedEventStreamParticleFeatureTokenizer,
 )
+import particleGPT.quickmaths as quickmaths
 
 class Analyzer:
     
-    def __init__(self, model_name):
-        self.model_name = model_name
-        self.latest_sampling_dir = pUtil.get_latest_sampling_dir(self.model_name)
-
-        if conf.generic.preparation_config_file is None:
-            raise ValueError("preparation_config_file in configuration cannot be None!")
-        self.preparation_config_filepath = paths.PROJECT_DIR / conf.generic.preparation_config_file
-        if not self.preparation_config_filepath.exists():
-            raise FileNotFoundError(f"Preparation config file does not exist: {self.preparation_config_filepath}")
-        self.dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, self.preparation_config_filepath)
-
-        # The tokenized metadata stores the dictionary path relative to PROJECT_DIR.
-        # Reuse the untokenizer's resolver so analysis and untokenization agree.
-        self.real_test_tokens_filepath                  = self.latest_sampling_dir / 'real_test_tokens.csv'
-        self.real_test_untokenized_filepath             = self.latest_sampling_dir / 'real_test_untokenized_samples.csv'
-        self.real_test_untokenizing_metadata_filepath   = self.latest_sampling_dir / 'real_test_untokenizing_metadata.json'
-        self.real_test_invalid_tokens_filepath          = self.latest_sampling_dir / 'real_test_invalid_token_events.json'
-        self.generated_samples_filepath                 = self.latest_sampling_dir / untokenizer.DEFAULT_INPUT_CSV_NAME
-        self.filtered_samples_filepath                  = self.latest_sampling_dir / 'filtered_samples.csv'
-        self.sampled_leading_particles_filepath         = self.latest_sampling_dir / 'sampled_leading_particles.csv'
-        self.verbose_particles_filepath                 = self.latest_sampling_dir / 'untokenized_samples_verbose.csv'
-        self.untokenized_samples_filepath               = self.latest_sampling_dir / untokenizer.DEFAULT_OUTPUT_CSV_NAME
-        self.untokenizing_metadata_filepath             = self.latest_sampling_dir / untokenizer.DEFAULT_METADATA_NAME
-        self.invalid_tokens_filepath                    = self.latest_sampling_dir / untokenizer.DEFAULT_INVALID_TOKENS_NAME
-        self.metrics_results_filepath                   = self.latest_sampling_dir / 'metrics_results.json'
-        self.sampling_metadata_filepath                 = self.latest_sampling_dir / 'sampling_metadata.json'
-        self.plotted_distributions_dir                  = self.latest_sampling_dir / 'plotted_distributions'
-
-        if self.sampling_metadata_filepath.exists():
-            try:
-                with open(self.sampling_metadata_filepath, 'r') as f:
-                    self.sampling_metadata = json.load(f)
-            except Exception as exc:
-                raise RuntimeError(f"Failure while trying to load json from {self.sampling_metadata_filepath}! Exception:\n{exc}") from exc
-
-            final_csv_path = self.sampling_metadata.get('output_filepath', None)
-            if final_csv_path is not None:
-                final_csv_path = paths.PROJECT_DIR / Path(final_csv_path)
-                if final_csv_path.exists():
-                    self.generated_samples_filepath = final_csv_path
-        else:
-            self.sampling_metadata = {}
-
-        if not self.generated_samples_filepath.exists():
-            raise FileNotFoundError(f'generated_samples_filepath does not exist: {self.generated_samples_filepath}')
-
+    def __init__(self, metadata_filepath: Path):
+        self.sampling_metadata_filepath = metadata_filepath
+        if not self.sampling_metadata_filepath.exists():
+            raise FileNotFoundError(f"Sampling metadata file not found at {self.sampling_metadata_filepath}")
+        self.latest_sampling_dir = self.sampling_metadata_filepath.parent
+        
+        with self.sampling_metadata_filepath.open('r') as f:
+            self.sampling_metadata = json.load(f)
+        config_filepath = Path(self.sampling_metadata['config_filepath'])
+        with config_filepath.open('r') as f:
+            config_data = json.load(f)
+        preparation_conf_filepath = Path(config_data['preparation_config_file'])
+        self.dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_conf_filepath)
+        
+        self.dictionary = Dictionary(self.dls_conf.tmd_conf.dictionary_filepath)
+        
+        # @TODO: this is a horrible temporary solution to make the other libraries work for now
+        conf.main(config_filepath)
+        
+        self.model_name = self.sampling_metadata["model_name"]
+        
         raw_start, raw_end = self.dls_conf.get_raw_tokens_range()
         self.test_split_start_token_idx = raw_start
         self.test_split_end_token_idx = raw_end
-        self.dictionary = pUtil.get_dictionary(conf.generic.preparation_config_file)
 
-
-    def generate_verbose_particle_information(self):
-        if not self.untokenized_samples_filepath.exists():
-            raise FileNotFoundError(f'untokenized_samples_filepath does not exist: {self.untokenized_samples_filepath}')
-
-        untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filepath, pad_token=np.nan)
-        verbose_data = data_manager.convert_to_verbose_particles(untokenized_data)
-
-        with open(self.verbose_particles_filepath, 'w') as out_file:
-            for event in verbose_data:
-                for particle in event:
-                    pdgid, e, px, py, pz, pt, eta, theta, phi = particle
-                    if np.isnan(pdgid):
-                        continue
-                    out_file.write(f'{int(pdgid)} {e:.5f} {px:.5f} {py:.5f} {pz:.5f} {pt:.5f} {eta:.5f} {theta:.5f} {phi:.5f};')
-                out_file.write('\n')
+        self.samples_decoded_filepath                   = self.latest_sampling_dir / paths.as_bin(pc.samples_decoded_filename)
+        self.real_test_decoded_filepath                 = self.latest_sampling_dir / paths.as_bin(pc.real_test_decoded_filepath)
+        self.real_test_decoded_invalid_events_filepath  = self.latest_sampling_dir / paths.as_json(pc.real_test_decoded_invalid_events_filepath)
+        self.plotted_distributions_dir                  = self.latest_sampling_dir / 'plotted_distributions'
 
     def generate_real_test_data(self):
         """
@@ -114,39 +78,22 @@ class Analyzer:
         every sampling run has its own matching real-token and real-untokenized
         files.
         """
-        total_starters = self.sampling_metadata.get('total_starters', None)
-        if total_starters is None:
-            with open(self.generated_samples_filepath) as gen_samples_file:
-                total_starters = sum(1 for event in gen_samples_file if event.strip() != '')
-        num_test_sequences = min(int(total_starters), int(self.dls_conf.num_sequences))
+        
+        num_sample_sequences = self.sampling_metadata['num_sample_sequences']
+        if num_sample_sequences > self.dls_conf.num_sequences:
+            raise ValueError("More sequences were sampled than the test split can provide! Please double check this.")
 
-        data = np.memmap(self.dls_conf.tmd_conf.tokenized_data_filepath, dtype=self.dls_conf.tmd_conf.dtype, mode='r')
         token_start = self.test_split_start_token_idx
-        token_end = token_start + num_test_sequences * self.dls_conf.tmd_conf.sequence_length
+        token_end = token_start + num_sample_sequences * self.dls_conf.tmd_conf.sequence_length
         if token_end > self.test_split_end_token_idx:
             raise ValueError(f"Requested real test token_end={token_end}, but test split ends at {self.test_split_end_token_idx}.")
-
-        tokenized_data = data[token_start:token_end].reshape(num_test_sequences, self.dls_conf.tmd_conf.sequence_length)
-        with open(self.real_test_tokens_filepath, 'w') as real_test_tokens_file:
-            for event in tokenized_data:
-                real_test_tokens_file.write(' '.join(str(int(token)) for token in event) + '\n')
+        tokenized_data = np.memmap(self.dls_conf.tmd_conf.tokenized_data_filepath, dtype=self.dls_conf.tmd_conf.dtype, mode='r')
+        tokenized_data = tokenized_data[token_start:token_end]
 
         # Untokenize real test data
-        tokenizer_class_str = self.dls_conf.tmd_conf.tokenizer_class
-        selected_tokenizer_class = None
-        match tokenizer_class_str:
-            case "EventPerSequenceParticleFeatureTokenizer":
-                selected_tokenizer_class = EventPerSequenceParticleFeatureTokenizer
-            case "PackedEventStreamParticleFeatureTokenizer":
-                selected_tokenizer_class = PackedEventStreamParticleFeatureTokenizer
-        
-        if selected_tokenizer_class is None:
-            raise ValueError(f"Could not determine untokenizer for tokenizer class {tokenizer_class_str}.")
-        
-        temp_dir=paths.PROJECT_DIR / 'data' / 'tokenized' / self.dictionary.tokenization_name / 'temp'
-        tokenizer = selected_tokenizer_class(dictionary=self.dictionary, temp_dir=None)
-        tokenizer.decode_dataset(self.real_test_tokens_filepath)
-        tokenizer.save_data(self.real_test_untokenized_filepath)
+        tokenizer = self.dls_conf.tmd_conf.tokenizer_class(dictionary=self.dictionary, temp_dir=None)
+        tokenizer.decode_dataset(tokenized_data)
+        tokenizer.save_data(self.real_test_decoded_filepath, self.real_test_decoded_invalid_events_filepath, skip_write_metadata=True)
 
     def extract_energy_conservation_for_analysis(self, in_dataset):
         """
@@ -169,18 +116,17 @@ class Analyzer:
         load_data_by_model_names(...) step, so this method loads the real and
         generated files explicitly before plotting.
         """
-        if not self.untokenized_samples_filepath.exists():
-            raise FileNotFoundError(f'untokenized_samples_filepath does not exist: {self.untokenized_samples_filepath}')
-        if not self.real_test_untokenized_filepath.exists():
-            # raise FileNotFoundError(f'real_test_untokenized_filepath does not exist: {self.real_test_untokenized_filepath}')
-            self.generate_real_test_data()
+        if not self.samples_decoded_filepath.exists():
+            raise FileNotFoundError(f'untokenized_samples_filepath does not exist: {self.samples_decoded_filepath}')
+        # if not self.real_test_decoded_filepath.exists():
+        self.generate_real_test_data()
 
         self.plotted_distributions_dir.mkdir(parents=True, exist_ok=True)
 
-        real_data = data_manager.load_geant4_dataset(self.real_test_untokenized_filepath, pad_token=np.nan)
-        generated_data = data_manager.load_geant4_dataset(self.untokenized_samples_filepath, pad_token=np.nan)
-        real_verbose_data = data_manager.convert_to_verbose_particles(real_data)
-        generated_verbose_data = data_manager.convert_to_verbose_particles(generated_data)
+        real_data = data_manager.load_geant4_dataset(self.real_test_decoded_filepath, pad_token=np.nan)
+        generated_data = data_manager.load_geant4_dataset(self.samples_decoded_filepath, pad_token=np.nan)
+        real_verbose_data = quickmaths.convert_to_verbose_particles(real_data)
+        generated_verbose_data = quickmaths.convert_to_verbose_particles(generated_data)
         model_legend_titles = ['Geant4', self.model_name]
 
         real_leading_pdgid = dataset.extract_single_column_for_analysis(real_verbose_data, 'pdgid', return_only_leading=True)
@@ -328,6 +274,7 @@ class Analyzer:
             )
             plt.close(fig)
 
+
     def get_real_jets(self):
         # =====================
         # Preparing real Jet data
@@ -335,7 +282,7 @@ class Analyzer:
         # =====================
 
         self.generate_real_test_data()
-        untokenized_data = data_manager.load_geant4_dataset(self.real_test_untokenized_filepath, pad_token=0.0)
+        untokenized_data = data_manager.load_geant4_dataset(self.real_test_decoded_filepath, pad_token=0.0)
         angular_real_data = data_manager.convert_data_4vector_to_features(untokenized_data, pad_token=0.0)
 
         accumulated_data = []
@@ -354,11 +301,11 @@ class Analyzer:
         # Features for jet in JetNet is (eta, phi, pT), in that order
         # =====================
 
-        if not self.untokenized_samples_filepath.exists():
-            raise FileNotFoundError(f'untokenized_samples_filepath does not exist: {self.untokenized_samples_filepath}')
+        if not self.samples_decoded_filepath.exists():
+            raise FileNotFoundError(f'untokenized_samples_filepath does not exist: {self.samples_decoded_filepath}')
 
         # Since untokenized samples file uses the same format as Geant4
-        untokenized_data = data_manager.load_geant4_dataset(self.untokenized_samples_filepath, pad_token=0.0)
+        untokenized_data = data_manager.load_geant4_dataset(self.samples_decoded_filepath, pad_token=0.0)
         angular_untokenized_data = data_manager.convert_data_4vector_to_features(untokenized_data, pad_token=0.0)
 
         accumulated_data = []
@@ -439,48 +386,27 @@ class Analyzer:
             "w1p_avg_pt_std": w1p_avg_pt_std,
         }
 
-        with open(self.metrics_results_filepath, "w") as opt_file:
+        with open(self.latest_sampling_dir / paths.as_json(pc.samples_metrics_results_filename), "w") as opt_file:
             json.dump(metrics_results_dict, opt_file, indent=4)
 
 
 def untokenize_generated_data(sampling_metadata_filepath: Path):
     # Load sampling metadata to get tokenized_metadata_file
-    if not sampling_metadata_filepath.exists():
-        raise FileNotFoundError(f"Sampling metadata file not found at {sampling_metadata_filepath}")
     with sampling_metadata_filepath.open('r') as f:
         sampling_metadata = json.load(f)
-    tokenized_metadata_filepath = Path(sampling_metadata['tokenized_metadata_filepath'])
-    generated_samples_filepath = Path(sampling_metadata['output_filepath'])
     
-    if not generated_samples_filepath.exists():
+    samples_filename = Path(sampling_metadata['output_filepath'])
+    if not samples_filename.exists():
         raise FileNotFoundError("Generated samples.csv needs to exist before they can be untokenized!")
     
-    # Load tokenized metadata file to get the dictionary_file
-    if not tokenized_metadata_filepath.exists():
-        raise FileNotFoundError(f"Tokenized metadata file not found at {tokenized_metadata_filepath}")
-    with tokenized_metadata_filepath.open('r') as f:
-        tokenized_metadata = json.load(f)
+    tokenized_metadata_filepath = Path(sampling_metadata['tokenized_metadata_filepath'])
     tmd_conf = TokenizedMetadataConfig(tokenized_metadata_filepath)
-        
-    dictionary_filepath = Path(tokenized_metadata["dictionary_filepath"])
-    dictionary = Dictionary(dictionary_filepath)
+    dictionary = Dictionary(tmd_conf.dictionary_filepath)
     
-    tokenizer_class_str =  tmd_conf.tokenizer_class
-    selected_tokenizer_class = None
-    match tokenizer_class_str:
-        case "EventPerSequenceParticleFeatureTokenizer":
-            selected_tokenizer_class = EventPerSequenceParticleFeatureTokenizer
-        case "PackedEventStreamParticleFeatureTokenizer":
-            selected_tokenizer_class = PackedEventStreamParticleFeatureTokenizer
-    
-    if selected_tokenizer_class is None:
-        raise ValueError(f"Could not determine untokenizer for tokenizer class {tokenizer_class_str}.")
-    
-    untokenized_samples_filepath = sampling_metadata_filepath.parent / 'untokenized_samples.csv'
-    temp_dir = paths.PROJECT_DIR / 'data' / 'tokenized' / dictionary.tokenization_name / 'temp'
-    tokenizer = selected_tokenizer_class(dictionary=dictionary, temp_dir=None)
-    tokenizer.decode_dataset(generated_samples_filepath)
-    tokenizer.save_data(untokenized_samples_filepath)
+    samples_decoded_filepath = sampling_metadata_filepath.parent / paths.as_csv(pc.samples_decoded_filename)
+    tokenizer = tmd_conf.tokenizer_class(dictionary=dictionary, temp_dir=None)
+    tokenizer.decode_dataset_from_file(samples_filename)
+    tokenizer.save_data(samples_decoded_filepath)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Handles the analysis of generated particle data. Assumes the model has been sampled already.")
@@ -506,19 +432,14 @@ if __name__ == "__main__":
     if args.no_metrics:
         print("Skipping metric calculations.")
     
-    print(f'Analyzing model {conf.generic.model_name}')
+    print(f'Analyzing sampled data at {sampling_metadata_filepath.parent}')
 
-    
     # Untokenize data
     if not args.no_untokenize:
         print("Untokenizing data")
         untokenize_generated_data(sampling_metadata_filepath)
         
-    dataset_analyzer = Analyzer(conf.generic.model_name)
-    
-    # Generate verbose data
-    print("Generating verbose particle information")
-    dataset_analyzer.generate_verbose_particle_information()
+    dataset_analyzer = Analyzer(sampling_metadata_filepath)
     
     # Generate distributions
     if not args.no_distributions:

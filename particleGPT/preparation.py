@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from enum import Enum
-
 import numpy as np
+
+import pUtil
 import particleGPT.configurator as conf
 
 class ESplitTypes(Enum):
@@ -49,7 +50,8 @@ class TokenizedMetadataConfig():
         self.dictionary_filepath = Path(tokenized_mdata_json["dictionary_filepath"])
         self.tokenized_data_filepath = Path(tokenized_mdata_json["output_data_filepath"])
         
-        self.tokenizer_class = str(tokenized_mdata_json["tokenizer_class"])
+        tokenizer_class_str = str(tokenized_mdata_json["tokenizer_class"])
+        self.tokenizer_class = pUtil.tokenizer_class_from_str(tokenizer_class_str)
         
         # ===== Make sure all derived values are reasonable (i.e. not None, out-of-bounds, etc.) =====
         

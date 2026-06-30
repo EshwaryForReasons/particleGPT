@@ -24,7 +24,7 @@ class GenericConfiguration:
     bin_value_embd_init_scale:  float = 0.0
     
     # Important; must have
-    preparation_config_file:    str | None = None
+    preparation_config_file:    Path | None = None
 
 @dataclass
 class TrainingConfiguration:
@@ -194,15 +194,16 @@ def perform_configuration(config_file_path):
     
     return generic, training, sampling
 
-# Configurator should only run if a config file is provided as an argument.
-# All expected exceptions will be handled here.
-arg_one_exceptions = [ '--help', '-h', 'all', 'single_threaded', '--benchmark']
-if not len(sys.argv) > 1:
-    print("WARNING: No config file or options provided.")
-else:
+
+
+def main(config_filepath):
+    global generic
+    global training
+    global sampling
+    arg_one_exceptions = [ '--help', '-h', 'all', 'single_threaded', '--benchmark']
     # Assume first argument is config file path
-    if sys.argv[1] not in arg_one_exceptions:
-        config_file_path = sys.argv[1]
+    if config_filepath not in arg_one_exceptions:
+        config_file_path = config_filepath
         generic, training, sampling = perform_configuration(config_file_path)
         
         # Handle legacy context_events alias
@@ -211,3 +212,11 @@ else:
     
     if '--benchmark' in sys.argv:
         training.meta_benchmarking = True
+
+if __name__ == "__main__":
+    # Configurator should only run if a config file is provided as an argument.
+    # All expected exceptions will be handled here.
+    if not len(sys.argv) > 1:
+        print("WARNING: No config file or options provided.")
+    else:
+        main(sys.argv[1])

@@ -4,9 +4,14 @@ import re
 from pathlib import Path
 import paths
 import particleGPT.configurator as conf
-from particleGPT.preparation import ESplitTypes, DataloaderSplitConfig
+from particleGPT.preparation import ESplitTypes, DataloaderSplitConfig, TokenizedMetadataConfig
 from particleGPT.dictionary import Dictionary
 from pydantic import validate_call
+
+from particleGPT.tokenizers import (
+    EventPerSequenceParticleFeatureTokenizer,
+    PackedEventStreamParticleFeatureTokenizer,
+)
 
 script_dir = Path(__file__).resolve().parent
 
@@ -18,21 +23,30 @@ PREPARATIONS_DIR_NAME = 'preparations'
 TEMP_DIR_NAME = 'temp'
 
 
-def get_dictionary(preparation_config_filepath: Path) -> Dictionary:
+def get_dictionary(preparation_config_filepath: Path | str) -> Dictionary:
     """
     Load the dictionary for the current configured tokenized dataset.
 
     The dictionary path is resolved from tokenized metadata, not from the old
     preparation directory.
     """
-    preparation_config_filepath = paths.PROJECT_DIR / preparation_config_filepath
+    preparation_config_filepath = paths.PROJECT_DIR / Path(preparation_config_filepath)
     dls_conf = DataloaderSplitConfig(ESplitTypes.TEST, preparation_config_filepath)
-    if not dls_conf.tmd_conf.dictionary_filepath.exists():
-        raise FileNotFoundError(f"Dictionary file does not exist: {dls_conf.tmd_conf.dictionary_filepath}")
-    
     dictionary = Dictionary(dls_conf.tmd_conf.dictionary_filepath)
     return dictionary
 
+
+def tokenizer_class_from_str(tokenizer_class: str):
+    selected = None
+    match tokenizer_class:
+        case "EventPerSequenceParticleFeatureTokenizer":
+            selected = EventPerSequenceParticleFeatureTokenizer
+        case "PackedEventStreamParticleFeatureTokenizer":
+            selected = PackedEventStreamParticleFeatureTokenizer
+        case __:
+            raise NotImplementedError("This tokenizer class is not supported!")
+    return selected
+    
 
 def get_training_dir(model_name):
     return script_dir / TRAINED_MODELS_DIR_NAME / model_name
